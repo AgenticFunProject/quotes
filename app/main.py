@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db import get_db, init_db
@@ -194,5 +194,14 @@ def create_quote(payload: CreateQuoteRequest, db: Session = Depends(get_db)) -> 
     db.add(quote)
     db.commit()
     db.refresh(quote)
+
+    return _serialize_quote(quote)
+
+
+@app.get("/quotes/{quote_id}")
+def get_quote(quote_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
+    quote = db.scalar(select(Quote).where(or_(Quote.id == quote_id, Quote.quote_reference == quote_id)))
+    if quote is None:
+        raise HTTPException(status_code=404, detail="Quote not found")
 
     return _serialize_quote(quote)
