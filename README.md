@@ -44,3 +44,20 @@ curl -X POST http://localhost:8000/quotes \
 ```bash
 pytest
 ```
+
+## Project Structure
+
+```
+quotes/
+├── app/
+│   ├── __init__.py      # FastAPI app instance + startup hooks
+│   ├── db.py            # SQLAlchemy engine and session helpers
+│   ├── main.py          # ASGI entry point
+│   └── models.py        # Quote, rate, and surcharge models
+├── tests/
+│   ├── __init__.py
+│   ├── test_db.py       # SQLite model coverage
+│   └── test_health.py   # Smoke tests
+├── pyproject.toml     # Project metadata and dependencies
+└── README.md
+```

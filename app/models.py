@@ -27,8 +27,6 @@ class SurchargeType(str, Enum):
 class PortScope(str, Enum):
     ORIGIN = "ORIGIN"
     DESTINATION = "DESTINATION"
-
-
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
