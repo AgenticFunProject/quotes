@@ -20,8 +20,6 @@ pip install -e ".[dev]"
 uvicorn app.main:app --reload
 ```
 
-The service uses SQLite by default and creates its tables on startup in `db.sqlite`.
-
 The API will be available at <http://localhost:8000>.
 
 Interactive docs: <http://localhost:8000/docs>
