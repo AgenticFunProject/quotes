@@ -223,8 +223,6 @@ def test_create_quote_rejects_invalid_payloads(client, payload: dict[str, object
 
     assert response.status_code == 422
     assert any(error_field in ".".join(str(part) for part in error["loc"]) for error in response.json()["detail"])
-
-
 def _seed_quote(session_factory: sessionmaker[Session]) -> Quote:
     with session_factory() as session:
         quote = Quote(
@@ -270,14 +268,15 @@ def test_get_quote_by_uuid_returns_full_quote(client) -> None:
     }
 
 
-def test_get_quote_by_reference_returns_404(client) -> None:
+def test_get_quote_by_reference_returns_quote(client) -> None:
     test_client, session_factory = client
     _seed_quote(session_factory)
 
     response = test_client.get("/quotes/QTE-2026-00108")
 
-    assert response.status_code == 404
-    assert response.json() == {"detail": "Quote not found"}
+    assert response.status_code == 200
+    assert response.json()["quoteReference"] == "QTE-2026-00108"
+    assert response.json()["totalAmount"] == 2120.0
 
 
 def test_get_quote_returns_404_when_missing(client) -> None:
