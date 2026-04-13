@@ -1,8 +1,3 @@
-from fastapi import FastAPI
+from app.main import app
 
-app = FastAPI(title="Quotes API", version="0.1.0")
-
-
-@app.get("/health")
-async def health() -> dict:
-    return {"status": "ok"}
+__all__ = ["app"]

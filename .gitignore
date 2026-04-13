@@ -2,6 +2,7 @@
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db
+*.sqlite
 .beads-credential-key
 .runtime/
 
@@ -9,6 +10,8 @@
 .claude/
 .logs/
 __pycache__/
+.venv/
+.opencode/
 state.json
 CLAUDE.md
 CLAUDE.local.md
