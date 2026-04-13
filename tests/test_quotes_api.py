@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -92,6 +92,7 @@ def test_create_quote_returns_itemized_quote_and_persists_it(client) -> None:
     valid_until = datetime.fromisoformat(response.json()["validUntil"])
     created_at = datetime.fromisoformat(response.json()["createdAt"])
     assert valid_until > created_at
+    assert timedelta(days=6, hours=23) <= valid_until - created_at <= timedelta(days=7, minutes=1)
 
     with session_factory() as session:
         stored_quote = session.scalar(select(Quote).where(Quote.id == response.json()["id"]))
@@ -157,6 +158,79 @@ def test_create_quote_returns_400_when_rate_table_is_missing_for_schedule(client
 
     assert response.status_code == 400
     assert response.json() == {"detail": "No rate available for 20FT on selected schedule"}
+
+
+def test_create_quote_applies_baf_heavy_cargo_and_peak_season_surcharges(client) -> None:
+    test_client, _ = client
+
+    response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 25000,
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["lineItems"] == [
+        {"description": "Ocean Freight - 20FT x 1", "amount": 950.0},
+        {"description": "Bunker Adjustment Factor (BAF)", "amount": 80.0},
+        {"description": "Port Congestion Surcharge - Destination USNYC", "amount": 150.0},
+        {"description": "Heavy Cargo Surcharge", "amount": 200.0},
+        {"description": "Peak Season Surcharge", "amount": 120.0},
+    ]
+    assert response.json()["totalAmount"] == 1500.0
+
+
+@pytest.mark.parametrize(
+    ("payload", "error_field"),
+    [
+        pytest.param(
+            {
+                "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+                "equipment": [],
+                "cargoWeightKg": 10000,
+            },
+            "equipment",
+            id="empty-equipment",
+        ),
+        pytest.param(
+            {
+                "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+                "equipment": [{"type": "20FT", "quantity": 0}],
+                "cargoWeightKg": 10000,
+            },
+            "quantity",
+            id="zero-quantity",
+        ),
+        pytest.param(
+            {
+                "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+                "equipment": [{"type": "INVALID", "quantity": 1}],
+                "cargoWeightKg": 10000,
+            },
+            "type",
+            id="invalid-equipment-type",
+        ),
+        pytest.param(
+            {
+                "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+                "equipment": [{"type": "20FT", "quantity": 1}],
+                "cargoWeightKg": 0,
+            },
+            "cargoWeightKg",
+            id="non-positive-cargo-weight",
+        ),
+    ],
+)
+def test_create_quote_rejects_invalid_payloads(client, payload: dict[str, object], error_field: str) -> None:
+    test_client, _ = client
+
+    response = test_client.post("/quotes", json=payload)
+
+    assert response.status_code == 422
+    assert any(error_field in ".".join(str(part) for part in error["loc"]) for error in response.json()["detail"])
 
 
 def _seed_quote(session_factory: sessionmaker[Session]) -> Quote:
