@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from datetime import datetime
+from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
@@ -156,3 +157,68 @@ def test_create_quote_returns_400_when_rate_table_is_missing_for_schedule(client
 
     assert response.status_code == 400
     assert response.json() == {"detail": "No rate available for 20FT on selected schedule"}
+
+
+def _seed_quote(session_factory: sessionmaker[Session]) -> Quote:
+    with session_factory() as session:
+        quote = Quote(
+            id="53c362b2-1229-4ea5-a24a-9891fb1f509d",
+            quote_reference="QTE-2026-00108",
+            schedule_id="df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            equipment=[{"type": "20FT", "quantity": 2}],
+            cargo_weight_kg=Decimal("18000.00"),
+            currency="USD",
+            line_items=[
+                {"description": "Ocean Freight - 20FT x 2", "amount": 1800.0},
+                {"description": "Bunker Adjustment Factor (BAF)", "amount": 320.0},
+            ],
+            total_amount=Decimal("2120.00"),
+        )
+        session.add(quote)
+        session.commit()
+        session.refresh(quote)
+        return quote
+
+
+def test_get_quote_by_uuid_returns_full_quote(client) -> None:
+    test_client, session_factory = client
+    quote = _seed_quote(session_factory)
+
+    response = test_client.get(f"/quotes/{quote.id}")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": quote.id,
+        "quoteReference": "QTE-2026-00108",
+        "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+        "equipment": [{"type": "20FT", "quantity": 2}],
+        "cargoWeightKg": 18000.0,
+        "currency": "USD",
+        "lineItems": [
+            {"description": "Ocean Freight - 20FT x 2", "amount": 1800.0},
+            {"description": "Bunker Adjustment Factor (BAF)", "amount": 320.0},
+        ],
+        "totalAmount": 2120.0,
+        "validUntil": quote.valid_until.isoformat(),
+        "createdAt": quote.created_at.isoformat(),
+    }
+
+
+def test_get_quote_by_reference_returns_quote(client) -> None:
+    test_client, session_factory = client
+    _seed_quote(session_factory)
+
+    response = test_client.get("/quotes/QTE-2026-00108")
+
+    assert response.status_code == 200
+    assert response.json()["quoteReference"] == "QTE-2026-00108"
+    assert response.json()["totalAmount"] == 2120.0
+
+
+def test_get_quote_returns_404_when_missing(client) -> None:
+    test_client, _ = client
+
+    response = test_client.get("/quotes/missing-quote")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Quote not found"}
