@@ -77,6 +77,9 @@ Optional GitHub Actions variables:
 
 - `AZURE_ENV_NAME`: defaults to `prod`
 - `AZURE_LOCATION`: defaults to `eastus`
+- `RUNNER_LABELS_JSON`: defaults to `["ubuntu-latest"]`; set to a JSON array
+  such as `["self-hosted", "linux", "x64"]` to run the workflows on a
+  self-hosted runner
 
 Resource names are derived automatically from the repository name, environment
 name, and subscription ID, so no extra naming variables are required.
