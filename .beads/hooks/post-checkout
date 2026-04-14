@@ -5,8 +5,9 @@
 # NOTE: Git does NOT support pre-checkout hooks, so we auto-revert after.
 
 # Prefer the repo-tracked Beads metadata in worktrees so hook writes stay visible
-# to refinery instead of being redirected into rig-local runtime state.
-if [ -f ".beads/metadata.json" ] && [ -f ".beads/redirect" ]; then
+# to refinery instead of being redirected into rig-local runtime state, even if
+# a local-state warning already removed metadata.json.
+if [ -f ".beads/redirect" ]; then
     _beads_redirect=$(tr -d '\r\n' < .beads/redirect 2>/dev/null)
     if [ "$_beads_redirect" = "../../../.beads" ]; then
         rm -f .beads/redirect
