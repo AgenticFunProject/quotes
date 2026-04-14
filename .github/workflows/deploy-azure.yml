@@ -1,0 +1,99 @@
+name: Deploy to Azure
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AZURE_ENV_NAME: ${{ vars.AZURE_ENV_NAME || 'prod' }}
+  AZURE_LOCATION: ${{ vars.AZURE_LOCATION || 'eastus' }}
+  AZURE_CONTAINER_IMAGE_NAME: quotes-api
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Derive resource names
+        shell: bash
+        run: |
+          repo_token="$(printf '%s' "${GITHUB_REPOSITORY##*/}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9' | cut -c1-10)"
+          env_token="$(printf '%s' "$AZURE_ENV_NAME" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9' | cut -c1-6)"
+          sub_hash="$(printf '%s' "${{ secrets.AZURE_SUBSCRIPTION_ID }}" | sha256sum | cut -c1-6)"
+          name_prefix="${repo_token}-${env_token}-${sub_hash}"
+
+          {
+            echo "AZURE_RESOURCE_GROUP=rg-${name_prefix}"
+            echo "AZURE_WEBAPP_NAME=app-${name_prefix}"
+            echo "AZURE_CONTAINER_REGISTRY=acr$(printf '%s' "$name_prefix" | tr -d '-')"
+          } >> "$GITHUB_ENV"
+
+      - name: Check whether infrastructure exists
+        id: preflight
+        shell: bash
+        run: |
+          if az webapp show --resource-group "$AZURE_RESOURCE_GROUP" --name "$AZURE_WEBAPP_NAME" >/dev/null 2>&1 \
+            && az acr show --name "$AZURE_CONTAINER_REGISTRY" >/dev/null 2>&1; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Azure infrastructure has not been provisioned yet; skipping deployment." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Build container image in ACR
+        if: steps.preflight.outputs.ready == 'true'
+        run: |
+          az acr build \
+            --registry "$AZURE_CONTAINER_REGISTRY" \
+            --image "$AZURE_CONTAINER_IMAGE_NAME:${GITHUB_SHA}" \
+            --image "$AZURE_CONTAINER_IMAGE_NAME:main" \
+            .
+
+      - name: Point web app at the new image
+        if: steps.preflight.outputs.ready == 'true'
+        run: |
+          az webapp config container set \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --container-image-name "$AZURE_CONTAINER_REGISTRY.azurecr.io/$AZURE_CONTAINER_IMAGE_NAME:${GITHUB_SHA}" \
+            --container-registry-url "https://$AZURE_CONTAINER_REGISTRY.azurecr.io"
+
+      - name: Keep managed identity ACR pulls enabled
+        if: steps.preflight.outputs.ready == 'true'
+        run: |
+          az webapp config set \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --generic-configurations '{"acrUseManagedIdentityCreds": true}'
+
+      - name: Restart web app
+        if: steps.preflight.outputs.ready == 'true'
+        run: az webapp restart --resource-group "$AZURE_RESOURCE_GROUP" --name "$AZURE_WEBAPP_NAME"
+
+      - name: Publish deployment summary
+        if: steps.preflight.outputs.ready == 'true'
+        run: |
+          webapp_url="$(az webapp show --resource-group "$AZURE_RESOURCE_GROUP" --name "$AZURE_WEBAPP_NAME" --query defaultHostName --output tsv)"
+          {
+            echo "## Azure deploy complete"
+            echo ""
+            echo "- Web app: \`${AZURE_WEBAPP_NAME}\`"
+            echo "- Image: \`${AZURE_CONTAINER_REGISTRY}.azurecr.io/${AZURE_CONTAINER_IMAGE_NAME}:${GITHUB_SHA}\`"
+            echo "- URL: https://${webapp_url}"
+          } >> "$GITHUB_STEP_SUMMARY"

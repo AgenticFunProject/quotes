@@ -45,6 +45,64 @@ curl -X POST http://localhost:8000/quotes \
 pytest
 ```
 
+## Azure Deployment
+
+The repository includes an explicit split between infrastructure provisioning and
+application deployment:
+
+- `.github/workflows/provision-azure.yml` is a manual `workflow_dispatch`
+  workflow that creates the Azure resource group, Azure Container Registry, App
+  Service plan, and Linux Web App from `infra/azure/main.bicep`.
+- `.github/workflows/deploy-azure.yml` runs on every push to `main` and deploys
+  the application container to the existing Azure Web App. If the Azure
+  infrastructure has not been provisioned yet, it exits without failing the run.
+
+The deployment target is a containerized Linux App Service. The app persists its
+SQLite database at `/home/site/data/quotes.db`, which uses App Service's
+persistent storage.
+
+### GitHub Configuration
+
+Create these GitHub Actions secrets before running the provisioning workflow:
+
+- `AZURE_CLIENT_ID`
+- `AZURE_TENANT_ID`
+- `AZURE_SUBSCRIPTION_ID`
+
+These are used with GitHub Actions OIDC via `azure/login`. The backing Azure
+service principal needs permission to create and update the target resource
+group and resources.
+
+Optional GitHub Actions variables:
+
+- `AZURE_ENV_NAME`: defaults to `prod`
+- `AZURE_LOCATION`: defaults to `eastus`
+
+Resource names are derived automatically from the repository name, environment
+name, and subscription ID, so no extra naming variables are required.
+
+### Provisioning Flow
+
+1. Configure the Azure OIDC secrets and optional variables.
+2. Run `Provision Azure Infrastructure` from the GitHub Actions UI.
+3. After the workflow completes, merge or push to `main` to trigger the first
+   application deployment.
+
+### Local Agent MCP Setup
+
+`opencode.json` wires in project-local MCP entries for Azure and GitHub:
+
+- `azure` uses the official `@azure/mcp` package through `npx`
+- `github` uses GitHub's remote MCP endpoint
+
+For local use:
+
+- Authenticate Azure with `az login`
+- Authenticate GitHub MCP with `opencode mcp auth github`
+
+Both integrations are now available to OpenCode-based local agents in this
+repository.
+
 ## Project Structure
 
 ```

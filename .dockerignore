@@ -1,0 +1,11 @@
+.git
+.github
+.opencode
+.pytest_cache
+.venv
+__pycache__/
+*.py[cod]
+*.sqlite
+db.sqlite
+tests
+*.md
