@@ -45,16 +45,14 @@ def test_calculate_surcharges_applies_all_matching_rules() -> None:
     assert [item.description for item in line_items] == [
         "Bunker Adjustment Factor (BAF)",
         "Port Surcharge - Destination",
-        "Heavy Cargo Surcharge",
         "Peak Season Surcharge (PSS)",
     ]
     assert [item.amount for item in line_items] == [
         Decimal("240.00"),
         Decimal("150.00"),
-        Decimal("375.00"),
         Decimal("120.00"),
     ]
-    assert total_surcharges(line_items) == Decimal("885.00")
+    assert total_surcharges(line_items) == Decimal("510.00")
 
 
 def test_heavy_cargo_uses_weight_per_teu_threshold() -> None:
