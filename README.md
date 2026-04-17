@@ -27,6 +27,26 @@ Interactive docs: <http://localhost:8000/docs>
 The service uses SQLite by default, creates its tables on startup in `db.sqlite`,
 and seeds reference rates and surcharge rules used by `POST /quotes`.
 
+## Run Locally on Linux
+
+Prerequisites:
+
+- Python 3.11+
+- `venv` support for your Python install
+- `pip`
+
+From the repository root:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+uvicorn app.main:app --reload
+```
+
+If your Linux distribution does not expose `python`, use `python3` in the
+commands above instead.
+
 ## Example
 
 ```bash
