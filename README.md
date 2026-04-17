@@ -36,8 +36,7 @@ and seeds reference rates and surcharge rules used by `POST /quotes`.
 - `POST /quotes` validates the request, resolves a seeded schedule, applies base
   freight plus surcharge rules, persists the quote, and returns a commercial
   response with line items and a 7-day validity window.
-- `GET /quotes/{quote_id}` returns the stored quote by UUID. Quote references
-  such as `QTE-2026-00001` are not valid lookup keys for this endpoint.
+- `GET /quotes/{quote_id}` returns the stored quote by UUID or quote reference.
 
 ### Seeded Demo Data
 
