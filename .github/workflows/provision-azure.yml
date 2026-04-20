@@ -26,7 +26,16 @@ jobs:
             exit 0
           fi
 
-          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+          if command -v sudo >/dev/null 2>&1; then
+            curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+          elif [ "$(id -u)" -eq 0 ]; then
+            curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+          else
+            echo "Azure CLI is missing and this runner cannot elevate to install it." >&2
+            exit 1
+          fi
+
+          az version
 
       - name: Log in to Azure
         uses: azure/login@v2
