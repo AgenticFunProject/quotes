@@ -48,6 +48,25 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Ensure Azure CLI is available
+        shell: bash
+        run: |
+          if command -v az >/dev/null 2>&1; then
+            az version
+            exit 0
+          fi
+
+          if command -v sudo >/dev/null 2>&1; then
+            curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+          elif [ "$(id -u)" -eq 0 ]; then
+            curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+          else
+            echo "Azure CLI is not installed and sudo is unavailable." >&2
+            exit 1
+          fi
+
+          az version
+
       - name: Derive resource names
         shell: bash
         run: |
