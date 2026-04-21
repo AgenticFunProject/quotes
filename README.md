@@ -92,6 +92,18 @@ Retrieve a previously created quote by UUID:
 curl http://localhost:8000/quotes/<quote-uuid>
 ```
 
+## Bruno Collection
+
+A Bruno-compatible API collection is available under
+`bruno/quotes-service/`.
+
+- Import or open that folder directly in Bruno.
+- Use the `local` environment for a local FastAPI instance.
+- Use the `azure-dev` environment for the currently verified Azure App Service
+  deployment.
+
+See `bruno/quotes-service/README.md` for request details.
+
 ## Test
 
 ```bash

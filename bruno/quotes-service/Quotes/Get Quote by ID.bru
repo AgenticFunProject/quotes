@@ -1,0 +1,21 @@
+meta {
+  name: Get Quote by ID
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/quotes/{{quoteId}}
+  body: none
+}
+
+tests {
+  test("status is 200", function() {
+    expect(res.status).to.equal(200);
+  });
+
+  test("returns quote payload", function() {
+    expect(res.body.id).to.be.a("string");
+    expect(res.body.quoteReference).to.be.a("string");
+  });
+}

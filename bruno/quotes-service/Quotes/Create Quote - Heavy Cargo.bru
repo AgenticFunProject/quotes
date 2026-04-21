@@ -1,0 +1,37 @@
+meta {
+  name: Create Quote - Heavy Cargo
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/quotes
+  body: json
+}
+
+headers {
+  content-type: application/json
+}
+
+body {
+  {
+    "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+    "equipment": [
+      {
+        "type": "20FT",
+        "quantity": 1
+      }
+    ],
+    "cargoWeightKg": 25000
+  }
+}
+
+tests {
+  test("status is 201", function() {
+    expect(res.status).to.equal(201);
+  });
+
+  test("includes surcharge line items", function() {
+    expect(res.body.lineItems.length).to.be.greaterThan(1);
+  });
+}
