@@ -35,8 +35,9 @@ tests {
     expect(res.status).to.equal(201);
   });
 
-  test("returns a quote reference", function() {
-    expect(res.body.quoteId).to.be.a("string");
+  test("returns both quote identifiers", function() {
+    expect(res.body.id).to.be.a("string");
+    expect(res.body.quoteReference).to.be.a("string");
     expect(res.body.currency).to.equal("USD");
   });
 }

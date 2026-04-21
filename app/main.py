@@ -104,7 +104,8 @@ def _serialize_quote(quote: Quote) -> dict[str, object]:
 
 def _serialize_created_quote(quote: Quote) -> dict[str, object]:
     return {
-        "quoteId": quote.quote_reference,
+        "id": quote.id,
+        "quoteReference": quote.quote_reference,
         "validUntil": quote.valid_until.isoformat(),
         "currency": quote.currency,
         "lineItems": [
@@ -217,6 +218,15 @@ def create_quote(payload: CreateQuoteRequest, db: Session = Depends(get_db)) -> 
 @app.get("/quotes/{quote_id}")
 def get_quote(quote_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
     quote = db.scalar(select(Quote).where(Quote.id == quote_id))
+    if quote is None:
+        raise HTTPException(status_code=404, detail="Quote not found")
+
+    return _serialize_quote(quote)
+
+
+@app.get("/quotes/reference/{quote_reference}")
+def get_quote_by_reference(quote_reference: str, db: Session = Depends(get_db)) -> dict[str, object]:
+    quote = db.scalar(select(Quote).where(Quote.quote_reference == quote_reference))
     if quote is None:
         raise HTTPException(status_code=404, detail="Quote not found")
 

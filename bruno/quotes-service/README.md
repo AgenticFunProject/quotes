@@ -16,14 +16,15 @@ only the verified dev deployment is included.
 - `Create Quote - Standard Lane`
 - `Create Quote - Heavy Cargo`
 - `Get Quote by ID`
+- `Get Quote by Reference`
 
 ## Notes
 
 - The create-quote requests use schedule IDs and payloads that match the seeded
   sample data in this repository.
-- `GET /quotes/{id}` currently requires the stored quote's internal UUID.
-  The API does not return that UUID from `POST /quotes`, so update the
-  `quoteId` environment variable with an existing quote UUID before running
-  `Get Quote by ID`.
+- `POST /quotes` returns both the stored quote UUID (`id`) and the human-facing
+  `quoteReference`.
+- Update the `quoteId` and `quoteReference` environment variables with an
+  existing quote before running the lookup requests.
 - The service does not currently require authentication, so no secrets are
   stored in the collection.
