@@ -15,7 +15,8 @@ Provides a quoted price that can be referenced when placing a booking.
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | /quotes | Request a new quote |
-| GET | /quotes/{id} | Retrieve a quote by ID |
+| GET | /quotes/{id} | Retrieve a quote by internal UUID |
+| GET | /quotes/reference/{quoteReference} | Retrieve a quote by human-readable quote reference |
 
 ### POST /quotes - Request Body
 ```json
@@ -32,7 +33,8 @@ Provides a quoted price that can be referenced when placing a booking.
 ### POST /quotes - Response
 ```json
 {
-  "quoteId": "QTE-2026-00108",
+  "id": "53c362b2-1229-4ea5-a24a-9891fb1f509d",
+  "quoteReference": "QTE-2026-00108",
   "validUntil": "2026-04-07T23:59:59Z",
   "currency": "USD",
   "lineItems": [
@@ -44,6 +46,14 @@ Provides a quoted price that can be referenced when placing a booking.
   "totalAmount": 3670.00
 }
 ```
+
+### GET /quotes/{id}
+- The `{id}` path parameter is the stored quote UUID.
+- This endpoint is intended for internal system-to-system lookup.
+
+### GET /quotes/reference/{quoteReference}
+- The `{quoteReference}` path parameter is the business-facing quote reference in `QTE-YYYY-NNNNN` format.
+- This endpoint returns the same quote payload shape as `GET /quotes/{id}`.
 
 ## Pricing Logic
 
@@ -101,9 +111,8 @@ Provides a quoted price that can be referenced when placing a booking.
 - The frontend is expected to consume the HTTP API exposed by this service. There is no frontend-specific integration layer in this repository yet.
 
 ## Current Implementation Notes
-- The current implementation also allows quote retrieval by `quoteReference` on `GET /quotes/{id}` in addition to internal UUID lookup.
-- The current implementation returns both the internal `id` and the human-readable `quoteReference` in quote responses.
-- These notes describe the present behavior of the generated code and should be folded into the business specification when they are confirmed as intended behavior.
+- `POST /quotes` returns both the internal `id` and the human-readable `quoteReference` so downstream systems can choose the correct identifier.
+- `GET /quotes/{id}` is reserved for UUID lookup and `GET /quotes/reference/{quoteReference}` is reserved for business-facing lookup.
 
 ## Out of Scope (v1)
 ### Customer-specific contract rates / negotiated tariffs

@@ -69,8 +69,7 @@ A Bruno-compatible API collection is available under
 - Use the `azure-dev` environment for the currently verified Azure App Service
   deployment.
 
-See `bruno/quotes-service/README.md` for request details and the current
-`GET /quotes/{id}` limitation.
+See `bruno/quotes-service/README.md` for request details.
 
 ## Test
 

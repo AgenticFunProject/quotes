@@ -66,7 +66,8 @@ def test_create_quote_returns_itemized_quote_and_persists_it(client) -> None:
 
     assert response.status_code == 201
     assert response.json() == {
-        "quoteId": response.json()["quoteId"],
+        "id": response.json()["id"],
+        "quoteReference": response.json()["quoteReference"],
         "validUntil": response.json()["validUntil"],
         "currency": "USD",
         "lineItems": [
@@ -78,19 +79,21 @@ def test_create_quote_returns_itemized_quote_and_persists_it(client) -> None:
         ],
         "totalAmount": 4350.0,
     }
-    assert response.json()["quoteId"].endswith("-00001")
-    assert response.json()["quoteId"].startswith("QTE-")
+    assert response.json()["id"]
+    assert response.json()["quoteReference"].endswith("-00001")
+    assert response.json()["quoteReference"].startswith("QTE-")
 
     valid_until = datetime.fromisoformat(response.json()["validUntil"])
 
     with session_factory() as session:
-        stored_quote = session.scalar(select(Quote).where(Quote.quote_reference == response.json()["quoteId"]))
+        stored_quote = session.scalar(select(Quote).where(Quote.id == response.json()["id"]))
 
     assert stored_quote is not None
     created_at = stored_quote.created_at
     assert valid_until > created_at
     assert timedelta(days=6, hours=23) <= valid_until - created_at <= timedelta(days=7, minutes=1)
-    assert stored_quote.quote_reference == response.json()["quoteId"]
+    assert stored_quote.id == response.json()["id"]
+    assert stored_quote.quote_reference == response.json()["quoteReference"]
     assert float(stored_quote.total_amount) == response.json()["totalAmount"]
 
 
@@ -116,8 +119,8 @@ def test_create_quote_increments_quote_reference_sequence(client) -> None:
 
     assert first_response.status_code == 201
     assert second_response.status_code == 201
-    assert first_response.json()["quoteId"].endswith("-00001")
-    assert second_response.json()["quoteId"].endswith("-00002")
+    assert first_response.json()["quoteReference"].endswith("-00001")
+    assert second_response.json()["quoteReference"].endswith("-00002")
 
 
 def test_create_quote_returns_404_for_unknown_schedule(client) -> None:
@@ -278,6 +281,30 @@ def test_get_quote_by_reference_returns_404(client) -> None:
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Quote not found"}
+
+
+def test_get_quote_by_quote_reference_returns_full_quote(client) -> None:
+    test_client, session_factory = client
+    quote = _seed_quote(session_factory)
+
+    response = test_client.get(f"/quotes/reference/{quote.quote_reference}")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": quote.id,
+        "quoteReference": quote.quote_reference,
+        "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+        "equipment": [{"type": "20FT", "quantity": 2}],
+        "cargoWeightKg": 18000.0,
+        "currency": "USD",
+        "lineItems": [
+            {"description": "Ocean Freight - 20FT x 2", "amount": 1800.0},
+            {"description": "Bunker Adjustment Factor (BAF)", "amount": 320.0},
+        ],
+        "totalAmount": 2120.0,
+        "validUntil": quote.valid_until.isoformat(),
+        "createdAt": quote.created_at.isoformat(),
+    }
 
 
 def test_get_quote_returns_404_when_missing(client) -> None:
