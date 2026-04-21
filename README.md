@@ -134,6 +134,9 @@ The deployment target is a containerized Linux App Service. The app persists its
 SQLite database at `/home/site/data/quotes.db`, which uses App Service's
 persistent storage.
 
+The application `Dockerfile` uses an MCR-hosted Python 3.11 base image so the
+remote `az acr build` step does not depend on unauthenticated Docker Hub pulls.
+
 ### GitHub Configuration
 
 Create these GitHub Actions secrets before running the provisioning workflow:
