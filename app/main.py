@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db import get_db, init_db
@@ -99,6 +99,22 @@ def _serialize_quote(quote: Quote) -> dict[str, object]:
         "totalAmount": _serialize_decimal(quote.total_amount),
         "validUntil": quote.valid_until.isoformat(),
         "createdAt": quote.created_at.isoformat(),
+    }
+
+
+def _serialize_created_quote(quote: Quote) -> dict[str, object]:
+    return {
+        "quoteId": quote.quote_reference,
+        "validUntil": quote.valid_until.isoformat(),
+        "currency": quote.currency,
+        "lineItems": [
+            {
+                "description": item["description"],
+                "amount": float(item["amount"]),
+            }
+            for item in quote.line_items
+        ],
+        "totalAmount": _serialize_decimal(quote.total_amount),
     }
 
 
@@ -195,12 +211,12 @@ def create_quote(payload: CreateQuoteRequest, db: Session = Depends(get_db)) -> 
     db.commit()
     db.refresh(quote)
 
-    return _serialize_quote(quote)
+    return _serialize_created_quote(quote)
 
 
 @app.get("/quotes/{quote_id}")
 def get_quote(quote_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
-    quote = db.scalar(select(Quote).where(or_(Quote.id == quote_id, Quote.quote_reference == quote_id)))
+    quote = db.scalar(select(Quote).where(Quote.id == quote_id))
     if quote is None:
         raise HTTPException(status_code=404, detail="Quote not found")
 
