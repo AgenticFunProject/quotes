@@ -268,15 +268,14 @@ def test_get_quote_by_uuid_returns_full_quote(client) -> None:
     }
 
 
-def test_get_quote_by_reference_returns_quote(client) -> None:
+def test_get_quote_by_reference_returns_404(client) -> None:
     test_client, session_factory = client
     _seed_quote(session_factory)
 
     response = test_client.get("/quotes/QTE-2026-00108")
 
-    assert response.status_code == 200
-    assert response.json()["quoteReference"] == "QTE-2026-00108"
-    assert response.json()["totalAmount"] == 2120.0
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Quote not found"}
 
 
 def test_get_quote_returns_404_when_missing(client) -> None:
