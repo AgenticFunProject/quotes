@@ -14,6 +14,9 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
+Set `DATABASE_URL` before starting the app if you want to persist data anywhere
+other than the default local SQLite file at `db.sqlite`.
+
 ## Run
 
 ```bash
@@ -26,6 +29,31 @@ Interactive docs: <http://localhost:8000/docs>
 
 The service uses SQLite by default, creates its tables on startup in `db.sqlite`,
 and seeds reference rates and surcharge rules used by `POST /quotes`.
+
+## Current API Surface
+
+- `GET /health` returns a simple readiness payload.
+- `POST /quotes` validates the request, resolves a seeded schedule, applies base
+  freight plus surcharge rules, persists the quote, and returns a commercial
+  response with line items and a 7-day validity window.
+- `GET /quotes/{quote_id}` returns the stored quote by UUID. Quote references
+  such as `QTE-2026-00001` are not valid lookup keys for this endpoint.
+
+### Seeded Demo Data
+
+The app currently boots with three in-memory schedule stubs:
+
+- `df62a7d2-a45e-4d4d-b3cb-b4af65435274` for `NLRTM -> USNYC` on `2026-08-18`
+- `7a59721c-cd5d-4d9f-86a0-9aa9f7f6c47b` for `CNSHA -> DEHAM` on `2026-06-05`
+- `1ce1ab21-9d58-4a6d-b867-afc93098352f` for `BRSSZ -> USLAX` on `2026-07-12`
+
+Reference data also seeds:
+
+- base freight rates for `20FT`, `40FT`, and `40FT_HC`
+- a global BAF surcharge
+- port congestion surcharges keyed by origin or destination port
+- a heavy-cargo surcharge based on cargo weight per TEU
+- a peak-season surcharge active from `2026-08-01` through `2026-09-30`
 
 ## Run Locally on Linux
 
@@ -59,11 +87,24 @@ curl -X POST http://localhost:8000/quotes \
   }'
 ```
 
+Retrieve a previously created quote by UUID:
+
+```bash
+curl http://localhost:8000/quotes/<quote-uuid>
+```
+
 ## Test
 
 ```bash
 pytest
 ```
+
+## CI Workflow
+
+`.github/workflows/ci.yml` runs on pushes to `main`, pull requests targeting
+`main`, and manual dispatch. It installs the package with development
+dependencies, validates that the project builds as a Python package, and then
+executes `pytest`.
 
 ## Azure Deployment
 
@@ -74,8 +115,9 @@ application deployment:
   workflow that creates the Azure resource group, Azure Container Registry, App
   Service plan, and Linux Web App from `infra/azure/main.bicep`.
 - `.github/workflows/deploy-azure.yml` runs on every push to `main` and deploys
-  the application container to the existing Azure Web App. If the Azure
-  infrastructure has not been provisioned yet, it exits without failing the run.
+  the application container to the existing Azure Web App. It can also be run
+  manually with `workflow_dispatch`. If the Azure infrastructure has not been
+  provisioned yet, it exits without failing the run.
 
 The deployment target is a containerized Linux App Service. The app persists its
 SQLite database at `/home/site/data/quotes.db`, which uses App Service's
@@ -103,6 +145,9 @@ Optional GitHub Actions variables:
 
 Resource names are derived automatically from the repository name, environment
 name, and subscription ID, so no extra naming variables are required.
+
+Both Azure workflows try to use an existing `az` installation first and only
+fall back to installing the Azure CLI on the runner when it is missing.
 
 ### Provisioning Flow
 
@@ -134,11 +179,15 @@ quotes/
 │   ├── __init__.py      # FastAPI app instance + startup hooks
 │   ├── db.py            # SQLAlchemy engine and session helpers
 │   ├── main.py          # ASGI entry point
-│   └── models.py        # Quote, rate, and surcharge models
+│   ├── models.py        # Quote, rate, and surcharge models
+│   ├── seed.py          # Reference rate and surcharge seed data
+│   └── surcharges.py    # Surcharge matching and calculation logic
 ├── tests/
 │   ├── __init__.py
 │   ├── test_db.py       # SQLite model coverage
-│   └── test_health.py   # Smoke tests
+│   ├── test_health.py   # Health endpoint smoke tests
+│   ├── test_quotes_api.py # Quote creation and retrieval coverage
+│   └── test_surcharges.py # Surcharge rule behavior coverage
 ├── pyproject.toml     # Project metadata and dependencies
 └── README.md
 ```
