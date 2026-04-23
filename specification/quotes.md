@@ -101,8 +101,10 @@ Provides a quoted price that can be referenced when placing a booking.
 - The frontend is expected to consume the HTTP API exposed by this service. There is no frontend-specific integration layer in this repository yet.
 
 ## Current Implementation Notes
-- The current implementation also allows quote retrieval by `quoteReference` on `GET /quotes/{id}` in addition to internal UUID lookup.
-- The current implementation returns both the internal `id` and the human-readable `quoteReference` in quote responses.
+- `POST /quotes` returns the commercial quote payload only: `quoteId`, `validUntil`, `currency`, `lineItems`, and `totalAmount`.
+- `GET /quotes/{id}` requires the internal quote UUID and returns the stored record, including both the internal `id` and the human-readable `quoteReference`.
+- Quote references are generated sequentially within the current UTC year using the `QTE-YYYY-NNNNN` format.
+- A schedule lookup and a quoteable lane are not the same thing in the current implementation: a known `scheduleId` can still return `400` when no effective base rate exists for the route, equipment, and departure date.
 - These notes describe the present behavior of the generated code and should be folded into the business specification when they are confirmed as intended behavior.
 
 ## Out of Scope (v1)
