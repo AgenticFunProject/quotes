@@ -312,3 +312,82 @@ def test_get_quote_returns_404_when_missing(client) -> None:
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Quote not found"}
+
+
+def test_scenario_peak_season_quote_returns_the_documented_commercial_payload(client) -> None:
+    """Scenario: Create a quote on a seeded peak-season lane
+
+    Given the service has the seeded schedule and reference pricing data
+    When a client requests a quote for the Rotterdam to New York schedule
+    Then the API returns the commercial quote response shape documented in v1
+    And the response includes the seasonal and congestion surcharges for that lane
+    """
+
+    test_client, _ = client
+
+    response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+
+    assert response.status_code == 201
+    assert set(response.json()) == {"quoteId", "validUntil", "currency", "lineItems", "totalAmount"}
+    assert response.json()["quoteId"].startswith("QTE-")
+    assert response.json()["lineItems"] == [
+        {"description": "Ocean Freight - 20FT x 1", "amount": 950.0},
+        {"description": "Bunker Adjustment Factor (BAF)", "amount": 80.0},
+        {"description": "Port Congestion Surcharge - Destination USNYC", "amount": 150.0},
+        {"description": "Peak Season Surcharge", "amount": 120.0},
+    ]
+    assert response.json()["totalAmount"] == 1300.0
+
+
+def test_scenario_quote_lookup_accepts_uuid_but_not_quote_reference(client) -> None:
+    """Scenario: Retrieve a stored quote
+
+    Given a quote has been stored by the service
+    When the client looks it up by internal UUID
+    Then the API returns the full stored quote record
+    But when the client uses the human-readable quote reference
+    Then the API returns quote not found
+    """
+
+    test_client, session_factory = client
+    quote = _seed_quote(session_factory)
+
+    lookup_by_id = test_client.get(f"/quotes/{quote.id}")
+    lookup_by_reference = test_client.get(f"/quotes/{quote.quote_reference}")
+
+    assert lookup_by_id.status_code == 200
+    assert lookup_by_id.json()["id"] == quote.id
+    assert lookup_by_id.json()["quoteReference"] == quote.quote_reference
+    assert lookup_by_reference.status_code == 404
+    assert lookup_by_reference.json() == {"detail": "Quote not found"}
+
+
+def test_scenario_known_schedule_without_rate_returns_a_commercial_validation_error(client) -> None:
+    """Scenario: Request a quote for a seeded schedule without an effective rate
+
+    Given the service recognizes the schedule identifier
+    And no seeded base freight row exists for that route and equipment
+    When the client requests a quote
+    Then the API rejects the request with a commercial validation error
+    """
+
+    test_client, _ = client
+
+    response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "1ce1ab21-9d58-4a6d-b867-afc93098352f",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 10000,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "No rate available for 20FT on selected schedule"}

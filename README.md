@@ -36,7 +36,12 @@ and seeds reference rates and surcharge rules used by `POST /quotes`.
 - `POST /quotes` validates the request, resolves a seeded schedule, applies base
   freight plus surcharge rules, persists the quote, and returns a commercial
   response with line items and a 7-day validity window.
-- `GET /quotes/{quote_id}` returns the stored quote by UUID or quote reference.
+<<<<<<< HEAD
+- `GET /quotes/{quote_id}` returns the stored quote by UUID. Quote references
+  such as `QTE-2026-00001` are not valid lookup keys for this endpoint.
+- A known schedule can still return `400` from `POST /quotes` when the seeded
+  rate table does not contain an effective row for the selected route,
+  departure date, and equipment combination.
 
 ### Seeded Demo Data
 
@@ -53,6 +58,10 @@ Reference data also seeds:
 - port congestion surcharges keyed by origin or destination port
 - a heavy-cargo surcharge based on cargo weight per TEU
 - a peak-season surcharge active from `2026-08-01` through `2026-09-30`
+
+The seeded `BRSSZ -> USLAX` schedule is intentionally missing matching rate rows,
+so it demonstrates the API's commercial validation path for unsupported quoted
+lanes.
 
 ## Run Locally on Linux
 
