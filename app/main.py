@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db import get_db, init_db
-from app.models import EquipmentType, Quote, RateTable, SurchargeRule
+from app.models import EquipmentType, PricingBasis, Quote, RateTable, SurchargeRule
 from app.seed import seed_reference_data
 from app.surcharges import EquipmentSelection, calculate_surcharges, total_surcharges
 
@@ -85,10 +85,14 @@ def _serialize_quote(quote: Quote) -> dict[str, object]:
     return {
         "id": quote.id,
         "quoteReference": quote.quote_reference,
+        "lifecycleState": quote.lifecycle_state.value,
         "scheduleId": quote.schedule_id,
+        "scheduleSnapshot": quote.schedule_snapshot,
         "equipment": quote.equipment,
         "cargoWeightKg": _serialize_decimal(quote.cargo_weight_kg),
         "currency": quote.currency,
+        "pricingBasis": quote.pricing_basis.value,
+        "idempotencyKey": quote.idempotency_key,
         "lineItems": [
             {
                 "description": item["description"],
@@ -197,13 +201,21 @@ def create_quote(payload: CreateQuoteRequest, db: Session = Depends(get_db)) -> 
     )
     line_items = base_line_items + [item.as_dict() for item in surcharge_line_items]
     total_amount = (base_total + total_surcharges(surcharge_line_items)).quantize(_MONEY_PRECISION)
+    schedule_snapshot = {
+        "scheduleId": schedule.schedule_id,
+        "originPort": schedule.origin_port,
+        "destinationPort": schedule.destination_port,
+        "departureDate": schedule.departure_date.isoformat(),
+    }
 
     quote = Quote(
         quote_reference=_generate_quote_reference(db),
         schedule_id=payload.schedule_id,
+        schedule_snapshot=schedule_snapshot,
         equipment=equipment_payload,
         cargo_weight_kg=payload.cargo_weight_kg.quantize(_MONEY_PRECISION),
         currency="USD",
+        pricing_basis=PricingBasis.PUBLIC_TARIFF,
         line_items=line_items,
         total_amount=total_amount,
     )

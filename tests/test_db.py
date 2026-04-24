@@ -7,7 +7,16 @@ from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
-from app.models import EquipmentType, PortScope, Quote, RateTable, SurchargeRule, SurchargeType
+from app.models import (
+    EquipmentType,
+    PortScope,
+    PricingBasis,
+    Quote,
+    QuoteLifecycleState,
+    RateTable,
+    SurchargeRule,
+    SurchargeType,
+)
 
 
 def test_models_create_sqlite_tables() -> None:
@@ -36,9 +45,18 @@ def test_models_persist_records() -> None:
     session.add(
         Quote(
             quote_reference="QTE-2026-00001",
+            lifecycle_state=QuoteLifecycleState.ISSUED,
             schedule_id="53c362b2-1229-4ea5-a24a-9891fb1f509d",
+            schedule_snapshot={
+                "scheduleId": "53c362b2-1229-4ea5-a24a-9891fb1f509d",
+                "originPort": "NLRTM",
+                "destinationPort": "USNYC",
+                "departureDate": "2026-04-15",
+            },
             equipment=[{"type": EquipmentType.TWENTY_FT.value, "quantity": 2}],
             cargo_weight_kg=Decimal("18000.00"),
+            pricing_basis=PricingBasis.PUBLIC_TARIFF,
+            idempotency_key="request-123",
             line_items=[{"description": "Ocean Freight", "amount": 1800.0}],
             total_amount=Decimal("1800.00"),
         )
@@ -57,3 +75,8 @@ def test_models_persist_records() -> None:
     assert session.query(Quote).count() == 1
     assert session.query(RateTable).count() == 1
     assert session.query(SurchargeRule).count() == 1
+    stored_quote = session.query(Quote).one()
+    assert stored_quote.lifecycle_state == QuoteLifecycleState.ISSUED
+    assert stored_quote.schedule_snapshot["originPort"] == "NLRTM"
+    assert stored_quote.pricing_basis == PricingBasis.PUBLIC_TARIFF
+    assert stored_quote.idempotency_key == "request-123"
