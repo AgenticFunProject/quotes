@@ -13,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 from app import db
 from app.db import Base, get_db
 from app.main import app
-from app.models import Quote
+from app.models import PricingBasis, Quote, QuoteLifecycleState
 from app.seed import seed_reference_data
 
 
@@ -95,6 +95,15 @@ def test_create_quote_returns_itemized_quote_and_persists_it(client) -> None:
     assert stored_quote.id == response.json()["id"]
     assert stored_quote.quote_reference == response.json()["quoteReference"]
     assert float(stored_quote.total_amount) == response.json()["totalAmount"]
+    assert stored_quote.lifecycle_state == QuoteLifecycleState.ISSUED
+    assert stored_quote.pricing_basis == PricingBasis.PUBLIC_TARIFF
+    assert stored_quote.idempotency_key is None
+    assert stored_quote.schedule_snapshot == {
+        "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+        "originPort": "NLRTM",
+        "destinationPort": "USNYC",
+        "departureDate": "2026-08-18",
+    }
 
 
 def test_create_quote_increments_quote_reference_sequence(client) -> None:
@@ -231,10 +240,19 @@ def _seed_quote(session_factory: sessionmaker[Session]) -> Quote:
         quote = Quote(
             id="53c362b2-1229-4ea5-a24a-9891fb1f509d",
             quote_reference="QTE-2026-00108",
+            lifecycle_state=QuoteLifecycleState.ISSUED,
             schedule_id="df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            schedule_snapshot={
+                "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+                "originPort": "NLRTM",
+                "destinationPort": "USNYC",
+                "departureDate": "2026-08-18",
+            },
             equipment=[{"type": "20FT", "quantity": 2}],
             cargo_weight_kg=Decimal("18000.00"),
             currency="USD",
+            pricing_basis=PricingBasis.PUBLIC_TARIFF,
+            idempotency_key="booking-request-42",
             line_items=[
                 {"description": "Ocean Freight - 20FT x 2", "amount": 1800.0},
                 {"description": "Bunker Adjustment Factor (BAF)", "amount": 320.0},
@@ -257,10 +275,19 @@ def test_get_quote_by_uuid_returns_full_quote(client) -> None:
     assert response.json() == {
         "id": quote.id,
         "quoteReference": "QTE-2026-00108",
+        "lifecycleState": "ISSUED",
         "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+        "scheduleSnapshot": {
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "originPort": "NLRTM",
+            "destinationPort": "USNYC",
+            "departureDate": "2026-08-18",
+        },
         "equipment": [{"type": "20FT", "quantity": 2}],
         "cargoWeightKg": 18000.0,
         "currency": "USD",
+        "pricingBasis": "PUBLIC_TARIFF",
+        "idempotencyKey": "booking-request-42",
         "lineItems": [
             {"description": "Ocean Freight - 20FT x 2", "amount": 1800.0},
             {"description": "Bunker Adjustment Factor (BAF)", "amount": 320.0},

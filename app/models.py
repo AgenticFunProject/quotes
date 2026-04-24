@@ -29,6 +29,20 @@ class PortScope(str, Enum):
     DESTINATION = "DESTINATION"
 
 
+class QuoteLifecycleState(str, Enum):
+    ISSUED = "ISSUED"
+    BOOKED = "BOOKED"
+    EXPIRED = "EXPIRED"
+    VOID = "VOID"
+
+
+class PricingBasis(str, Enum):
+    PUBLIC_TARIFF = "PUBLIC_TARIFF"
+    CONTRACT = "CONTRACT"
+    MARKET = "MARKET"
+    HYBRID = "HYBRID"
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -42,10 +56,29 @@ class Quote(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     quote_reference: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    lifecycle_state: Mapped[QuoteLifecycleState] = mapped_column(
+        SqlEnum(
+            QuoteLifecycleState,
+            native_enum=False,
+            values_callable=lambda members: [member.value for member in members],
+        ),
+        default=QuoteLifecycleState.ISSUED,
+        index=True,
+    )
     schedule_id: Mapped[str] = mapped_column(String(36), index=True)
+    schedule_snapshot: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
     equipment: Mapped[list[dict[str, object]]] = mapped_column(JSON)
     cargo_weight_kg: Mapped[Decimal] = mapped_column(Numeric(10, 2))
     currency: Mapped[str] = mapped_column(String(3), default="USD")
+    pricing_basis: Mapped[PricingBasis] = mapped_column(
+        SqlEnum(
+            PricingBasis,
+            native_enum=False,
+            values_callable=lambda members: [member.value for member in members],
+        ),
+        default=PricingBasis.PUBLIC_TARIFF,
+    )
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True, unique=True, index=True)
     line_items: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
     total_amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=Decimal("0.00"))
     valid_until: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_default_valid_until)
