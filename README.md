@@ -27,6 +27,11 @@ The API will be available at <http://localhost:8000>.
 
 Interactive docs: <http://localhost:8000/docs>
 
+Planning docs for the next iterations live under `specification/`:
+
+- `specification/roadmap.md` for phased feature and architecture work
+- `specification/adr-001-eventing-strategy.md` for the eventing decision record
+
 The service uses SQLite by default, creates its tables on startup in `db.sqlite`,
 and seeds reference rates and surcharge rules used by `POST /quotes`.
 
