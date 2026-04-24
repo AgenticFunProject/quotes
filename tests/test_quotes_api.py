@@ -15,6 +15,7 @@ from app.db import Base, get_db
 from app.main import app
 from app.models import Quote
 from app.seed import seed_reference_data
+from app.schedules import Schedule, get_schedule_provider
 
 
 @pytest.fixture()
@@ -134,6 +135,41 @@ def test_create_quote_returns_404_for_unknown_schedule(client) -> None:
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Schedule not found"}
+
+
+def test_create_quote_uses_schedule_provider_dependency(client) -> None:
+    test_client, _ = client
+
+    class StubScheduleProvider:
+        def get_schedule(self, schedule_id: str) -> Schedule | None:
+            if schedule_id != "provider-schedule":
+                return None
+
+            return Schedule(
+                schedule_id=schedule_id,
+                origin_port="NLRTM",
+                destination_port="USNYC",
+                departure_date=datetime(2026, 8, 18).date(),
+            )
+
+    app.dependency_overrides[get_schedule_provider] = lambda: StubScheduleProvider()
+
+    response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "provider-schedule",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["lineItems"] == [
+        {"description": "Ocean Freight - 20FT x 1", "amount": 950.0},
+        {"description": "Bunker Adjustment Factor (BAF)", "amount": 80.0},
+        {"description": "Port Congestion Surcharge - Destination USNYC", "amount": 150.0},
+        {"description": "Peak Season Surcharge", "amount": 120.0},
+    ]
 
 
 def test_create_quote_returns_400_when_rate_table_is_missing_for_schedule(client) -> None:
