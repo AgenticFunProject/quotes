@@ -15,7 +15,7 @@ Provides a quoted price that can be referenced when placing a booking.
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | /quotes | Request a new quote |
-| GET | /quotes/{id} | Retrieve a quote by internal UUID |
+| GET | /quotes/{id} | Retrieve a quote by internal ID or public quote reference |
 | GET | /quotes/reference/{quoteReference} | Retrieve a quote by human-readable quote reference |
 
 ### POST /quotes - Request Body
@@ -112,8 +112,8 @@ Provides a quoted price that can be referenced when placing a booking.
 
 ## Current Implementation Notes
 - `POST /quotes` returns the commercial quote payload only: `quoteId`, `validUntil`, `currency`, `lineItems`, and `totalAmount`.
-- `GET /quotes/{id}` requires the internal quote UUID and returns the stored record, including both the internal `id` and the human-readable `quoteReference`.
-- `GET /quotes/reference/{quoteReference}` is the business-facing lookup path for the human-readable quote reference.
+- `GET /quotes/{id}` accepts either the internal quote UUID or the human-readable `quoteReference` returned as `quoteId` during quote creation and returns the stored record, including both identifiers.
+- `GET /quotes/reference/{quoteReference}` remains available as an explicit business-facing lookup path for the human-readable quote reference.
 - Quote references are generated sequentially within the current UTC year using the `QTE-YYYY-NNNNN` format.
 - A schedule lookup and a quoteable lane are not the same thing in the current implementation: a known `scheduleId` can still return `400` when no effective base rate exists for the route, equipment, and departure date.
 - These notes describe the present behavior of the generated code and should be folded into the business specification when they are confirmed as intended behavior.
