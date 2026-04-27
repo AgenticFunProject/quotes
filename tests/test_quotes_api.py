@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -282,6 +282,27 @@ def _seed_quote(session_factory: sessionmaker[Session]) -> Quote:
         return quote
 
 
+def _seed_expired_quote(session_factory: sessionmaker[Session]) -> Quote:
+    with session_factory() as session:
+        quote = Quote(
+            id="4f438b27-7bfc-4fa9-8fd1-fc589fb8d9df",
+            quote_reference="QTE-2026-00109",
+            schedule_id="df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            equipment=[{"type": "40FT", "quantity": 1}],
+            cargo_weight_kg=Decimal("12000.00"),
+            currency="USD",
+            line_items=[
+                {"description": "Ocean Freight - 40FT x 1", "amount": 1400.0},
+            ],
+            total_amount=Decimal("1400.00"),
+            valid_until=datetime.now(timezone.utc) - timedelta(hours=1),
+        )
+        session.add(quote)
+        session.commit()
+        session.refresh(quote)
+        return quote
+
+
 def test_get_quote_by_uuid_returns_full_quote(client) -> None:
     test_client, session_factory = client
     quote = _seed_quote(session_factory)
@@ -339,6 +360,49 @@ def test_get_quote_returns_404_when_missing(client) -> None:
     assert response.json() == {"detail": "Quote not found"}
 
 
+def test_get_quote_bookability_returns_active_quote_status(client) -> None:
+    test_client, session_factory = client
+    quote = _seed_quote(session_factory)
+
+    response = test_client.get(f"/quotes/{quote.quote_reference}/bookability")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "quoteId": quote.quote_reference,
+        "bookable": True,
+        "status": "ACTIVE",
+        "reason": "VALIDITY_WINDOW_OPEN",
+        "expired": False,
+        "validUntil": quote.valid_until.isoformat(),
+    }
+
+
+def test_get_quote_bookability_returns_expired_quote_status(client) -> None:
+    test_client, session_factory = client
+    quote = _seed_expired_quote(session_factory)
+
+    response = test_client.get(f"/quotes/{quote.id}/bookability")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "quoteId": quote.quote_reference,
+        "bookable": False,
+        "status": "EXPIRED",
+        "reason": "VALIDITY_WINDOW_EXPIRED",
+        "expired": True,
+        "validUntil": quote.valid_until.isoformat(),
+    }
+
+
+def test_get_quote_bookability_returns_404_when_missing(client) -> None:
+    test_client, _ = client
+
+    response = test_client.get("/quotes/missing-quote/bookability")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Quote not found"}
+
+
 def test_scenario_peak_season_quote_returns_the_documented_commercial_payload(client) -> None:
     """Scenario: Create a quote on a seeded peak-season lane
 
@@ -390,6 +454,26 @@ def test_scenario_quote_lookup_accepts_uuid_and_quote_reference(client) -> None:
     assert lookup_by_id.json()["quoteReference"] == quote.quote_reference
     assert lookup_by_reference.status_code == 200
     assert lookup_by_reference.json() == lookup_by_id.json()
+
+
+def test_scenario_booking_can_validate_quote_bookability(client) -> None:
+    """Scenario: Validate whether a stored quote can still be booked
+
+    Given a quote has been stored by the service
+    When Booking asks for the quote's bookability status
+    Then the API explains whether the quote is still usable from its validity window
+    """
+
+    test_client, session_factory = client
+    quote = _seed_quote(session_factory)
+
+    response = test_client.get(f"/quotes/{quote.quote_reference}/bookability")
+
+    assert response.status_code == 200
+    assert response.json()["quoteId"] == quote.quote_reference
+    assert response.json()["bookable"] is True
+    assert response.json()["status"] == "ACTIVE"
+    assert response.json()["reason"] == "VALIDITY_WINDOW_OPEN"
 
 
 def test_scenario_known_schedule_without_rate_returns_a_commercial_validation_error(client) -> None:

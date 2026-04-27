@@ -16,6 +16,7 @@ Provides a quoted price that can be referenced when placing a booking.
 |--------|------|-------------|
 | POST | /quotes | Request a new quote |
 | GET | /quotes/{id} | Retrieve a quote by internal ID or public quote reference |
+| GET | /quotes/{id}/bookability | Validate whether a stored quote is still usable for booking |
 
 ### POST /quotes - Request Body
 ```json
@@ -45,6 +46,18 @@ Provides a quoted price that can be referenced when placing a booking.
 }
 ```
 
+### GET /quotes/{id}/bookability - Response
+```json
+{
+  "quoteId": "QTE-2026-00108",
+  "bookable": true,
+  "status": "ACTIVE",
+  "reason": "VALIDITY_WINDOW_OPEN",
+  "expired": false,
+  "validUntil": "2026-04-07T23:59:59Z"
+}
+```
+
 ## Pricing Logic
 
 ### Base Freight Rate
@@ -62,6 +75,14 @@ Provides a quoted price that can be referenced when placing a booking.
 ### Quote Validity
 - Quotes are valid for **7 days** from creation by default
 - Expired quotes cannot be used to create bookings
+
+### Quote Lifecycle And Bookability
+- The current lifecycle is derived from the stored `validUntil` timestamp.
+- `ACTIVE` means the quote is still within its validity window and remains bookable.
+- `EXPIRED` means the validity window has elapsed and Booking must not use the quote for a new booking.
+- `GET /quotes/{id}/bookability` is the canonical Booking-time validation check in the current implementation.
+- The endpoint returns a machine-readable `reason` so downstream services can distinguish a still-open validity window (`VALIDITY_WINDOW_OPEN`) from an expired one (`VALIDITY_WINDOW_EXPIRED`).
+- Unknown quotes return `404 Quote not found`.
 
 ## Data Model (Quote)
 | Field | Type | Notes |
@@ -103,9 +124,10 @@ Provides a quoted price that can be referenced when placing a booking.
 ## Current Implementation Notes
 - `POST /quotes` returns the commercial quote payload only: `quoteId`, `validUntil`, `currency`, `lineItems`, and `totalAmount`.
 - `GET /quotes/{id}` accepts either the internal quote UUID or the human-readable `quoteReference` returned as `quoteId` during quote creation and returns the stored record, including both identifiers.
+- `GET /quotes/{id}/bookability` accepts the same identifiers as quote lookup and returns Booking-focused validation fields: `bookable`, `status`, `reason`, `expired`, and `validUntil`.
 - Quote references are generated sequentially within the current UTC year using the `QTE-YYYY-NNNNN` format.
 - A schedule lookup and a quoteable lane are not the same thing in the current implementation: a known `scheduleId` can still return `400` when no effective base rate exists for the route, equipment, and departure date.
-- These notes describe the present behavior of the generated code and should be folded into the business specification when they are confirmed as intended behavior.
+- Quote lifecycle state is not yet stored independently of validity; the service currently derives `ACTIVE` versus `EXPIRED` directly from `validUntil` at read time.
 
 ## Out of Scope (v1)
 ### Customer-specific contract rates / negotiated tariffs
