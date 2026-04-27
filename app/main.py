@@ -1,52 +1,22 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db import get_db, init_db
-from app.models import EquipmentType, Quote, RateTable, SurchargeRule
+from app.models import EquipmentType, PricingBasis, Quote, RateTable, SurchargeRule
 from app.seed import seed_reference_data
+from app.schedules import Schedule, ScheduleProvider, get_schedule_provider
 from app.surcharges import EquipmentSelection, calculate_surcharges, total_surcharges
 
 
 _MONEY_PRECISION = Decimal("0.01")
-
-
-@dataclass(frozen=True)
-class ScheduleStub:
-    schedule_id: str
-    origin_port: str
-    destination_port: str
-    departure_date: date
-
-
-SCHEDULES_API_STUB: dict[str, ScheduleStub] = {
-    "df62a7d2-a45e-4d4d-b3cb-b4af65435274": ScheduleStub(
-        schedule_id="df62a7d2-a45e-4d4d-b3cb-b4af65435274",
-        origin_port="NLRTM",
-        destination_port="USNYC",
-        departure_date=date(2026, 8, 18),
-    ),
-    "7a59721c-cd5d-4d9f-86a0-9aa9f7f6c47b": ScheduleStub(
-        schedule_id="7a59721c-cd5d-4d9f-86a0-9aa9f7f6c47b",
-        origin_port="CNSHA",
-        destination_port="DEHAM",
-        departure_date=date(2026, 6, 5),
-    ),
-    "1ce1ab21-9d58-4a6d-b867-afc93098352f": ScheduleStub(
-        schedule_id="1ce1ab21-9d58-4a6d-b867-afc93098352f",
-        origin_port="BRSSZ",
-        destination_port="USLAX",
-        departure_date=date(2026, 7, 12),
-    ),
-}
 
 
 class QuoteEquipmentRequest(BaseModel):
@@ -85,10 +55,14 @@ def _serialize_quote(quote: Quote) -> dict[str, object]:
     return {
         "id": quote.id,
         "quoteReference": quote.quote_reference,
+        "lifecycleState": quote.lifecycle_state.value,
         "scheduleId": quote.schedule_id,
+        "scheduleSnapshot": quote.schedule_snapshot,
         "equipment": quote.equipment,
         "cargoWeightKg": _serialize_decimal(quote.cargo_weight_kg),
         "currency": quote.currency,
+        "pricingBasis": quote.pricing_basis.value,
+        "idempotencyKey": quote.idempotency_key,
         "lineItems": [
             {
                 "description": item["description"],
@@ -104,7 +78,8 @@ def _serialize_quote(quote: Quote) -> dict[str, object]:
 
 def _serialize_created_quote(quote: Quote) -> dict[str, object]:
     return {
-        "quoteId": quote.quote_reference,
+        "id": quote.id,
+        "quoteReference": quote.quote_reference,
         "validUntil": quote.valid_until.isoformat(),
         "currency": quote.currency,
         "lineItems": [
@@ -118,8 +93,8 @@ def _serialize_created_quote(quote: Quote) -> dict[str, object]:
     }
 
 
-def _get_schedule(schedule_id: str) -> ScheduleStub:
-    schedule = SCHEDULES_API_STUB.get(schedule_id)
+def _get_schedule(schedule_id: str, schedule_provider: ScheduleProvider) -> Schedule:
+    schedule = schedule_provider.get_schedule(schedule_id)
     if schedule is None:
         raise HTTPException(status_code=404, detail="Schedule not found")
 
@@ -137,7 +112,7 @@ def _generate_quote_reference(db: Session) -> str:
 def _load_rate_table(
     *,
     db: Session,
-    schedule: ScheduleStub,
+    schedule: Schedule,
     equipment_types: set[EquipmentType],
 ) -> dict[EquipmentType, RateTable]:
     rate_rows = db.scalars(
@@ -162,8 +137,12 @@ def _load_rate_table(
 
 
 @app.post("/quotes", status_code=201)
-def create_quote(payload: CreateQuoteRequest, db: Session = Depends(get_db)) -> dict[str, object]:
-    schedule = _get_schedule(payload.schedule_id)
+def create_quote(
+    payload: CreateQuoteRequest,
+    db: Session = Depends(get_db),
+    schedule_provider: ScheduleProvider = Depends(get_schedule_provider),
+) -> dict[str, object]:
+    schedule = _get_schedule(payload.schedule_id, schedule_provider)
     rates_by_type = _load_rate_table(
         db=db,
         schedule=schedule,
@@ -197,13 +176,21 @@ def create_quote(payload: CreateQuoteRequest, db: Session = Depends(get_db)) -> 
     )
     line_items = base_line_items + [item.as_dict() for item in surcharge_line_items]
     total_amount = (base_total + total_surcharges(surcharge_line_items)).quantize(_MONEY_PRECISION)
+    schedule_snapshot = {
+        "scheduleId": schedule.schedule_id,
+        "originPort": schedule.origin_port,
+        "destinationPort": schedule.destination_port,
+        "departureDate": schedule.departure_date.isoformat(),
+    }
 
     quote = Quote(
         quote_reference=_generate_quote_reference(db),
         schedule_id=payload.schedule_id,
+        schedule_snapshot=schedule_snapshot,
         equipment=equipment_payload,
         cargo_weight_kg=payload.cargo_weight_kg.quantize(_MONEY_PRECISION),
         currency="USD",
+        pricing_basis=PricingBasis.PUBLIC_TARIFF,
         line_items=line_items,
         total_amount=total_amount,
     )
@@ -216,7 +203,18 @@ def create_quote(payload: CreateQuoteRequest, db: Session = Depends(get_db)) -> 
 
 @app.get("/quotes/{quote_id}")
 def get_quote(quote_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
-    quote = db.scalar(select(Quote).where(Quote.id == quote_id))
+    quote = db.scalar(
+        select(Quote).where(or_(Quote.id == quote_id, Quote.quote_reference == quote_id))
+    )
+    if quote is None:
+        raise HTTPException(status_code=404, detail="Quote not found")
+
+    return _serialize_quote(quote)
+
+
+@app.get("/quotes/reference/{quote_reference}")
+def get_quote_by_reference(quote_reference: str, db: Session = Depends(get_db)) -> dict[str, object]:
+    quote = db.scalar(select(Quote).where(Quote.quote_reference == quote_reference))
     if quote is None:
         raise HTTPException(status_code=404, detail="Quote not found")
 

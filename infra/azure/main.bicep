@@ -73,11 +73,11 @@ resource webApp 'Microsoft.Web/sites@2023-12-01' = {
   name: webAppName
   location: location
   kind: 'app,linux,container'
-  httpsOnly: true
   identity: {
     type: 'SystemAssigned'
   }
   properties: {
+    httpsOnly: true
     serverFarmId: appServicePlan.id
     siteConfig: {
       linuxFxVersion: 'DOCKER|${containerImage}'

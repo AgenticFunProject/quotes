@@ -13,8 +13,9 @@ from sqlalchemy.pool import StaticPool
 from app import db
 from app.db import Base, get_db
 from app.main import app
-from app.models import Quote
+from app.models import PricingBasis, Quote, QuoteLifecycleState
 from app.seed import seed_reference_data
+from app.schedules import Schedule, get_schedule_provider
 
 
 @pytest.fixture()
@@ -66,7 +67,8 @@ def test_create_quote_returns_itemized_quote_and_persists_it(client) -> None:
 
     assert response.status_code == 201
     assert response.json() == {
-        "quoteId": response.json()["quoteId"],
+        "id": response.json()["id"],
+        "quoteReference": response.json()["quoteReference"],
         "validUntil": response.json()["validUntil"],
         "currency": "USD",
         "lineItems": [
@@ -78,20 +80,31 @@ def test_create_quote_returns_itemized_quote_and_persists_it(client) -> None:
         ],
         "totalAmount": 4350.0,
     }
-    assert response.json()["quoteId"].endswith("-00001")
-    assert response.json()["quoteId"].startswith("QTE-")
+    assert response.json()["id"]
+    assert response.json()["quoteReference"].endswith("-00001")
+    assert response.json()["quoteReference"].startswith("QTE-")
 
     valid_until = datetime.fromisoformat(response.json()["validUntil"])
 
     with session_factory() as session:
-        stored_quote = session.scalar(select(Quote).where(Quote.quote_reference == response.json()["quoteId"]))
+        stored_quote = session.scalar(select(Quote).where(Quote.id == response.json()["id"]))
 
     assert stored_quote is not None
     created_at = stored_quote.created_at
     assert valid_until > created_at
     assert timedelta(days=6, hours=23) <= valid_until - created_at <= timedelta(days=7, minutes=1)
-    assert stored_quote.quote_reference == response.json()["quoteId"]
+    assert stored_quote.id == response.json()["id"]
+    assert stored_quote.quote_reference == response.json()["quoteReference"]
     assert float(stored_quote.total_amount) == response.json()["totalAmount"]
+    assert stored_quote.lifecycle_state == QuoteLifecycleState.ISSUED
+    assert stored_quote.pricing_basis == PricingBasis.PUBLIC_TARIFF
+    assert stored_quote.idempotency_key is None
+    assert stored_quote.schedule_snapshot == {
+        "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+        "originPort": "NLRTM",
+        "destinationPort": "USNYC",
+        "departureDate": "2026-08-18",
+    }
 
 
 def test_create_quote_increments_quote_reference_sequence(client) -> None:
@@ -116,8 +129,8 @@ def test_create_quote_increments_quote_reference_sequence(client) -> None:
 
     assert first_response.status_code == 201
     assert second_response.status_code == 201
-    assert first_response.json()["quoteId"].endswith("-00001")
-    assert second_response.json()["quoteId"].endswith("-00002")
+    assert first_response.json()["quoteReference"].endswith("-00001")
+    assert second_response.json()["quoteReference"].endswith("-00002")
 
 
 def test_create_quote_returns_404_for_unknown_schedule(client) -> None:
@@ -134,6 +147,41 @@ def test_create_quote_returns_404_for_unknown_schedule(client) -> None:
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Schedule not found"}
+
+
+def test_create_quote_uses_schedule_provider_dependency(client) -> None:
+    test_client, _ = client
+
+    class StubScheduleProvider:
+        def get_schedule(self, schedule_id: str) -> Schedule | None:
+            if schedule_id != "provider-schedule":
+                return None
+
+            return Schedule(
+                schedule_id=schedule_id,
+                origin_port="NLRTM",
+                destination_port="USNYC",
+                departure_date=datetime(2026, 8, 18).date(),
+            )
+
+    app.dependency_overrides[get_schedule_provider] = lambda: StubScheduleProvider()
+
+    response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "provider-schedule",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["lineItems"] == [
+        {"description": "Ocean Freight - 20FT x 1", "amount": 950.0},
+        {"description": "Bunker Adjustment Factor (BAF)", "amount": 80.0},
+        {"description": "Port Congestion Surcharge - Destination USNYC", "amount": 150.0},
+        {"description": "Peak Season Surcharge", "amount": 120.0},
+    ]
 
 
 def test_create_quote_returns_400_when_rate_table_is_missing_for_schedule(client) -> None:
@@ -223,17 +271,24 @@ def test_create_quote_rejects_invalid_payloads(client, payload: dict[str, object
 
     assert response.status_code == 422
     assert any(error_field in ".".join(str(part) for part in error["loc"]) for error in response.json()["detail"])
-
-
 def _seed_quote(session_factory: sessionmaker[Session]) -> Quote:
     with session_factory() as session:
         quote = Quote(
             id="53c362b2-1229-4ea5-a24a-9891fb1f509d",
             quote_reference="QTE-2026-00108",
+            lifecycle_state=QuoteLifecycleState.ISSUED,
             schedule_id="df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            schedule_snapshot={
+                "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+                "originPort": "NLRTM",
+                "destinationPort": "USNYC",
+                "departureDate": "2026-08-18",
+            },
             equipment=[{"type": "20FT", "quantity": 2}],
             cargo_weight_kg=Decimal("18000.00"),
             currency="USD",
+            pricing_basis=PricingBasis.PUBLIC_TARIFF,
+            idempotency_key="booking-request-42",
             line_items=[
                 {"description": "Ocean Freight - 20FT x 2", "amount": 1800.0},
                 {"description": "Bunker Adjustment Factor (BAF)", "amount": 320.0},
@@ -256,10 +311,19 @@ def test_get_quote_by_uuid_returns_full_quote(client) -> None:
     assert response.json() == {
         "id": quote.id,
         "quoteReference": "QTE-2026-00108",
+        "lifecycleState": "ISSUED",
         "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+        "scheduleSnapshot": {
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "originPort": "NLRTM",
+            "destinationPort": "USNYC",
+            "departureDate": "2026-08-18",
+        },
         "equipment": [{"type": "20FT", "quantity": 2}],
         "cargoWeightKg": 18000.0,
         "currency": "USD",
+        "pricingBasis": "PUBLIC_TARIFF",
+        "idempotencyKey": "booking-request-42",
         "lineItems": [
             {"description": "Ocean Freight - 20FT x 2", "amount": 1800.0},
             {"description": "Bunker Adjustment Factor (BAF)", "amount": 320.0},
@@ -270,14 +334,70 @@ def test_get_quote_by_uuid_returns_full_quote(client) -> None:
     }
 
 
-def test_get_quote_by_reference_returns_404(client) -> None:
+def test_get_quote_by_reference_returns_full_quote(client) -> None:
     test_client, session_factory = client
-    _seed_quote(session_factory)
+    quote = _seed_quote(session_factory)
 
     response = test_client.get("/quotes/QTE-2026-00108")
 
-    assert response.status_code == 404
-    assert response.json() == {"detail": "Quote not found"}
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": quote.id,
+        "quoteReference": "QTE-2026-00108",
+        "lifecycleState": "ISSUED",
+        "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+        "scheduleSnapshot": {
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "originPort": "NLRTM",
+            "destinationPort": "USNYC",
+            "departureDate": "2026-08-18",
+        },
+        "equipment": [{"type": "20FT", "quantity": 2}],
+        "cargoWeightKg": 18000.0,
+        "currency": "USD",
+        "pricingBasis": "PUBLIC_TARIFF",
+        "idempotencyKey": "booking-request-42",
+        "lineItems": [
+            {"description": "Ocean Freight - 20FT x 2", "amount": 1800.0},
+            {"description": "Bunker Adjustment Factor (BAF)", "amount": 320.0},
+        ],
+        "totalAmount": 2120.0,
+        "validUntil": quote.valid_until.isoformat(),
+        "createdAt": quote.created_at.isoformat(),
+    }
+
+
+def test_get_quote_by_quote_reference_returns_full_quote(client) -> None:
+    test_client, session_factory = client
+    quote = _seed_quote(session_factory)
+
+    response = test_client.get(f"/quotes/reference/{quote.quote_reference}")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": quote.id,
+        "quoteReference": quote.quote_reference,
+        "lifecycleState": "ISSUED",
+        "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+        "scheduleSnapshot": {
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "originPort": "NLRTM",
+            "destinationPort": "USNYC",
+            "departureDate": "2026-08-18",
+        },
+        "equipment": [{"type": "20FT", "quantity": 2}],
+        "cargoWeightKg": 18000.0,
+        "currency": "USD",
+        "pricingBasis": "PUBLIC_TARIFF",
+        "idempotencyKey": "booking-request-42",
+        "lineItems": [
+            {"description": "Ocean Freight - 20FT x 2", "amount": 1800.0},
+            {"description": "Bunker Adjustment Factor (BAF)", "amount": 320.0},
+        ],
+        "totalAmount": 2120.0,
+        "validUntil": quote.valid_until.isoformat(),
+        "createdAt": quote.created_at.isoformat(),
+    }
 
 
 def test_get_quote_returns_404_when_missing(client) -> None:
@@ -287,3 +407,80 @@ def test_get_quote_returns_404_when_missing(client) -> None:
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Quote not found"}
+
+
+def test_scenario_peak_season_quote_returns_the_documented_commercial_payload(client) -> None:
+    """Scenario: Create a quote on a seeded peak-season lane
+
+    Given the service has the seeded schedule and reference pricing data
+    When a client requests a quote for the Rotterdam to New York schedule
+    Then the API returns the commercial quote response shape documented in v1
+    And the response includes the seasonal and congestion surcharges for that lane
+    """
+
+    test_client, _ = client
+
+    response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+
+    assert response.status_code == 201
+    assert set(response.json()) == {"id", "quoteReference", "validUntil", "currency", "lineItems", "totalAmount"}
+    assert response.json()["quoteReference"].startswith("QTE-")
+    assert response.json()["lineItems"] == [
+        {"description": "Ocean Freight - 20FT x 1", "amount": 950.0},
+        {"description": "Bunker Adjustment Factor (BAF)", "amount": 80.0},
+        {"description": "Port Congestion Surcharge - Destination USNYC", "amount": 150.0},
+        {"description": "Peak Season Surcharge", "amount": 120.0},
+    ]
+    assert response.json()["totalAmount"] == 1300.0
+
+
+def test_scenario_quote_lookup_accepts_uuid_and_quote_reference(client) -> None:
+    """Scenario: Retrieve a stored quote
+
+    Given a quote has been stored by the service
+    When the client looks it up by internal UUID or public quote reference
+    Then the API returns the full stored quote record
+    """
+
+    test_client, session_factory = client
+    quote = _seed_quote(session_factory)
+
+    lookup_by_id = test_client.get(f"/quotes/{quote.id}")
+    lookup_by_reference = test_client.get(f"/quotes/{quote.quote_reference}")
+
+    assert lookup_by_id.status_code == 200
+    assert lookup_by_id.json()["id"] == quote.id
+    assert lookup_by_id.json()["quoteReference"] == quote.quote_reference
+    assert lookup_by_reference.status_code == 200
+    assert lookup_by_reference.json() == lookup_by_id.json()
+
+
+def test_scenario_known_schedule_without_rate_returns_a_commercial_validation_error(client) -> None:
+    """Scenario: Request a quote for a seeded schedule without an effective rate
+
+    Given the service recognizes the schedule identifier
+    And no seeded base freight row exists for that route and equipment
+    When the client requests a quote
+    Then the API rejects the request with a commercial validation error
+    """
+
+    test_client, _ = client
+
+    response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "1ce1ab21-9d58-4a6d-b867-afc93098352f",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 10000,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "No rate available for 20FT on selected schedule"}

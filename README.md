@@ -27,6 +27,11 @@ The API will be available at <http://localhost:8000>.
 
 Interactive docs: <http://localhost:8000/docs>
 
+Planning docs for the next iterations live under `specification/`:
+
+- `specification/roadmap.md` for phased feature and architecture work
+- `specification/adr-001-eventing-strategy.md` for the eventing decision record
+
 The service uses SQLite by default, creates its tables on startup in `db.sqlite`,
 and seeds reference rates and surcharge rules used by `POST /quotes`.
 
@@ -36,8 +41,11 @@ and seeds reference rates and surcharge rules used by `POST /quotes`.
 - `POST /quotes` validates the request, resolves a seeded schedule, applies base
   freight plus surcharge rules, persists the quote, and returns a commercial
   response with line items and a 7-day validity window.
-- `GET /quotes/{quote_id}` returns the stored quote by UUID. Quote references
-  such as `QTE-2026-00001` are not valid lookup keys for this endpoint.
+- `GET /quotes/{quote_id}` returns the stored quote by either the internal UUID
+  or the public quote reference returned as `quoteId` from `POST /quotes`.
+- A known schedule can still return `400` from `POST /quotes` when the seeded
+  rate table does not contain an effective row for the selected route,
+  departure date, and equipment combination.
 
 ### Seeded Demo Data
 
@@ -54,6 +62,10 @@ Reference data also seeds:
 - port congestion surcharges keyed by origin or destination port
 - a heavy-cargo surcharge based on cargo weight per TEU
 - a peak-season surcharge active from `2026-08-01` through `2026-09-30`
+
+The seeded `BRSSZ -> USLAX` schedule is intentionally missing matching rate rows,
+so it demonstrates the API's commercial validation path for unsupported quoted
+lanes.
 
 ## Run Locally on Linux
 
@@ -87,11 +99,27 @@ curl -X POST http://localhost:8000/quotes \
   }'
 ```
 
-Retrieve a previously created quote by UUID:
+Retrieve a previously created quote by UUID or public quote reference:
 
 ```bash
 curl http://localhost:8000/quotes/<quote-uuid>
 ```
+
+```bash
+curl http://localhost:8000/quotes/QTE-2026-00001
+```
+
+## Bruno Collection
+
+A Bruno-compatible API collection is available under
+`bruno/quotes-service/`.
+
+- Import or open that folder directly in Bruno.
+- Use the `local` environment for a local FastAPI instance.
+- Use the `azure-dev` environment for the currently verified Azure App Service
+  deployment.
+
+See `bruno/quotes-service/README.md` for request details.
 
 ## Test
 
@@ -122,6 +150,9 @@ application deployment:
 The deployment target is a containerized Linux App Service. The app persists its
 SQLite database at `/home/site/data/quotes.db`, which uses App Service's
 persistent storage.
+
+The application `Dockerfile` uses an MCR-hosted Python 3.11 base image so the
+remote `az acr build` step does not depend on unauthenticated Docker Hub pulls.
 
 ### GitHub Configuration
 

@@ -27,6 +27,7 @@ jobs:
         shell: bash
         run: |
           if command -v az >/dev/null 2>&1; then
+            az version
             exit 0
           fi
 
@@ -35,7 +36,7 @@ jobs:
           elif [ "$(id -u)" -eq 0 ]; then
             curl -sL https://aka.ms/InstallAzureCLIDeb | bash
           else
-            echo "Azure CLI is missing and this runner cannot elevate to install it." >&2
+            echo "Azure CLI is not installed and sudo is unavailable." >&2
             exit 1
           fi
 
