@@ -344,10 +344,19 @@ def test_get_quote_by_reference_returns_full_quote(client) -> None:
     assert response.json() == {
         "id": quote.id,
         "quoteReference": "QTE-2026-00108",
+        "lifecycleState": "ISSUED",
         "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+        "scheduleSnapshot": {
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "originPort": "NLRTM",
+            "destinationPort": "USNYC",
+            "departureDate": "2026-08-18",
+        },
         "equipment": [{"type": "20FT", "quantity": 2}],
         "cargoWeightKg": 18000.0,
         "currency": "USD",
+        "pricingBasis": "PUBLIC_TARIFF",
+        "idempotencyKey": "booking-request-42",
         "lineItems": [
             {"description": "Ocean Freight - 20FT x 2", "amount": 1800.0},
             {"description": "Bunker Adjustment Factor (BAF)", "amount": 320.0},
@@ -368,10 +377,19 @@ def test_get_quote_by_quote_reference_returns_full_quote(client) -> None:
     assert response.json() == {
         "id": quote.id,
         "quoteReference": quote.quote_reference,
+        "lifecycleState": "ISSUED",
         "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+        "scheduleSnapshot": {
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "originPort": "NLRTM",
+            "destinationPort": "USNYC",
+            "departureDate": "2026-08-18",
+        },
         "equipment": [{"type": "20FT", "quantity": 2}],
         "cargoWeightKg": 18000.0,
         "currency": "USD",
+        "pricingBasis": "PUBLIC_TARIFF",
+        "idempotencyKey": "booking-request-42",
         "lineItems": [
             {"description": "Ocean Freight - 20FT x 2", "amount": 1800.0},
             {"description": "Bunker Adjustment Factor (BAF)", "amount": 320.0},
@@ -412,8 +430,8 @@ def test_scenario_peak_season_quote_returns_the_documented_commercial_payload(cl
     )
 
     assert response.status_code == 201
-    assert set(response.json()) == {"quoteId", "validUntil", "currency", "lineItems", "totalAmount"}
-    assert response.json()["quoteId"].startswith("QTE-")
+    assert set(response.json()) == {"id", "quoteReference", "validUntil", "currency", "lineItems", "totalAmount"}
+    assert response.json()["quoteReference"].startswith("QTE-")
     assert response.json()["lineItems"] == [
         {"description": "Ocean Freight - 20FT x 1", "amount": 950.0},
         {"description": "Bunker Adjustment Factor (BAF)", "amount": 80.0},
