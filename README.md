@@ -41,8 +41,8 @@ and seeds reference rates and surcharge rules used by `POST /quotes`.
 - `POST /quotes` validates the request, resolves a seeded schedule, applies base
   freight plus surcharge rules, persists the quote, and returns a commercial
   response with line items and a 7-day validity window.
-- `GET /quotes/{quote_id}` returns the stored quote by UUID. Quote references
-  such as `QTE-2026-00001` are not valid lookup keys for this endpoint.
+- `GET /quotes/{quote_id}` returns the stored quote by either the internal UUID
+  or the public quote reference returned as `quoteId` from `POST /quotes`.
 - A known schedule can still return `400` from `POST /quotes` when the seeded
   rate table does not contain an effective row for the selected route,
   departure date, and equipment combination.
@@ -99,10 +99,14 @@ curl -X POST http://localhost:8000/quotes \
   }'
 ```
 
-Retrieve a previously created quote by UUID:
+Retrieve a previously created quote by UUID or public quote reference:
 
 ```bash
 curl http://localhost:8000/quotes/<quote-uuid>
+```
+
+```bash
+curl http://localhost:8000/quotes/QTE-2026-00001
 ```
 
 ## Test

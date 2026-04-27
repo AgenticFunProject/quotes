@@ -306,14 +306,28 @@ def test_get_quote_by_uuid_returns_full_quote(client) -> None:
     }
 
 
-def test_get_quote_by_reference_returns_404(client) -> None:
+def test_get_quote_by_reference_returns_full_quote(client) -> None:
     test_client, session_factory = client
-    _seed_quote(session_factory)
+    quote = _seed_quote(session_factory)
 
     response = test_client.get("/quotes/QTE-2026-00108")
 
-    assert response.status_code == 404
-    assert response.json() == {"detail": "Quote not found"}
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": quote.id,
+        "quoteReference": "QTE-2026-00108",
+        "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+        "equipment": [{"type": "20FT", "quantity": 2}],
+        "cargoWeightKg": 18000.0,
+        "currency": "USD",
+        "lineItems": [
+            {"description": "Ocean Freight - 20FT x 2", "amount": 1800.0},
+            {"description": "Bunker Adjustment Factor (BAF)", "amount": 320.0},
+        ],
+        "totalAmount": 2120.0,
+        "validUntil": quote.valid_until.isoformat(),
+        "createdAt": quote.created_at.isoformat(),
+    }
 
 
 def test_get_quote_returns_404_when_missing(client) -> None:
@@ -357,14 +371,12 @@ def test_scenario_peak_season_quote_returns_the_documented_commercial_payload(cl
     assert response.json()["totalAmount"] == 1300.0
 
 
-def test_scenario_quote_lookup_accepts_uuid_but_not_quote_reference(client) -> None:
+def test_scenario_quote_lookup_accepts_uuid_and_quote_reference(client) -> None:
     """Scenario: Retrieve a stored quote
 
     Given a quote has been stored by the service
-    When the client looks it up by internal UUID
+    When the client looks it up by internal UUID or public quote reference
     Then the API returns the full stored quote record
-    But when the client uses the human-readable quote reference
-    Then the API returns quote not found
     """
 
     test_client, session_factory = client
@@ -376,8 +388,8 @@ def test_scenario_quote_lookup_accepts_uuid_but_not_quote_reference(client) -> N
     assert lookup_by_id.status_code == 200
     assert lookup_by_id.json()["id"] == quote.id
     assert lookup_by_id.json()["quoteReference"] == quote.quote_reference
-    assert lookup_by_reference.status_code == 404
-    assert lookup_by_reference.json() == {"detail": "Quote not found"}
+    assert lookup_by_reference.status_code == 200
+    assert lookup_by_reference.json() == lookup_by_id.json()
 
 
 def test_scenario_known_schedule_without_rate_returns_a_commercial_validation_error(client) -> None:
