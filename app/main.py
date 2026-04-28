@@ -17,6 +17,10 @@ from app.surcharges import EquipmentSelection, calculate_surcharges, total_surch
 
 
 _MONEY_PRECISION = Decimal("0.01")
+_QUOTE_STATUS_ACTIVE = "ACTIVE"
+_QUOTE_STATUS_EXPIRED = "EXPIRED"
+_BOOKABILITY_REASON_OPEN = "VALIDITY_WINDOW_OPEN"
+_BOOKABILITY_REASON_EXPIRED = "VALIDITY_WINDOW_EXPIRED"
 
 
 class QuoteEquipmentRequest(BaseModel):
@@ -99,6 +103,38 @@ def _get_schedule(schedule_id: str, schedule_provider: ScheduleProvider) -> Sche
         raise HTTPException(status_code=404, detail="Schedule not found")
 
     return schedule
+
+
+def _get_quote_or_404(quote_id: str, db: Session) -> Quote:
+    quote = db.scalar(select(Quote).where(or_(Quote.id == quote_id, Quote.quote_reference == quote_id)))
+    if quote is None:
+        raise HTTPException(status_code=404, detail="Quote not found")
+
+    return quote
+
+
+def _normalize_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+
+    return dt.astimezone(timezone.utc)
+
+
+def _quote_is_expired(quote: Quote, *, now: datetime | None = None) -> bool:
+    effective_now = _normalize_utc(now or datetime.now(timezone.utc))
+    return _normalize_utc(quote.valid_until) <= effective_now
+
+
+def _serialize_bookability(quote: Quote) -> dict[str, object]:
+    expired = _quote_is_expired(quote)
+    return {
+        "quoteId": quote.quote_reference,
+        "bookable": not expired,
+        "status": _QUOTE_STATUS_EXPIRED if expired else _QUOTE_STATUS_ACTIVE,
+        "reason": _BOOKABILITY_REASON_EXPIRED if expired else _BOOKABILITY_REASON_OPEN,
+        "expired": expired,
+        "validUntil": quote.valid_until.isoformat(),
+    }
 
 
 def _generate_quote_reference(db: Session) -> str:
@@ -203,13 +239,7 @@ def create_quote(
 
 @app.get("/quotes/{quote_id}")
 def get_quote(quote_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
-    quote = db.scalar(
-        select(Quote).where(or_(Quote.id == quote_id, Quote.quote_reference == quote_id))
-    )
-    if quote is None:
-        raise HTTPException(status_code=404, detail="Quote not found")
-
-    return _serialize_quote(quote)
+    return _serialize_quote(_get_quote_or_404(quote_id, db))
 
 
 @app.get("/quotes/reference/{quote_reference}")
@@ -219,3 +249,8 @@ def get_quote_by_reference(quote_reference: str, db: Session = Depends(get_db)) 
         raise HTTPException(status_code=404, detail="Quote not found")
 
     return _serialize_quote(quote)
+
+
+@app.get("/quotes/{quote_id}/bookability")
+def get_quote_bookability(quote_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
+    return _serialize_bookability(_get_quote_or_404(quote_id, db))

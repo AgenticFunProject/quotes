@@ -16,6 +16,7 @@ Provides a quoted price that can be referenced when placing a booking.
 |--------|------|-------------|
 | POST | /quotes | Request a new quote |
 | GET | /quotes/{id} | Retrieve a quote by internal ID or public quote reference |
+| GET | /quotes/{id}/bookability | Validate whether a stored quote is still usable for booking |
 | GET | /quotes/reference/{quoteReference} | Retrieve a quote by human-readable quote reference |
 
 ### POST /quotes - Request Body
@@ -33,8 +34,8 @@ Provides a quoted price that can be referenced when placing a booking.
 ### POST /quotes - Response
 ```json
 {
-  "id": "53c362b2-1229-4ea5-a24a-9891fb1f509d",
   "quoteReference": "QTE-2026-00108",
+  "id": "53c362b2-1229-4ea5-a24a-9891fb1f509d",
   "validUntil": "2026-04-07T23:59:59Z",
   "currency": "USD",
   "lineItems": [
@@ -47,6 +48,18 @@ Provides a quoted price that can be referenced when placing a booking.
 }
 ```
 
+### GET /quotes/{id}/bookability - Response
+```json
+{
+  "quoteId": "QTE-2026-00108",
+  "bookable": true,
+  "status": "ACTIVE",
+  "reason": "VALIDITY_WINDOW_OPEN",
+  "expired": false,
+  "validUntil": "2026-04-07T23:59:59Z"
+}
+```
+
 ### GET /quotes/{id}
 - The `{id}` path parameter is the stored quote UUID.
 - This endpoint is intended for internal system-to-system lookup.
@@ -54,6 +67,10 @@ Provides a quoted price that can be referenced when placing a booking.
 ### GET /quotes/reference/{quoteReference}
 - The `{quoteReference}` path parameter is the business-facing quote reference in `QTE-YYYY-NNNNN` format.
 - This endpoint returns the same quote payload shape as `GET /quotes/{id}`.
+
+### GET /quotes/{id}/bookability
+- The `{id}` path parameter accepts either the internal quote UUID or the public quote reference.
+- This endpoint returns booking-specific validity information derived from the stored quote.
 
 ## Pricing Logic
 
@@ -111,11 +128,13 @@ Provides a quoted price that can be referenced when placing a booking.
 - The frontend is expected to consume the HTTP API exposed by this service. There is no frontend-specific integration layer in this repository yet.
 
 ## Current Implementation Notes
-- `POST /quotes` returns the commercial quote payload only: `quoteId`, `validUntil`, `currency`, `lineItems`, and `totalAmount`.
-- `GET /quotes/{id}` accepts either the internal quote UUID or the human-readable `quoteReference` returned as `quoteId` during quote creation and returns the stored record, including both identifiers.
+- `POST /quotes` returns the commercial quote payload: `id`, `quoteReference`, `validUntil`, `currency`, `lineItems`, and `totalAmount`.
+- `GET /quotes/{id}` accepts either the internal quote UUID or the human-readable `quoteReference` returned during quote creation and returns the stored record, including both identifiers.
 - `GET /quotes/reference/{quoteReference}` remains available as an explicit business-facing lookup path for the human-readable quote reference.
+- `GET /quotes/{id}/bookability` accepts the same identifiers as quote lookup and returns Booking-focused validation fields: `bookable`, `status`, `reason`, `expired`, and `validUntil`.
 - Quote references are generated sequentially within the current UTC year using the `QTE-YYYY-NNNNN` format.
 - A schedule lookup and a quoteable lane are not the same thing in the current implementation: a known `scheduleId` can still return `400` when no effective base rate exists for the route, equipment, and departure date.
+- Quote lifecycle state is stored independently on the quote record, but current bookability is still derived from `validUntil` at read time.
 - These notes describe the present behavior of the generated code and should be folded into the business specification when they are confirmed as intended behavior.
 
 ## Out of Scope (v1)

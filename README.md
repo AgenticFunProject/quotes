@@ -42,7 +42,9 @@ and seeds reference rates and surcharge rules used by `POST /quotes`.
   freight plus surcharge rules, persists the quote, and returns a commercial
   response with line items and a 7-day validity window.
 - `GET /quotes/{quote_id}` returns the stored quote by either the internal UUID
-  or the public quote reference returned as `quoteId` from `POST /quotes`.
+  or the public `quoteReference` returned from `POST /quotes`.
+- `GET /quotes/{quote_id}/bookability` returns whether a stored quote is still
+  within its validity window and therefore usable by Booking.
 - A known schedule can still return `400` from `POST /quotes` when the seeded
   rate table does not contain an effective row for the selected route,
   departure date, and equipment combination.
@@ -107,6 +109,12 @@ curl http://localhost:8000/quotes/<quote-uuid>
 
 ```bash
 curl http://localhost:8000/quotes/QTE-2026-00001
+```
+
+Check whether a stored quote is still bookable:
+
+```bash
+curl http://localhost:8000/quotes/QTE-2026-00001/bookability
 ```
 
 ## Bruno Collection
