@@ -127,6 +127,10 @@ Provides a quoted price that can be referenced when placing a booking.
 - Booking is currently a downstream consumer of quotes rather than an active runtime dependency. The service stores quotes with validity so Booking can reference them later.
 - The frontend is expected to consume the HTTP API exposed by this service. There is no frontend-specific integration layer in this repository yet.
 
+## Executable Scenarios
+- Human-readable quote scenarios live in `specification/quote-scenarios.md`.
+- The matching executable coverage lives in `tests/test_quotes_api.py`.
+
 ## Current Implementation Notes
 - `POST /quotes` returns the commercial quote payload: `id`, `quoteReference`, `validUntil`, `currency`, `lineItems`, and `totalAmount`.
 - `GET /quotes/{id}` accepts either the internal quote UUID or the human-readable `quoteReference` returned during quote creation and returns the stored record, including both identifiers.
