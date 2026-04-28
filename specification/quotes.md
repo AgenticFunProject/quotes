@@ -8,6 +8,7 @@ Provides a quoted price that can be referenced when placing a booking.
 - Accept a rate request (schedule + equipment + weight)
 - Apply freight rates and surcharges to produce a total price
 - Store quotes with a validity period so they can be referenced by Booking
+- Persist durable quote lifecycle events for downstream consumers through an outbox table
 - Return itemised price breakdown
 
 ## API Endpoints
@@ -104,6 +105,20 @@ Provides a quoted price that can be referenced when placing a booking.
 | validUntil | timestamp | |
 | createdAt | timestamp | |
 
+## Data Model (Quote Outbox Event)
+| Field | Type | Notes |
+|-------|------|-------|
+| id | UUID | Internal primary key |
+| aggregateType | string | Currently `quote` |
+| aggregateId | UUID | Internal quote ID |
+| eventType | string | Versioned lifecycle event name such as `quote.created` or `quote.expired` |
+| eventVersion | integer | Payload contract version |
+| payload | JSON object | Event body including quote identifiers, lifecycle state, schedule snapshot, and commercial totals |
+| occurredAt | timestamp | When the lifecycle event occurred |
+| publishedAt | timestamp nullable | Set by a future dispatcher after successful publication |
+| publishAttempts | integer | Retry counter for asynchronous dispatch |
+| lastError | string nullable | Last publish failure captured by the dispatcher |
+
 ## Data Model (Rate Table)
 | Field | Type | Notes |
 |-------|------|-------|
@@ -138,7 +153,9 @@ Provides a quoted price that can be referenced when placing a booking.
 - `GET /quotes/{id}/bookability` accepts the same identifiers as quote lookup and returns Booking-focused validation fields: `bookable`, `status`, `reason`, `expired`, and `validUntil`.
 - Quote references are generated sequentially within the current UTC year using the `QTE-YYYY-NNNNN` format.
 - A schedule lookup and a quoteable lane are not the same thing in the current implementation: a known `scheduleId` can still return `400` when no effective base rate exists for the route, equipment, and departure date.
-- Quote lifecycle state is stored independently on the quote record, but current bookability is still derived from `validUntil` at read time.
+- Quote lifecycle state is persisted on the quote row and synchronized with `validUntil` when a quote is read after expiry.
+- Quote lifecycle changes are written to `outbox_events` in the same transaction as the quote write that caused them.
+- The current implementation emits `quote.created` when a quote is created and `quote.expired` the first time an issued quote is observed past `validUntil`.
 - These notes describe the present behavior of the generated code and should be folded into the business specification when they are confirmed as intended behavior.
 
 ## Out of Scope (v1)

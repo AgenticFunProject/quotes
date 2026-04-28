@@ -85,6 +85,21 @@ class Quote(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)
 
 
+class OutboxEvent(Base):
+    __tablename__ = "outbox_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    aggregate_type: Mapped[str] = mapped_column(String(32), index=True)
+    aggregate_id: Mapped[str] = mapped_column(String(36), index=True)
+    event_type: Mapped[str] = mapped_column(String(64), index=True)
+    event_version: Mapped[int] = mapped_column(default=1)
+    payload: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, index=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    publish_attempts: Mapped[int] = mapped_column(default=0)
+    last_error: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+
 class RateTable(Base):
     __tablename__ = "rate_tables"
 

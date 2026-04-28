@@ -9,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from app.db import Base
 from app.models import (
     EquipmentType,
+    OutboxEvent,
     PortScope,
     PricingBasis,
     Quote,
@@ -24,7 +25,7 @@ def test_models_create_sqlite_tables() -> None:
     Base.metadata.create_all(bind=engine)
 
     inspector = inspect(engine)
-    assert set(inspector.get_table_names()) == {"quotes", "rate_tables", "surcharge_rules"}
+    assert set(inspector.get_table_names()) == {"outbox_events", "quotes", "rate_tables", "surcharge_rules"}
 
 
 def test_models_persist_records() -> None:
@@ -70,13 +71,24 @@ def test_models_persist_records() -> None:
             port_scope=PortScope.DESTINATION,
         )
     )
+    session.add(
+        OutboxEvent(
+            aggregate_type="quote",
+            aggregate_id="53c362b2-1229-4ea5-a24a-9891fb1f509d",
+            event_type="quote.created",
+            payload={"quoteReference": "QTE-2026-00001"},
+        )
+    )
     session.commit()
 
+    assert session.query(OutboxEvent).count() == 1
     assert session.query(Quote).count() == 1
     assert session.query(RateTable).count() == 1
     assert session.query(SurchargeRule).count() == 1
     stored_quote = session.query(Quote).one()
+    stored_event = session.query(OutboxEvent).one()
     assert stored_quote.lifecycle_state == QuoteLifecycleState.ISSUED
     assert stored_quote.schedule_snapshot["originPort"] == "NLRTM"
     assert stored_quote.pricing_basis == PricingBasis.PUBLIC_TARIFF
     assert stored_quote.idempotency_key == "request-123"
+    assert stored_event.event_type == "quote.created"
