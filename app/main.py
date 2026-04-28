@@ -10,7 +10,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db import get_db, init_db
-from app.models import EquipmentType, PricingBasis, Quote, RateTable, SurchargeRule
+from app.models import EquipmentType, OutboxEvent, PricingBasis, Quote, QuoteLifecycleState, RateTable, SurchargeRule
 from app.seed import seed_reference_data
 from app.schedules import Schedule, ScheduleProvider, get_schedule_provider
 from app.surcharges import EquipmentSelection, calculate_surcharges, total_surcharges
@@ -21,6 +21,10 @@ _QUOTE_STATUS_ACTIVE = "ACTIVE"
 _QUOTE_STATUS_EXPIRED = "EXPIRED"
 _BOOKABILITY_REASON_OPEN = "VALIDITY_WINDOW_OPEN"
 _BOOKABILITY_REASON_EXPIRED = "VALIDITY_WINDOW_EXPIRED"
+_OUTBOX_AGGREGATE_QUOTE = "quote"
+_QUOTE_CREATED_EVENT = "quote.created"
+_QUOTE_EXPIRED_EVENT = "quote.expired"
+_OUTBOX_EVENT_VERSION = 1
 
 
 class QuoteEquipmentRequest(BaseModel):
@@ -97,6 +101,43 @@ def _serialize_created_quote(quote: Quote) -> dict[str, object]:
     }
 
 
+def _build_quote_event_payload(quote: Quote) -> dict[str, object]:
+    return {
+        "quoteId": quote.id,
+        "quoteReference": quote.quote_reference,
+        "lifecycleState": quote.lifecycle_state.value,
+        "scheduleId": quote.schedule_id,
+        "scheduleSnapshot": quote.schedule_snapshot,
+        "equipment": quote.equipment,
+        "cargoWeightKg": _serialize_decimal(quote.cargo_weight_kg),
+        "currency": quote.currency,
+        "pricingBasis": quote.pricing_basis.value,
+        "lineItems": quote.line_items,
+        "totalAmount": _serialize_decimal(quote.total_amount),
+        "validUntil": quote.valid_until.isoformat(),
+        "createdAt": quote.created_at.isoformat(),
+    }
+
+
+def _enqueue_quote_event(
+    db: Session,
+    *,
+    quote: Quote,
+    event_type: str,
+    occurred_at: datetime | None = None,
+) -> None:
+    db.add(
+        OutboxEvent(
+            aggregate_type=_OUTBOX_AGGREGATE_QUOTE,
+            aggregate_id=quote.id,
+            event_type=event_type,
+            event_version=_OUTBOX_EVENT_VERSION,
+            payload=_build_quote_event_payload(quote),
+            occurred_at=_normalize_utc(occurred_at or datetime.now(timezone.utc)),
+        )
+    )
+
+
 def _get_schedule(schedule_id: str, schedule_provider: ScheduleProvider) -> Schedule:
     schedule = schedule_provider.get_schedule(schedule_id)
     if schedule is None:
@@ -125,8 +166,23 @@ def _quote_is_expired(quote: Quote, *, now: datetime | None = None) -> bool:
     return _normalize_utc(quote.valid_until) <= effective_now
 
 
+def _sync_quote_lifecycle(quote: Quote, db: Session) -> Quote:
+    if quote.lifecycle_state != QuoteLifecycleState.ISSUED:
+        return quote
+
+    if not _quote_is_expired(quote):
+        return quote
+
+    quote.lifecycle_state = QuoteLifecycleState.EXPIRED
+    _enqueue_quote_event(db, quote=quote, event_type=_QUOTE_EXPIRED_EVENT)
+    db.add(quote)
+    db.commit()
+    db.refresh(quote)
+    return quote
+
+
 def _serialize_bookability(quote: Quote) -> dict[str, object]:
-    expired = _quote_is_expired(quote)
+    expired = quote.lifecycle_state == QuoteLifecycleState.EXPIRED or _quote_is_expired(quote)
     return {
         "quoteId": quote.quote_reference,
         "bookable": not expired,
@@ -231,6 +287,8 @@ def create_quote(
         total_amount=total_amount,
     )
     db.add(quote)
+    db.flush()
+    _enqueue_quote_event(db, quote=quote, event_type=_QUOTE_CREATED_EVENT, occurred_at=quote.created_at)
     db.commit()
     db.refresh(quote)
 
@@ -239,7 +297,7 @@ def create_quote(
 
 @app.get("/quotes/{quote_id}")
 def get_quote(quote_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
-    return _serialize_quote(_get_quote_or_404(quote_id, db))
+    return _serialize_quote(_sync_quote_lifecycle(_get_quote_or_404(quote_id, db), db))
 
 
 @app.get("/quotes/reference/{quote_reference}")
@@ -248,9 +306,9 @@ def get_quote_by_reference(quote_reference: str, db: Session = Depends(get_db)) 
     if quote is None:
         raise HTTPException(status_code=404, detail="Quote not found")
 
-    return _serialize_quote(quote)
+    return _serialize_quote(_sync_quote_lifecycle(quote, db))
 
 
 @app.get("/quotes/{quote_id}/bookability")
 def get_quote_bookability(quote_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
-    return _serialize_bookability(_get_quote_or_404(quote_id, db))
+    return _serialize_bookability(_sync_quote_lifecycle(_get_quote_or_404(quote_id, db), db))

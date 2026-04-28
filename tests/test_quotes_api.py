@@ -13,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 from app import db
 from app.db import Base, get_db
 from app.main import app
-from app.models import PricingBasis, Quote, QuoteLifecycleState
+from app.models import OutboxEvent, PricingBasis, Quote, QuoteLifecycleState
 from app.seed import seed_reference_data
 from app.schedules import Schedule, get_schedule_provider
 
@@ -105,6 +105,21 @@ def test_create_quote_returns_itemized_quote_and_persists_it(client) -> None:
         "destinationPort": "USNYC",
         "departureDate": "2026-08-18",
     }
+
+    with session_factory() as session:
+        stored_event = session.scalar(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == response.json()["id"],
+                OutboxEvent.event_type == "quote.created",
+            )
+        )
+
+    assert stored_event is not None
+    assert stored_event.aggregate_type == "quote"
+    assert stored_event.event_version == 1
+    assert stored_event.payload["quoteId"] == response.json()["id"]
+    assert stored_event.payload["quoteReference"] == response.json()["quoteReference"]
+    assert stored_event.payload["lifecycleState"] == "ISSUED"
 
 
 def test_create_quote_increments_quote_reference_sequence(client) -> None:
@@ -472,6 +487,66 @@ def test_get_quote_bookability_returns_expired_quote_status(client) -> None:
     }
 
 
+def test_get_quote_materializes_expired_lifecycle_and_outbox_event(client) -> None:
+    test_client, session_factory = client
+    quote = _seed_quote(session_factory)
+
+    with session_factory() as session:
+        stored_quote = session.scalar(select(Quote).where(Quote.id == quote.id))
+        assert stored_quote is not None
+        stored_quote.valid_until = datetime.now(timezone.utc) - timedelta(minutes=5)
+        session.commit()
+
+    response = test_client.get(f"/quotes/{quote.id}")
+
+    assert response.status_code == 200
+    assert response.json()["lifecycleState"] == "EXPIRED"
+
+    with session_factory() as session:
+        refreshed_quote = session.scalar(select(Quote).where(Quote.id == quote.id))
+        expired_event = session.scalar(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == quote.id,
+                OutboxEvent.event_type == "quote.expired",
+            )
+        )
+
+    assert refreshed_quote is not None
+    assert refreshed_quote.lifecycle_state == QuoteLifecycleState.EXPIRED
+    assert expired_event is not None
+    assert expired_event.payload["quoteId"] == quote.id
+    assert expired_event.payload["lifecycleState"] == "EXPIRED"
+
+
+def test_get_quote_bookability_only_emits_one_expired_event(client) -> None:
+    test_client, session_factory = client
+    quote = _seed_quote(session_factory)
+
+    with session_factory() as session:
+        stored_quote = session.scalar(select(Quote).where(Quote.id == quote.id))
+        assert stored_quote is not None
+        stored_quote.valid_until = datetime.now(timezone.utc) - timedelta(minutes=5)
+        session.commit()
+
+    first_response = test_client.get(f"/quotes/{quote.id}/bookability")
+    second_response = test_client.get(f"/quotes/{quote.id}/bookability")
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert first_response.json()["status"] == "EXPIRED"
+    assert second_response.json()["status"] == "EXPIRED"
+
+    with session_factory() as session:
+        expired_events = session.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == quote.id,
+                OutboxEvent.event_type == "quote.expired",
+            )
+        ).all()
+
+    assert len(expired_events) == 1
+
+
 def test_get_quote_bookability_returns_404_when_missing(client) -> None:
     test_client, _ = client
 
@@ -530,6 +605,42 @@ def test_scenario_booking_can_validate_quote_bookability(client) -> None:
     assert response.json()["bookable"] is True
     assert response.json()["status"] == "ACTIVE"
     assert response.json()["reason"] == "VALIDITY_WINDOW_OPEN"
+
+
+def test_scenario_quote_lifecycle_events_are_written_to_the_outbox(client) -> None:
+    test_client, session_factory = client
+
+    create_response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    quote_id = create_response.json()["id"]
+    with session_factory() as session:
+        stored_quote = session.scalar(select(Quote).where(Quote.id == quote_id))
+        assert stored_quote is not None
+        stored_quote.valid_until = datetime.now(timezone.utc) - timedelta(minutes=5)
+        session.commit()
+
+    expired_response = test_client.get(f"/quotes/{quote_id}/bookability")
+
+    assert expired_response.status_code == 200
+    assert expired_response.json()["status"] == "EXPIRED"
+
+    with session_factory() as session:
+        event_types = session.scalars(
+            select(OutboxEvent.event_type)
+            .where(OutboxEvent.aggregate_id == quote_id)
+            .order_by(OutboxEvent.occurred_at)
+        ).all()
+
+    assert event_types == ["quote.created", "quote.expired"]
 
 
 def test_scenario_known_schedule_without_rate_returns_a_commercial_validation_error(client) -> None:

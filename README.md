@@ -45,6 +45,9 @@ and seeds reference rates and surcharge rules used by `POST /quotes`.
   or the public `quoteReference` returned from `POST /quotes`.
 - `GET /quotes/{quote_id}/bookability` returns whether a stored quote is still
   within its validity window and therefore usable by Booking.
+- Quote lifecycle writes also create durable rows in `outbox_events`, starting
+  with `quote.created` at creation time and `quote.expired` when an issued quote
+  is first observed past `validUntil`.
 - A known schedule can still return `400` from `POST /quotes` when the seeded
   rate table does not contain an effective row for the selected route,
   departure date, and equipment combination.

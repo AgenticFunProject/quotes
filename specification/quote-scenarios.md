@@ -23,6 +23,13 @@ When Booking asks for the quote's bookability status
 Then the API explains whether the quote is still usable from its validity
 window
 
+## Scenario: Persist quote lifecycle events in the outbox
+
+Given the service stores quote lifecycle state and outbox events together
+When a client creates a quote and that quote later expires
+Then the service persists `quote.created` and `quote.expired` events for the same quote
+And each event includes the quote identifiers and stored commercial snapshot
+
 ## Scenario: Request a quote for a seeded schedule without an effective rate
 
 Given the service recognizes the schedule identifier
