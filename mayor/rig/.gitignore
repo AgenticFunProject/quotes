@@ -5,3 +5,13 @@ __pycache__/
 state.json
 CLAUDE.md
 CLAUDE.local.md
+
+# Gas Town / beads local runtime state
+.beads/.local_version
+.beads/audit.log
+.beads/backup/
+.beads/dolt-server.port
+.beads/interactions.jsonl
+.beads/last-touched
+.beads/locks/
+.beads/metadata.json
