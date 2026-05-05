@@ -135,6 +135,49 @@ Provides a quoted price that can be referenced when placing a booking.
 - The `{id}` path parameter accepts either the internal quote UUID or the public quote reference.
 - This endpoint returns booking-specific validity information derived from the stored quote.
 
+## Local Demo Workflow
+
+Use this walkthrough when validating the current service behavior locally or
+when integrating a client against the seeded demo data.
+
+### Step 1: Create a quote on a supported seeded schedule
+
+Request:
+
+```json
+{
+  "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+  "equipment": [
+    { "type": "20FT", "quantity": 1 }
+  ],
+  "cargoWeightKg": 18000
+}
+```
+
+Expected result:
+
+- `POST /quotes` returns `201`.
+- The payload includes both the internal quote `id` and the public `quoteReference`.
+- The quote is priced from seeded `PUBLIC_TARIFF` data and includes the matched surcharge line items for that lane.
+
+### Step 2: Retrieve the stored quote through either lookup path
+
+- Use `GET /quotes/{id}` when the caller stores the internal UUID or when it already has the public quote reference and wants to use the primary lookup path.
+- Use `GET /quotes/reference/{quoteReference}` when the client wants an explicit business-facing route for the human-readable identifier.
+- Both endpoints return the same stored commercial record, including `scheduleSnapshot`, `pricingBasis`, `pricingProvenance`, `lineItems`, and `validUntil`.
+
+### Step 3: Validate bookability before Booking consumes the quote
+
+- Use `GET /quotes/{id}/bookability` with either the quote UUID or the public `quoteReference`.
+- The response returns Booking-oriented validity fields: `bookable`, `status`, `reason`, `expired`, and `validUntil`.
+- A quote can be retrievable even when it is no longer bookable; bookability is a separate lifecycle check from quote lookup.
+
+### Step 4: Verify the unsupported-lane validation path
+
+- The seeded schedule `1ce1ab21-9d58-4a6d-b867-afc93098352f` (`BRSSZ -> USLAX`) is intentionally present without a matching effective base-rate row.
+- `POST /quotes` for that schedule returns `400` when the request asks for a lane and equipment combination that the service recognizes operationally but cannot price commercially.
+- This path is useful for client testing because it proves the difference between "schedule exists" and "schedule is quoteable".
+
 ## Pricing Logic
 
 ### Base Freight Rate

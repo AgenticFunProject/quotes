@@ -9,6 +9,7 @@ Given the service has the seeded schedule and reference pricing data
 When a client requests a quote for the Rotterdam to New York schedule
 Then the API returns the commercial quote response shape documented in v1
 And the response includes the seasonal and congestion surcharges for that lane
+And the response includes both the internal quote UUID and the public quote reference
 
 ## Scenario: Retrieve a stored quote
 
@@ -16,6 +17,7 @@ Given a quote has been stored by the service
 When the client looks it up by internal UUID or public quote reference
 Then the API returns the full stored quote record
 And the stored quote includes the pricing basis and provenance snapshot used to create it
+And the explicit `/quotes/reference/{quoteReference}` path returns the same payload as the primary lookup path
 
 ## Scenario: Validate whether a stored quote can still be booked
 
@@ -23,6 +25,7 @@ Given a quote has been stored by the service
 When Booking asks for the quote's bookability status
 Then the API explains whether the quote is still usable from its validity
 window
+And the bookability check accepts the same quote UUID or quote reference used by quote lookup
 
 ## Scenario: Persist quote lifecycle events in the outbox
 

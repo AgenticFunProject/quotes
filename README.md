@@ -2,26 +2,28 @@
 
 A quotes API built with Python, FastAPI, and SQLite.
 
-## Requirements
+## Local Setup
+
+Requirements:
 
 - Python 3.11+
+- `venv` support for your Python install
+- `pip`
 
-## Setup
+From the repository root:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
+uvicorn app.main:app --reload
 ```
+
+If your Linux distribution does not expose `python`, use `python3` in the
+commands above instead.
 
 Set `DATABASE_URL` before starting the app if you want to persist data anywhere
 other than the default local SQLite file at `db.sqlite`.
-
-## Run
-
-```bash
-uvicorn app.main:app --reload
-```
 
 The API will be available at <http://localhost:8000>.
 
@@ -93,53 +95,99 @@ The seeded `BRSSZ -> USLAX` schedule is intentionally missing matching rate rows
 so it demonstrates the API's commercial validation path for unsupported quoted
 lanes.
 
-## Run Locally on Linux
+## Local Walkthrough
 
-Prerequisites:
+Use this flow when you want to verify the service locally from an operator or
+integrator point of view.
 
-- Python 3.11+
-- `venv` support for your Python install
-- `pip`
-
-From the repository root:
+### 1. Confirm the service is running
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-uvicorn app.main:app --reload
+curl http://localhost:8000/health
 ```
 
-If your Linux distribution does not expose `python`, use `python3` in the
-commands above instead.
+Expect a `200` response before trying the quote endpoints.
 
-## Example
+### 2. Create a quote on a seeded supported lane
 
 ```bash
 curl -X POST http://localhost:8000/quotes \
   -H 'Content-Type: application/json' \
   -d '{
     "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
-    "equipment": [{"type": "20FT", "quantity": 1}],
+    "equipment": [
+      {"type": "20FT", "quantity": 1}
+    ],
     "cargoWeightKg": 18000
   }'
 ```
 
-Retrieve a previously created quote by UUID or public quote reference:
+This seeded Rotterdam to New York schedule has matching base-rate and surcharge
+data, so the response should include both quote identifiers:
+
+- `id`: internal UUID for service-to-service lookup
+- `quoteReference`: human-readable `QTE-YYYY-NNNNN` reference for business flows
+
+Keep both values from the response for the next steps.
+
+### 3. Look up the stored quote
+
+Internal lookup by UUID:
 
 ```bash
 curl http://localhost:8000/quotes/<quote-uuid>
 ```
 
-```bash
-curl http://localhost:8000/quotes/QTE-2026-00001
-```
-
-Check whether a stored quote is still bookable:
+Business-facing lookup by quote reference:
 
 ```bash
-curl http://localhost:8000/quotes/QTE-2026-00001/bookability
+curl http://localhost:8000/quotes/reference/<quote-reference>
 ```
+
+The implementation also accepts the quote reference on `GET /quotes/{id}`, so
+either of the following works when you already have the business identifier:
+
+```bash
+curl http://localhost:8000/quotes/<quote-reference>
+curl http://localhost:8000/quotes/reference/<quote-reference>
+```
+
+All lookup paths return the stored schedule snapshot, line items, pricing basis,
+and pricing provenance used to explain how the quote was calculated.
+
+### 4. Check bookability before handing the quote to Booking
+
+```bash
+curl http://localhost:8000/quotes/<quote-reference>/bookability
+```
+
+The bookability response is the Booking-oriented validity check. It returns:
+
+- `bookable`: whether the quote can still be used
+- `status`: current lifecycle state such as `ACTIVE` or `EXPIRED`
+- `reason`: machine-readable explanation such as `VALIDITY_WINDOW_OPEN`
+- `validUntil`: expiry timestamp from the stored quote
+
+### 5. Exercise the unsupported-lane validation path
+
+The seeded `BRSSZ -> USLAX` schedule is known to the service but intentionally
+has no matching rate row. That makes it the easiest way to verify the commercial
+validation behavior locally:
+
+```bash
+curl -X POST http://localhost:8000/quotes \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "scheduleId": "1ce1ab21-9d58-4a6d-b867-afc93098352f",
+    "equipment": [
+      {"type": "20FT", "quantity": 1}
+    ],
+    "cargoWeightKg": 18000
+  }'
+```
+
+Expect a `400` response explaining that the service found the schedule but did
+not find an effective commercial rate for that lane and equipment combination.
 
 ## Bruno Collection
 

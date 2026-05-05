@@ -1,0 +1,22 @@
+meta {
+  name: Get Quote Bookability
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/quotes/{{quoteReference}}/bookability
+  body: none
+}
+
+tests {
+  test("status is 200", function() {
+    expect(res.status).to.equal(200);
+  });
+
+  test("returns bookability payload", function() {
+    expect(res.body.quoteId).to.be.a("string");
+    expect(res.body.bookable).to.be.a("boolean");
+    expect(res.body.status).to.be.a("string");
+  });
+}

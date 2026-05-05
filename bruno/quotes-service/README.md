@@ -17,6 +17,7 @@ only the verified dev deployment is included.
 - `Create Quote - Heavy Cargo`
 - `Get Quote by ID`
 - `Get Quote by Reference`
+- `Get Quote Bookability`
 
 ## Notes
 
@@ -25,6 +26,6 @@ only the verified dev deployment is included.
 - `POST /quotes` returns both the stored quote UUID (`id`) and the human-facing
   `quoteReference`.
 - Update the `quoteId` and `quoteReference` environment variables with an
-  existing quote before running the lookup requests.
+  existing quote before running the lookup and bookability requests.
 - The service does not currently require authentication, so no secrets are
   stored in the collection.
