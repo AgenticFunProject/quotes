@@ -42,12 +42,29 @@ and seeds reference rates and surcharge rules used by `POST /quotes`.
   freight plus surcharge rules, persists the quote, and returns a commercial
   response with line items and a 7-day validity window.
 - `GET /quotes/{quote_id}` returns the stored quote by either the internal UUID
-  or the public `quoteReference` returned from `POST /quotes`.
+  or the public `quoteReference` returned from `POST /quotes`, including the
+  stored schedule snapshot, pricing basis, and pricing provenance used to
+  explain the amount later.
 - `GET /quotes/{quote_id}/bookability` returns whether a stored quote is still
   within its validity window and therefore usable by Booking.
 - Quote lifecycle writes also create durable rows in `outbox_events`, starting
   with `quote.created` at creation time and `quote.expired` when an issued quote
-  is first observed past `validUntil`.
+  is first observed past `validUntil`. Those payloads include the same stored
+  pricing provenance snapshot used by quote reads.
+
+### Stored Pricing Provenance
+
+- `pricingBasis` identifies which commercial mode produced the quote. The
+  current implementation always stores `PUBLIC_TARIFF`.
+- `pricingProvenance.referenceDataVersion` identifies the seeded tariff and
+  surcharge ruleset version used for the decision. The current seed bundle is
+  `seed-2026-04-01`.
+- `pricingProvenance.baseRateRules` captures the exact matched base-rate rows,
+  including the selected equipment type, quantity, unit amount, and effective
+  validity window.
+- `pricingProvenance.appliedSurchargeRules` captures the exact surcharge rules
+  that contributed to the quote total, including each rule identifier,
+  surcharge type, and effective qualifiers.
 - A known schedule can still return `400` from `POST /quotes` when the seeded
   rate table does not contain an effective row for the selected route,
   departure date, and equipment combination.

@@ -25,6 +25,7 @@ class EquipmentSelection:
 class SurchargeLineItem:
     description: str
     amount: Decimal
+    rule: SurchargeRule
 
     def as_dict(self) -> dict[str, object]:
         return {"description": self.description, "amount": float(self.amount)}
@@ -61,7 +62,7 @@ def calculate_surcharges(
         if amount <= 0:
             continue
 
-        line_items.append(SurchargeLineItem(description=rule.description, amount=amount))
+        line_items.append(SurchargeLineItem(description=rule.description, amount=amount, rule=rule))
 
     return line_items
 

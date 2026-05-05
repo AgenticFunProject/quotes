@@ -40,12 +40,74 @@ Provides a quoted price that can be referenced when placing a booking.
   "validUntil": "2026-04-07T23:59:59Z",
   "currency": "USD",
   "lineItems": [
-    { "description": "Ocean Freight - 20FT x 2", "amount": 1800.00 },
+    { "description": "Ocean Freight - 20FT x 2", "amount": 1900.00 },
     { "description": "Ocean Freight - 40FT x 1", "amount": 1400.00 },
-    { "description": "Bunker Adjustment Factor (BAF)", "amount": 320.00 },
-    { "description": "Port Surcharge - Destination", "amount": 150.00 }
+    { "description": "Bunker Adjustment Factor (BAF)", "amount": 240.00 },
+    { "description": "Port Congestion Surcharge - Destination USNYC", "amount": 450.00 },
+    { "description": "Peak Season Surcharge", "amount": 360.00 }
   ],
-  "totalAmount": 3670.00
+  "totalAmount": 4350.00
+}
+```
+
+### GET /quotes/{id} - Response
+```json
+{
+  "id": "53c362b2-1229-4ea5-a24a-9891fb1f509d",
+  "quoteReference": "QTE-2026-00108",
+  "lifecycleState": "ISSUED",
+  "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+  "scheduleSnapshot": {
+    "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+    "originPort": "NLRTM",
+    "destinationPort": "USNYC",
+    "departureDate": "2026-08-18"
+  },
+  "equipment": [
+    { "type": "20FT", "quantity": 2 }
+  ],
+  "cargoWeightKg": 18000,
+  "currency": "USD",
+  "pricingBasis": "PUBLIC_TARIFF",
+  "pricingProvenance": {
+    "pricingBasis": "PUBLIC_TARIFF",
+    "referenceDataVersion": "seed-2026-04-01",
+    "baseRateRules": [
+      {
+        "rateTableId": "rate-20ft-nlrtm-usnyc",
+        "equipmentType": "20FT",
+        "quantity": 2,
+        "currency": "USD",
+        "unitAmount": 900,
+        "totalAmount": 1800,
+        "validFrom": "2026-04-01",
+        "validTo": "2026-04-30"
+      }
+    ],
+    "appliedSurchargeRules": [
+      {
+        "surchargeRuleId": "rule-baf",
+        "surchargeType": "BAF",
+        "description": "Bunker Adjustment Factor (BAF)",
+        "currency": "USD",
+        "unitAmount": 80,
+        "totalAmount": 160,
+        "portCode": null,
+        "portScope": null,
+        "weightThresholdKgPerTeu": null,
+        "validFrom": null,
+        "validTo": null
+      }
+    ]
+  },
+  "idempotencyKey": "booking-request-42",
+  "lineItems": [
+    { "description": "Ocean Freight - 20FT x 2", "amount": 1800.00 },
+    { "description": "Bunker Adjustment Factor (BAF)", "amount": 160.00 }
+  ],
+  "totalAmount": 1960.00,
+  "validUntil": "2026-04-07T23:59:59Z",
+  "createdAt": "2026-04-01T09:30:00Z"
 }
 ```
 
@@ -91,15 +153,27 @@ Provides a quoted price that can be referenced when placing a booking.
 - Quotes are valid for **7 days** from creation by default
 - Expired quotes cannot be used to create bookings
 
+### Pricing Basis Semantics
+- `PUBLIC_TARIFF` means the quote was priced from this service's stored rate-table and surcharge-rule reference data.
+- `CONTRACT` is reserved for future customer-specific commercial agreements.
+- `MARKET` is reserved for future externally sourced market pricing.
+- `HYBRID` is reserved for future explicitly approved combinations of pricing sources.
+- `pricingBasis` names the commercial mode, while `pricingProvenance` captures the exact stored rule snapshot that mode used.
+
 ## Data Model (Quote)
 | Field | Type | Notes |
 |-------|------|-------|
 | id | UUID | Internal primary key |
 | quoteReference | string | Human-readable (QTE-YYYY-NNNNN) |
+| lifecycleState | enum | `ISSUED`, `BOOKED`, `EXPIRED`, `VOID` |
 | scheduleId | UUID | |
+| scheduleSnapshot | JSON object | Stored schedule facts used for later validation |
 | equipment | JSON array | type + quantity |
 | cargoWeightKg | number | |
 | currency | string | ISO 4217, default USD |
+| pricingBasis | enum | Commercial pricing mode used for the quote |
+| pricingProvenance | JSON object | Stored matched base-rate and surcharge rules plus reference data version |
+| idempotencyKey | string nullable | Reserved for request replay handling |
 | lineItems | JSON array | description + amount |
 | totalAmount | decimal | |
 | validUntil | timestamp | |
@@ -113,7 +187,7 @@ Provides a quoted price that can be referenced when placing a booking.
 | aggregateId | UUID | Internal quote ID |
 | eventType | string | Versioned lifecycle event name such as `quote.created` or `quote.expired` |
 | eventVersion | integer | Payload contract version |
-| payload | JSON object | Event body including quote identifiers, lifecycle state, schedule snapshot, and commercial totals |
+| payload | JSON object | Event body including quote identifiers, lifecycle state, schedule snapshot, pricing provenance, and commercial totals |
 | occurredAt | timestamp | When the lifecycle event occurred |
 | publishedAt | timestamp nullable | Set by a future dispatcher after successful publication |
 | publishAttempts | integer | Retry counter for asynchronous dispatch |
@@ -154,8 +228,10 @@ Provides a quoted price that can be referenced when placing a booking.
 - Quote references are generated sequentially within the current UTC year using the `QTE-YYYY-NNNNN` format.
 - A schedule lookup and a quoteable lane are not the same thing in the current implementation: a known `scheduleId` can still return `400` when no effective base rate exists for the route, equipment, and departure date.
 - Quote lifecycle state is persisted on the quote row and synchronized with `validUntil` when a quote is read after expiry.
+- Quote reads persist the commercial mode as `pricingBasis` and return the stored `pricingProvenance` snapshot used to explain the amount later.
+- The current implementation versions seeded tariff and surcharge reference data as `seed-2026-04-01` inside `pricingProvenance.referenceDataVersion`.
 - Quote lifecycle changes are written to `outbox_events` in the same transaction as the quote write that caused them.
-- The current implementation emits `quote.created` when a quote is created and `quote.expired` the first time an issued quote is observed past `validUntil`.
+- The current implementation emits `quote.created` when a quote is created and `quote.expired` the first time an issued quote is observed past `validUntil`, and both payloads include the stored pricing provenance snapshot.
 - These notes describe the present behavior of the generated code and should be folded into the business specification when they are confirmed as intended behavior.
 
 ## Out of Scope (v1)

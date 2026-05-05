@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -11,9 +11,9 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db, init_db
 from app.models import EquipmentType, OutboxEvent, PricingBasis, Quote, QuoteLifecycleState, RateTable, SurchargeRule
-from app.seed import seed_reference_data
+from app.seed import REFERENCE_DATA_VERSION, seed_reference_data
 from app.schedules import Schedule, ScheduleProvider, get_schedule_provider
-from app.surcharges import EquipmentSelection, calculate_surcharges, total_surcharges
+from app.surcharges import EquipmentSelection, SurchargeLineItem, calculate_surcharges, total_surcharges
 
 
 _MONEY_PRECISION = Decimal("0.01")
@@ -59,6 +59,20 @@ def _serialize_decimal(value: Decimal) -> float:
     return float(value)
 
 
+def _serialize_optional_decimal(value: Decimal | None) -> float | None:
+    if value is None:
+        return None
+
+    return float(value)
+
+
+def _serialize_optional_date(value: date | None) -> str | None:
+    if value is None:
+        return None
+
+    return value.isoformat()
+
+
 def _serialize_quote(quote: Quote) -> dict[str, object]:
     return {
         "id": quote.id,
@@ -70,6 +84,7 @@ def _serialize_quote(quote: Quote) -> dict[str, object]:
         "cargoWeightKg": _serialize_decimal(quote.cargo_weight_kg),
         "currency": quote.currency,
         "pricingBasis": quote.pricing_basis.value,
+        "pricingProvenance": quote.pricing_provenance,
         "idempotencyKey": quote.idempotency_key,
         "lineItems": [
             {
@@ -112,6 +127,7 @@ def _build_quote_event_payload(quote: Quote) -> dict[str, object]:
         "cargoWeightKg": _serialize_decimal(quote.cargo_weight_kg),
         "currency": quote.currency,
         "pricingBasis": quote.pricing_basis.value,
+        "pricingProvenance": quote.pricing_provenance,
         "lineItems": quote.line_items,
         "totalAmount": _serialize_decimal(quote.total_amount),
         "validUntil": quote.valid_until.isoformat(),
@@ -228,6 +244,48 @@ def _load_rate_table(
     return rates_by_type
 
 
+def _build_pricing_provenance(
+    *,
+    payload: CreateQuoteRequest,
+    rates_by_type: dict[EquipmentType, RateTable],
+    surcharge_line_items: list[SurchargeLineItem],
+) -> dict[str, object]:
+    return {
+        "pricingBasis": PricingBasis.PUBLIC_TARIFF.value,
+        "referenceDataVersion": REFERENCE_DATA_VERSION,
+        "baseRateRules": [
+            {
+                "rateTableId": rate.id,
+                "equipmentType": item.type.value,
+                "quantity": item.quantity,
+                "currency": "USD",
+                "unitAmount": _serialize_decimal(rate.base_rate_usd),
+                "totalAmount": _serialize_decimal((rate.base_rate_usd * item.quantity).quantize(_MONEY_PRECISION)),
+                "validFrom": rate.valid_from.isoformat(),
+                "validTo": rate.valid_to.isoformat(),
+            }
+            for item in payload.equipment
+            for rate in [rates_by_type[item.type]]
+        ],
+        "appliedSurchargeRules": [
+            {
+                "surchargeRuleId": item.rule.id,
+                "surchargeType": item.rule.surcharge_type.value,
+                "description": item.rule.description,
+                "currency": item.rule.currency,
+                "unitAmount": _serialize_decimal(item.rule.amount_usd),
+                "totalAmount": _serialize_decimal(item.amount),
+                "portCode": item.rule.port_code,
+                "portScope": item.rule.port_scope.value if item.rule.port_scope is not None else None,
+                "weightThresholdKgPerTeu": _serialize_optional_decimal(item.rule.weight_threshold_kg_per_teu),
+                "validFrom": _serialize_optional_date(item.rule.valid_from),
+                "validTo": _serialize_optional_date(item.rule.valid_to),
+            }
+            for item in surcharge_line_items
+        ],
+    }
+
+
 @app.post("/quotes", status_code=201)
 def create_quote(
     payload: CreateQuoteRequest,
@@ -283,6 +341,11 @@ def create_quote(
         cargo_weight_kg=payload.cargo_weight_kg.quantize(_MONEY_PRECISION),
         currency="USD",
         pricing_basis=PricingBasis.PUBLIC_TARIFF,
+        pricing_provenance=_build_pricing_provenance(
+            payload=payload,
+            rates_by_type=rates_by_type,
+            surcharge_line_items=surcharge_line_items,
+        ),
         line_items=line_items,
         total_amount=total_amount,
     )

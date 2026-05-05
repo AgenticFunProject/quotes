@@ -9,6 +9,9 @@ from app.db import SessionLocal
 from app.models import EquipmentType, PortScope, RateTable, SurchargeRule, SurchargeType
 
 
+REFERENCE_DATA_VERSION = "seed-2026-04-01"
+
+
 RATE_TABLE_ROWS = (
     {
         "origin_port": "NLRTM",

@@ -15,6 +15,7 @@ And the response includes the seasonal and congestion surcharges for that lane
 Given a quote has been stored by the service
 When the client looks it up by internal UUID or public quote reference
 Then the API returns the full stored quote record
+And the stored quote includes the pricing basis and provenance snapshot used to create it
 
 ## Scenario: Validate whether a stored quote can still be booked
 
@@ -28,7 +29,7 @@ window
 Given the service stores quote lifecycle state and outbox events together
 When a client creates a quote and that quote later expires
 Then the service persists `quote.created` and `quote.expired` events for the same quote
-And each event includes the quote identifiers and stored commercial snapshot
+And each event includes the quote identifiers, stored commercial snapshot, and pricing provenance
 
 ## Scenario: Request a quote for a seeded schedule without an effective rate
 
