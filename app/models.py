@@ -78,6 +78,7 @@ class Quote(Base):
         ),
         default=PricingBasis.PUBLIC_TARIFF,
     )
+    pricing_provenance: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True, unique=True, index=True)
     line_items: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
     total_amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=Decimal("0.00"))

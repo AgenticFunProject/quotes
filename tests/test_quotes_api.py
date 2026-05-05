@@ -14,7 +14,7 @@ from app import db
 from app.db import Base, get_db
 from app.main import app
 from app.models import OutboxEvent, PricingBasis, Quote, QuoteLifecycleState
-from app.seed import seed_reference_data
+from app.seed import REFERENCE_DATA_VERSION, seed_reference_data
 from app.schedules import Schedule, get_schedule_provider
 
 
@@ -48,6 +48,40 @@ def client(monkeypatch) -> Iterator[tuple[TestClient, sessionmaker[Session]]]:
 
     app.dependency_overrides.clear()
     Base.metadata.drop_all(bind=engine)
+
+
+def _public_tariff_pricing_provenance() -> dict[str, object]:
+    return {
+        "pricingBasis": PricingBasis.PUBLIC_TARIFF.value,
+        "referenceDataVersion": REFERENCE_DATA_VERSION,
+        "baseRateRules": [
+            {
+                "rateTableId": "rate-20ft-nlrtm-usnyc",
+                "equipmentType": "20FT",
+                "quantity": 2,
+                "currency": "USD",
+                "unitAmount": 900.0,
+                "totalAmount": 1800.0,
+                "validFrom": "2026-04-01",
+                "validTo": "2026-04-30",
+            }
+        ],
+        "appliedSurchargeRules": [
+            {
+                "surchargeRuleId": "rule-baf",
+                "surchargeType": "BAF",
+                "description": "Bunker Adjustment Factor (BAF)",
+                "currency": "USD",
+                "unitAmount": 80.0,
+                "totalAmount": 160.0,
+                "portCode": None,
+                "portScope": None,
+                "weightThresholdKgPerTeu": None,
+                "validFrom": None,
+                "validTo": None,
+            }
+        ],
+    }
 
 
 def test_create_quote_returns_itemized_quote_and_persists_it(client) -> None:
@@ -98,6 +132,71 @@ def test_create_quote_returns_itemized_quote_and_persists_it(client) -> None:
     assert float(stored_quote.total_amount) == response.json()["totalAmount"]
     assert stored_quote.lifecycle_state == QuoteLifecycleState.ISSUED
     assert stored_quote.pricing_basis == PricingBasis.PUBLIC_TARIFF
+    assert stored_quote.pricing_provenance["pricingBasis"] == PricingBasis.PUBLIC_TARIFF.value
+    assert stored_quote.pricing_provenance["referenceDataVersion"] == REFERENCE_DATA_VERSION
+    assert stored_quote.pricing_provenance["baseRateRules"] == [
+        {
+            "rateTableId": stored_quote.pricing_provenance["baseRateRules"][0]["rateTableId"],
+            "equipmentType": "20FT",
+            "quantity": 2,
+            "currency": "USD",
+            "unitAmount": 950.0,
+            "totalAmount": 1900.0,
+            "validFrom": "2026-04-01",
+            "validTo": "2026-12-31",
+        },
+        {
+            "rateTableId": stored_quote.pricing_provenance["baseRateRules"][1]["rateTableId"],
+            "equipmentType": "40FT",
+            "quantity": 1,
+            "currency": "USD",
+            "unitAmount": 1400.0,
+            "totalAmount": 1400.0,
+            "validFrom": "2026-04-01",
+            "validTo": "2026-12-31",
+        },
+    ]
+    assert stored_quote.pricing_provenance["appliedSurchargeRules"] == [
+        {
+            "surchargeRuleId": stored_quote.pricing_provenance["appliedSurchargeRules"][0]["surchargeRuleId"],
+            "surchargeType": "BAF",
+            "description": "Bunker Adjustment Factor (BAF)",
+            "currency": "USD",
+            "unitAmount": 80.0,
+            "totalAmount": 240.0,
+            "portCode": None,
+            "portScope": None,
+            "weightThresholdKgPerTeu": None,
+            "validFrom": None,
+            "validTo": None,
+        },
+        {
+            "surchargeRuleId": stored_quote.pricing_provenance["appliedSurchargeRules"][1]["surchargeRuleId"],
+            "surchargeType": "PORT_CONGESTION",
+            "description": "Port Congestion Surcharge - Destination USNYC",
+            "currency": "USD",
+            "unitAmount": 150.0,
+            "totalAmount": 450.0,
+            "portCode": "USNYC",
+            "portScope": "DESTINATION",
+            "weightThresholdKgPerTeu": None,
+            "validFrom": None,
+            "validTo": None,
+        },
+        {
+            "surchargeRuleId": stored_quote.pricing_provenance["appliedSurchargeRules"][2]["surchargeRuleId"],
+            "surchargeType": "PEAK_SEASON",
+            "description": "Peak Season Surcharge",
+            "currency": "USD",
+            "unitAmount": 120.0,
+            "totalAmount": 360.0,
+            "portCode": None,
+            "portScope": None,
+            "weightThresholdKgPerTeu": None,
+            "validFrom": "2026-08-01",
+            "validTo": "2026-09-30",
+        },
+    ]
     assert stored_quote.idempotency_key is None
     assert stored_quote.schedule_snapshot == {
         "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
@@ -120,6 +219,7 @@ def test_create_quote_returns_itemized_quote_and_persists_it(client) -> None:
     assert stored_event.payload["quoteId"] == response.json()["id"]
     assert stored_event.payload["quoteReference"] == response.json()["quoteReference"]
     assert stored_event.payload["lifecycleState"] == "ISSUED"
+    assert stored_event.payload["pricingProvenance"] == stored_quote.pricing_provenance
 
 
 def test_create_quote_increments_quote_reference_sequence(client) -> None:
@@ -305,12 +405,13 @@ def _seed_quote(session_factory: sessionmaker[Session]) -> Quote:
             cargo_weight_kg=Decimal("18000.00"),
             currency="USD",
             pricing_basis=PricingBasis.PUBLIC_TARIFF,
+            pricing_provenance=_public_tariff_pricing_provenance(),
             idempotency_key="booking-request-42",
             line_items=[
                 {"description": "Ocean Freight - 20FT x 2", "amount": 1800.0},
-                {"description": "Bunker Adjustment Factor (BAF)", "amount": 320.0},
+                {"description": "Bunker Adjustment Factor (BAF)", "amount": 160.0},
             ],
-            total_amount=Decimal("2120.00"),
+            total_amount=Decimal("1960.00"),
         )
         session.add(quote)
         session.commit()
@@ -335,6 +436,23 @@ def _seed_expired_quote(session_factory: sessionmaker[Session]) -> Quote:
             cargo_weight_kg=Decimal("12000.00"),
             currency="USD",
             pricing_basis=PricingBasis.PUBLIC_TARIFF,
+            pricing_provenance={
+                "pricingBasis": PricingBasis.PUBLIC_TARIFF.value,
+                "referenceDataVersion": REFERENCE_DATA_VERSION,
+                "baseRateRules": [
+                    {
+                        "rateTableId": "rate-40ft-nlrtm-usnyc",
+                        "equipmentType": "40FT",
+                        "quantity": 1,
+                        "currency": "USD",
+                        "unitAmount": 1400.0,
+                        "totalAmount": 1400.0,
+                        "validFrom": "2026-04-01",
+                        "validTo": "2026-12-31",
+                    }
+                ],
+                "appliedSurchargeRules": [],
+            },
             line_items=[{"description": "Ocean Freight - 40FT x 1", "amount": 1400.0}],
             total_amount=Decimal("1400.00"),
             valid_until=datetime.now(timezone.utc) - timedelta(hours=1),
@@ -367,12 +485,13 @@ def test_get_quote_by_uuid_returns_full_quote(client) -> None:
         "cargoWeightKg": 18000.0,
         "currency": "USD",
         "pricingBasis": "PUBLIC_TARIFF",
+        "pricingProvenance": _public_tariff_pricing_provenance(),
         "idempotencyKey": "booking-request-42",
         "lineItems": [
             {"description": "Ocean Freight - 20FT x 2", "amount": 1800.0},
-            {"description": "Bunker Adjustment Factor (BAF)", "amount": 320.0},
+            {"description": "Bunker Adjustment Factor (BAF)", "amount": 160.0},
         ],
-        "totalAmount": 2120.0,
+        "totalAmount": 1960.0,
         "validUntil": quote.valid_until.isoformat(),
         "createdAt": quote.created_at.isoformat(),
     }
@@ -400,12 +519,13 @@ def test_get_quote_by_reference_returns_full_quote(client) -> None:
         "cargoWeightKg": 18000.0,
         "currency": "USD",
         "pricingBasis": "PUBLIC_TARIFF",
+        "pricingProvenance": _public_tariff_pricing_provenance(),
         "idempotencyKey": "booking-request-42",
         "lineItems": [
             {"description": "Ocean Freight - 20FT x 2", "amount": 1800.0},
-            {"description": "Bunker Adjustment Factor (BAF)", "amount": 320.0},
+            {"description": "Bunker Adjustment Factor (BAF)", "amount": 160.0},
         ],
-        "totalAmount": 2120.0,
+        "totalAmount": 1960.0,
         "validUntil": quote.valid_until.isoformat(),
         "createdAt": quote.created_at.isoformat(),
     }
@@ -433,12 +553,13 @@ def test_get_quote_by_quote_reference_returns_full_quote(client) -> None:
         "cargoWeightKg": 18000.0,
         "currency": "USD",
         "pricingBasis": "PUBLIC_TARIFF",
+        "pricingProvenance": _public_tariff_pricing_provenance(),
         "idempotencyKey": "booking-request-42",
         "lineItems": [
             {"description": "Ocean Freight - 20FT x 2", "amount": 1800.0},
-            {"description": "Bunker Adjustment Factor (BAF)", "amount": 320.0},
+            {"description": "Bunker Adjustment Factor (BAF)", "amount": 160.0},
         ],
-        "totalAmount": 2120.0,
+        "totalAmount": 1960.0,
         "validUntil": quote.valid_until.isoformat(),
         "createdAt": quote.created_at.isoformat(),
     }
@@ -516,6 +637,7 @@ def test_get_quote_materializes_expired_lifecycle_and_outbox_event(client) -> No
     assert expired_event is not None
     assert expired_event.payload["quoteId"] == quote.id
     assert expired_event.payload["lifecycleState"] == "EXPIRED"
+    assert expired_event.payload["pricingProvenance"] == quote.pricing_provenance
 
 
 def test_get_quote_bookability_only_emits_one_expired_event(client) -> None:
