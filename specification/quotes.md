@@ -78,10 +78,10 @@ Provides a quoted price that can be referenced when placing a booking.
         "equipmentType": "20FT",
         "quantity": 2,
         "currency": "USD",
-        "unitAmount": 900,
-        "totalAmount": 1800,
+        "unitAmount": 950,
+        "totalAmount": 1900,
         "validFrom": "2026-04-01",
-        "validTo": "2026-04-30"
+        "validTo": "2026-12-31"
       }
     ],
     "appliedSurchargeRules": [
@@ -100,7 +100,7 @@ Provides a quoted price that can be referenced when placing a booking.
       }
     ]
   },
-  "idempotencyKey": "booking-request-42",
+  "idempotencyKey": null,
   "lineItems": [
     { "description": "Ocean Freight - 20FT x 2", "amount": 1800.00 },
     { "description": "Bunker Adjustment Factor (BAF)", "amount": 160.00 }
@@ -124,8 +124,8 @@ Provides a quoted price that can be referenced when placing a booking.
 ```
 
 ### GET /quotes/{id}
-- The `{id}` path parameter is the stored quote UUID.
-- This endpoint is intended for internal system-to-system lookup.
+- The `{id}` path parameter accepts either the stored quote UUID or the public `quoteReference`.
+- This endpoint is the primary lookup path used by the current implementation.
 
 ### GET /quotes/reference/{quoteReference}
 - The `{quoteReference}` path parameter is the business-facing quote reference in `QTE-YYYY-NNNNN` format.
@@ -211,7 +211,7 @@ Provides a quoted price that can be referenced when placing a booking.
 
 ## Current Integration Boundaries
 - `Schedules API` is the only explicitly documented external dependency in this specification.
-- In the current implementation, `Schedules API` is represented by a local static schedule stub keyed by `scheduleId`.
+- In the current implementation, `Schedules API` sits behind a `ScheduleProvider` abstraction backed by a local in-memory schedule stub keyed by `scheduleId`.
 - Equipment data is currently modeled inside this service through request payloads, supported equipment types, TEU conversion rules, and seeded rate data.
 - Booking is currently a downstream consumer of quotes rather than an active runtime dependency. The service stores quotes with validity so Booking can reference them later.
 - The frontend is expected to consume the HTTP API exposed by this service. There is no frontend-specific integration layer in this repository yet.

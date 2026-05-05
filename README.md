@@ -45,6 +45,9 @@ and seeds reference rates and surcharge rules used by `POST /quotes`.
   or the public `quoteReference` returned from `POST /quotes`, including the
   stored schedule snapshot, pricing basis, and pricing provenance used to
   explain the amount later.
+- `GET /quotes/reference/{quoteReference}` remains available as an explicit
+  business-facing lookup path for the human-readable quote reference and
+  returns the same payload as `GET /quotes/{quote_id}`.
 - `GET /quotes/{quote_id}/bookability` returns whether a stored quote is still
   within its validity window and therefore usable by Booking.
 - Quote lifecycle writes also create durable rows in `outbox_events`, starting
@@ -71,7 +74,8 @@ and seeds reference rates and surcharge rules used by `POST /quotes`.
 
 ### Seeded Demo Data
 
-The app currently boots with three in-memory schedule stubs:
+The app currently boots with an in-memory schedule provider seeded with three
+schedule stubs:
 
 - `df62a7d2-a45e-4d4d-b3cb-b4af65435274` for `NLRTM -> USNYC` on `2026-08-18`
 - `7a59721c-cd5d-4d9f-86a0-9aa9f7f6c47b` for `CNSHA -> DEHAM` on `2026-06-05`

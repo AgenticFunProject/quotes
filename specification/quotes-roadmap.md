@@ -5,9 +5,12 @@ This document turns `specification/quotes.md` into a concrete delivery roadmap f
 ### Current State
 
 - Quote generation is synchronous and request-driven.
-- Schedule validation is backed by an in-process stub rather than a live dependency.
+- Schedule validation sits behind a `ScheduleProvider` abstraction that is currently backed by an in-memory stub rather than a live dependency.
 - Pricing uses seeded base rates and surcharge rules stored locally.
-- Quotes are persisted and can be retrieved later, but downstream lifecycle behavior is still minimal.
+- Quotes persist schedule snapshots, lifecycle state, pricing basis, and pricing provenance so later reads can explain the stored amount.
+- Quotes can be retrieved by internal UUID, by passing the public quote reference to `GET /quotes/{id}`, or through the explicit `GET /quotes/reference/{quoteReference}` path.
+- Booking can validate quote usability through `GET /quotes/{id}/bookability`.
+- Quote lifecycle writes also persist outbox rows for `quote.created` and `quote.expired`.
 
 ### Product Goals
 
@@ -43,23 +46,24 @@ The phases are not independent. Later phases assume earlier infrastructure and d
 Goal: make the current quote flow dependable before adding advanced pricing modes.
 
 Scope:
-- Replace the schedule stub with a real schedules integration.
-- Add explicit quote status semantics: active, expired, revoked.
+- Introduce a schedule-provider boundary so the current stub can later be replaced by a real schedules integration.
+- Add explicit persisted quote lifecycle semantics.
 - Support retrieval by both internal ID and `quoteReference`.
 - Add a booking validation endpoint so downstream consumers can verify that a quote is still usable.
-- Add idempotency support on quote creation to prevent duplicate quotes from retries.
+- Reserve an idempotency field on quote storage so replay handling can be added without reshaping the quote model.
 
 Likely API changes:
-- `POST /quotes` accepts an optional idempotency key header.
 - `GET /quotes/{id}` accepts either UUID or quote reference.
 - `GET /quotes/{id}/bookability` returns lifecycle and validation state.
+- `GET /quotes/reference/{quoteReference}` remains available as an explicit business-facing lookup path.
 
 Likely data model changes:
-- `quotes.status`
-- `quotes.expired_at` or computed lifecycle metadata
+- `quotes.lifecycle_state`
 - `quotes.pricing_basis`
+- `quotes.pricing_provenance`
 - `quotes.idempotency_key`
-- `quotes.schedule_snapshot` or schedule version metadata
+- `quotes.schedule_snapshot`
+- `outbox_events`
 
 Success criteria:
 - Booking can validate a quote without recomputing price.
@@ -217,9 +221,9 @@ Milestone A: Booking-ready quote foundation
 
 ### Scope
 
-- Replace the schedule stub with a provider abstraction and initial real integration path.
+- Replace direct schedule lookup logic with a provider abstraction.
 - Store schedule snapshot data directly on the quote so downstream validation does not depend on mutable schedule state.
-- Add quote lifecycle status with an initial state model such as `ACTIVE`, `EXPIRED`, and `CONSUMED`.
+- Add quote lifecycle state with the initial persisted values `ISSUED`, `EXPIRED`, `BOOKED`, and `VOID`.
 - Support lookup by `quoteReference` in addition to internal UUID.
 - Add booking validation semantics through a dedicated endpoint.
 - Persist pricing provenance fields that identify the pricing mode and source rule version used.
@@ -229,7 +233,7 @@ Milestone A: Booking-ready quote foundation
 - A caller can create a quote and later retrieve it using the same public quote reference returned at creation time.
 - Booking can ask whether the quote is still usable without recalculating price.
 - The stored quote record contains enough route and pricing metadata to explain how the amount was produced.
-- Schedule integration details are behind an adapter boundary rather than embedded in endpoint code.
+- Schedule integration details are behind an adapter boundary rather than embedded directly in endpoint code.
 
 ### Implementation Backlog
 
@@ -248,7 +252,7 @@ The following slices are small enough to implement independently while still mov
 ### Suggested Bead Breakdown
 
 1. Introduce `ScheduleProvider` interface and move the stub behind it.
-2. Add quote schema fields: status, pricing basis, idempotency key, and schedule snapshot.
+2. Add quote schema fields: lifecycle state, pricing basis, idempotency key, and schedule snapshot.
 3. Implement lookup by `quoteReference`.
 4. Implement `GET /quotes/{id}/bookability`.
 5. Add persistence and tests for pricing provenance metadata.
@@ -287,10 +291,10 @@ The following slices are small enough to implement independently while still mov
 
 These should be answered before or during Milestone A, because they affect both API shape and stored quote semantics.
 
-1. Should `GET /quotes/{id}` accept both UUID and `quoteReference`, or should public-reference lookup use a dedicated path such as `GET /quotes/reference/{quoteReference}`?
-2. What lifecycle transition marks a quote as no longer reusable by Booking: expiry only, or also partial consumption, schedule change, or commercial revocation?
-3. Should schedule details be stored as a full snapshot on the quote, or as a minimal route-and-date snapshot plus an upstream schedule version?
-4. At what point should `lineItems` and equipment selections be normalized into dedicated tables rather than remaining JSON payloads?
+1. The implementation now supports both `GET /quotes/{id}` with either UUID or `quoteReference` and the explicit `GET /quotes/reference/{quoteReference}` path; decide later whether both should remain part of the public contract.
+2. Booking reusability currently expires only when `validUntil` has elapsed; later work still needs to define whether schedule change, commercial revocation, or partial consumption should also end usability.
+3. The current quote stores a minimal schedule snapshot (`scheduleId`, origin port, destination port, departure date); revisit whether that should expand to a full upstream snapshot or versioned schedule reference.
+4. `lineItems` and equipment selections remain JSON payloads; decide when reporting or reconciliation needs justify normalization.
 
 ## Milestone A API Sketch
 
@@ -302,7 +306,6 @@ Request:
 
 ```http
 POST /quotes
-Idempotency-Key: 7f6f0e9d-a2b8-4c6e-bf34-98f2a4a8c2ce
 Content-Type: application/json
 
 {
@@ -318,17 +321,17 @@ Response:
 
 ```json
 {
-  "quoteId": "QTE-2026-00108",
+  "id": "7d3fc6cf-2c58-4b3b-b5c5-0aa05dfaf7c2",
+  "quoteReference": "QTE-2026-00108",
   "validUntil": "2026-04-07T23:59:59Z",
   "currency": "USD",
-  "pricingBasis": "PUBLIC_TARIFF",
-  "status": "ACTIVE",
   "lineItems": [
     { "description": "Ocean Freight - 20FT x 1", "amount": 950.0 },
     { "description": "Bunker Adjustment Factor (BAF)", "amount": 80.0 },
+    { "description": "Port Congestion Surcharge - Destination USNYC", "amount": 150.0 },
     { "description": "Peak Season Surcharge", "amount": 120.0 }
   ],
-  "totalAmount": 1150.0
+  "totalAmount": 1300.0
 }
 ```
 
@@ -347,9 +350,10 @@ Recommended response:
   "id": "7d3fc6cf-2c58-4b3b-b5c5-0aa05dfaf7c2",
   "quoteReference": "QTE-2026-00108",
   "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
-  "status": "ACTIVE",
+  "lifecycleState": "ISSUED",
   "pricingBasis": "PUBLIC_TARIFF",
   "scheduleSnapshot": {
+    "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
     "originPort": "NLRTM",
     "destinationPort": "USNYC",
     "departureDate": "2026-08-18"
@@ -359,12 +363,71 @@ Recommended response:
   ],
   "cargoWeightKg": 18000.0,
   "currency": "USD",
+  "pricingProvenance": {
+    "pricingBasis": "PUBLIC_TARIFF",
+    "referenceDataVersion": "seed-2026-04-01",
+    "baseRateRules": [
+      {
+        "rateTableId": "rate-20ft-nlrtm-usnyc",
+        "equipmentType": "20FT",
+        "quantity": 1,
+        "currency": "USD",
+        "unitAmount": 950.0,
+        "totalAmount": 950.0,
+        "validFrom": "2026-04-01",
+        "validTo": "2026-12-31"
+      }
+    ],
+    "appliedSurchargeRules": [
+      {
+        "surchargeRuleId": "rule-baf",
+        "surchargeType": "BAF",
+        "description": "Bunker Adjustment Factor (BAF)",
+        "currency": "USD",
+        "unitAmount": 80.0,
+        "totalAmount": 80.0,
+        "portCode": null,
+        "portScope": null,
+        "weightThresholdKgPerTeu": null,
+        "validFrom": null,
+        "validTo": null
+      },
+      {
+        "surchargeRuleId": "rule-port-congestion-destination-usnyc",
+        "surchargeType": "PORT_CONGESTION",
+        "description": "Port Congestion Surcharge - Destination USNYC",
+        "currency": "USD",
+        "unitAmount": 150.0,
+        "totalAmount": 150.0,
+        "portCode": "USNYC",
+        "portScope": "DESTINATION",
+        "weightThresholdKgPerTeu": null,
+        "validFrom": null,
+        "validTo": null
+      },
+      {
+        "surchargeRuleId": "rule-peak-season",
+        "surchargeType": "PEAK_SEASON",
+        "description": "Peak Season Surcharge",
+        "currency": "USD",
+        "unitAmount": 120.0,
+        "totalAmount": 120.0,
+        "portCode": null,
+        "portScope": null,
+        "weightThresholdKgPerTeu": null,
+        "validFrom": "2026-08-01",
+        "validTo": "2026-09-30"
+      }
+    ]
+  },
+  "idempotencyKey": null,
   "lineItems": [
     { "description": "Ocean Freight - 20FT x 1", "amount": 950.0 },
     { "description": "Bunker Adjustment Factor (BAF)", "amount": 80.0 },
+    { "description": "Port Congestion Surcharge - Destination USNYC", "amount": 150.0 },
     { "description": "Peak Season Surcharge", "amount": 120.0 }
   ],
-  "totalAmount": 1150.0,
+  "totalAmount": 1300.0,
   "validUntil": "2026-04-07T23:59:59Z",
   "createdAt": "2026-03-31T10:15:00Z"
 }
@@ -382,12 +445,12 @@ Response:
 
 ```json
 {
-  "quoteReference": "QTE-2026-00108",
+  "quoteId": "QTE-2026-00108",
   "status": "ACTIVE",
   "bookable": true,
-  "reason": null,
-  "validUntil": "2026-04-07T23:59:59Z",
-  "pricingBasis": "PUBLIC_TARIFF"
+  "reason": "VALIDITY_WINDOW_OPEN",
+  "expired": false,
+  "validUntil": "2026-04-07T23:59:59Z"
 }
 ```
 
@@ -395,12 +458,12 @@ Expired response example:
 
 ```json
 {
-  "quoteReference": "QTE-2026-00108",
+  "quoteId": "QTE-2026-00108",
   "status": "EXPIRED",
   "bookable": false,
-  "reason": "QUOTE_EXPIRED",
-  "validUntil": "2026-04-07T23:59:59Z",
-  "pricingBasis": "PUBLIC_TARIFF"
+  "reason": "VALIDITY_WINDOW_EXPIRED",
+  "expired": true,
+  "validUntil": "2026-04-07T23:59:59Z"
 }
 ```
 
@@ -415,18 +478,16 @@ The fields below are a practical extension of the current quote model, not a ful
 | `id` | UUID | Internal identifier |
 | `quote_reference` | string | Public quote identifier |
 | `schedule_id` | string | Upstream schedule identifier |
-| `origin_port` | string | Persisted route snapshot |
-| `destination_port` | string | Persisted route snapshot |
-| `departure_date` | date | Persisted shipment timing snapshot |
+| `schedule_snapshot` | JSON | Persisted route and departure facts used for later validation |
 | `equipment` | JSON | Request equipment selection |
 | `cargo_weight_kg` | decimal | Request cargo weight |
 | `currency` | string | Response currency for Milestone A, still USD |
 | `line_items` | JSON | Customer-facing price breakdown |
 | `total_amount` | decimal | Final commercial total |
-| `status` | enum | `ACTIVE`, `EXPIRED`, `CONSUMED`, `REVOKED` |
+| `lifecycle_state` | enum | `ISSUED`, `BOOKED`, `EXPIRED`, `VOID` |
 | `pricing_basis` | enum | `PUBLIC_TARIFF` in Milestone A |
-| `pricing_input_version` | string or null | Version marker for rates and surcharge inputs |
-| `idempotency_key` | string or null | Request replay protection |
+| `pricing_provenance` | JSON | Stored matched rate and surcharge rule snapshot |
+| `idempotency_key` | string or null | Reserved for future request replay protection |
 | `valid_until` | timestamp | Quote validity boundary |
 | `created_at` | timestamp | Creation timestamp |
 
