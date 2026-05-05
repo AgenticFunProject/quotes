@@ -16,6 +16,7 @@ Provides a quoted price that can be referenced when placing a booking.
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | /quotes | Request a new quote |
+| POST | /quotes/coverage/validate | Validate rate coverage for a route, departure date, and equipment selection |
 | GET | /quotes/{id} | Retrieve a quote by internal ID or public quote reference |
 | GET | /quotes/{id}/bookability | Validate whether a stored quote is still usable for booking |
 | GET | /quotes/reference/{quoteReference} | Retrieve a quote by human-readable quote reference |
@@ -47,6 +48,45 @@ Provides a quoted price that can be referenced when placing a booking.
     { "description": "Peak Season Surcharge", "amount": 360.00 }
   ],
   "totalAmount": 4350.00
+}
+```
+
+### POST /quotes/coverage/validate - Request Body
+```json
+{
+  "originPort": "NLRTM",
+  "destinationPort": "USNYC",
+  "departureDate": "2026-08-18",
+  "equipment": [
+    { "type": "20FT", "quantity": 2 },
+    { "type": "40FT_HC", "quantity": 1 }
+  ]
+}
+```
+
+### POST /quotes/coverage/validate - Response
+```json
+{
+  "covered": true,
+  "reason": "RATE_AVAILABLE",
+  "pricingBasis": "PUBLIC_TARIFF",
+  "referenceDataVersion": "seed-2026-04-01",
+  "route": {
+    "originPort": "NLRTM",
+    "destinationPort": "USNYC",
+    "departureDate": "2026-08-18"
+  },
+  "coverage": [
+    {
+      "equipmentType": "20FT",
+      "quantity": 2,
+      "covered": true,
+      "rateTableId": "<rate-table-id>",
+      "validFrom": "2026-04-01",
+      "validTo": "2026-12-31"
+    }
+  ],
+  "uncoveredEquipment": []
 }
 ```
 
@@ -127,6 +167,11 @@ Provides a quoted price that can be referenced when placing a booking.
 - The `{id}` path parameter accepts either the stored quote UUID or the public `quoteReference`.
 - This endpoint is the primary lookup path used by the current implementation.
 
+### POST /quotes/coverage/validate
+- This endpoint accepts direct route attributes instead of a `scheduleId` so clients can validate commercial data coverage before attempting a quote request.
+- `covered` is `true` only when every requested equipment selection has an effective public tariff rate for the submitted route and departure date.
+- `uncoveredEquipment` lists the equipment types that would fail commercial quote creation because no effective base rate exists.
+
 ### GET /quotes/reference/{quoteReference}
 - The `{quoteReference}` path parameter is the business-facing quote reference in `QTE-YYYY-NNNNN` format.
 - This endpoint returns the same quote payload shape as `GET /quotes/{id}`.
@@ -172,7 +217,13 @@ Expected result:
 - The response returns Booking-oriented validity fields: `bookable`, `status`, `reason`, `expired`, and `validUntil`.
 - A quote can be retrievable even when it is no longer bookable; bookability is a separate lifecycle check from quote lookup.
 
-### Step 4: Verify the unsupported-lane validation path
+### Step 4: Validate route coverage before pricing
+
+- Use `POST /quotes/coverage/validate` with the requested `originPort`, `destinationPort`, `departureDate`, and equipment selection.
+- The response tells the client whether managed public tariff data covers the requested lane before it tries to create a quote.
+- This is the recommended preflight path for clients that want a deterministic commercial coverage check without depending on a seeded schedule identifier.
+
+### Step 5: Verify the unsupported-lane validation path
 
 - The seeded schedule `1ce1ab21-9d58-4a6d-b867-afc93098352f` (`BRSSZ -> USLAX`) is intentionally present without a matching effective base-rate row.
 - `POST /quotes` for that schedule returns `400` when the request asks for a lane and equipment combination that the service recognizes operationally but cannot price commercially.

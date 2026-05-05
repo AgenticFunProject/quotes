@@ -40,6 +40,15 @@ class CreateQuoteRequest(BaseModel):
     cargo_weight_kg: Decimal = Field(alias="cargoWeightKg", gt=0)
 
 
+class ValidateRateCoverageRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    origin_port: str = Field(alias="originPort", min_length=1)
+    destination_port: str = Field(alias="destinationPort", min_length=1)
+    departure_date: date = Field(alias="departureDate")
+    equipment: list[QuoteEquipmentRequest] = Field(min_length=1)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
@@ -223,16 +232,13 @@ def _load_rate_table(
     schedule: Schedule,
     equipment_types: set[EquipmentType],
 ) -> dict[EquipmentType, RateTable]:
-    rate_rows = db.scalars(
-        select(RateTable).where(
-            RateTable.origin_port == schedule.origin_port,
-            RateTable.destination_port == schedule.destination_port,
-            RateTable.equipment_type.in_(equipment_types),
-            RateTable.valid_from <= schedule.departure_date,
-            RateTable.valid_to >= schedule.departure_date,
-        )
-    ).all()
-    rates_by_type = {row.equipment_type: row for row in rate_rows}
+    rates_by_type = _find_rate_coverage(
+        db=db,
+        origin_port=schedule.origin_port,
+        destination_port=schedule.destination_port,
+        departure_date=schedule.departure_date,
+        equipment_types=equipment_types,
+    )
 
     for equipment_type in equipment_types:
         if equipment_type not in rates_by_type:
@@ -242,6 +248,65 @@ def _load_rate_table(
             )
 
     return rates_by_type
+
+
+def _find_rate_coverage(
+    *,
+    db: Session,
+    origin_port: str,
+    destination_port: str,
+    departure_date: date,
+    equipment_types: set[EquipmentType],
+) -> dict[EquipmentType, RateTable]:
+    rate_rows = db.scalars(
+        select(RateTable).where(
+            RateTable.origin_port == origin_port,
+            RateTable.destination_port == destination_port,
+            RateTable.equipment_type.in_(equipment_types),
+            RateTable.valid_from <= departure_date,
+            RateTable.valid_to >= departure_date,
+        )
+    ).all()
+    return {row.equipment_type: row for row in rate_rows}
+
+
+def _serialize_rate_coverage(
+    payload: ValidateRateCoverageRequest,
+    rates_by_type: dict[EquipmentType, RateTable],
+) -> dict[str, object]:
+    coverage = []
+    uncovered_equipment = []
+    for item in payload.equipment:
+        rate = rates_by_type.get(item.type)
+        covered = rate is not None
+        if not covered and item.type.value not in uncovered_equipment:
+            uncovered_equipment.append(item.type.value)
+
+        coverage.append(
+            {
+                "equipmentType": item.type.value,
+                "quantity": item.quantity,
+                "covered": covered,
+                "rateTableId": None if rate is None else rate.id,
+                "validFrom": None if rate is None else rate.valid_from.isoformat(),
+                "validTo": None if rate is None else rate.valid_to.isoformat(),
+            }
+        )
+
+    covered = not uncovered_equipment
+    return {
+        "covered": covered,
+        "reason": "RATE_AVAILABLE" if covered else "RATE_MISSING",
+        "pricingBasis": PricingBasis.PUBLIC_TARIFF.value,
+        "referenceDataVersion": REFERENCE_DATA_VERSION,
+        "route": {
+            "originPort": payload.origin_port,
+            "destinationPort": payload.destination_port,
+            "departureDate": payload.departure_date.isoformat(),
+        },
+        "coverage": coverage,
+        "uncoveredEquipment": uncovered_equipment,
+    }
 
 
 def _build_pricing_provenance(
@@ -356,6 +421,23 @@ def create_quote(
     db.refresh(quote)
 
     return _serialize_created_quote(quote)
+
+
+@app.post("/quotes/coverage/validate")
+def validate_quote_rate_coverage(
+    payload: ValidateRateCoverageRequest,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return _serialize_rate_coverage(
+        payload,
+        _find_rate_coverage(
+            db=db,
+            origin_port=payload.origin_port,
+            destination_port=payload.destination_port,
+            departure_date=payload.departure_date,
+            equipment_types={item.type for item in payload.equipment},
+        ),
+    )
 
 
 @app.get("/quotes/{quote_id}")

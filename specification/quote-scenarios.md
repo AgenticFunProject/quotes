@@ -27,6 +27,13 @@ Then the API explains whether the quote is still usable from its validity
 window
 And the bookability check accepts the same quote UUID or quote reference used by quote lookup
 
+## Scenario: Validate rate coverage before requesting a quote
+
+Given the service stores seeded public tariff coverage by trade lane and equipment type
+When a client validates route, departure date, and equipment selection before pricing
+Then the API explains whether the requested combination is commercially covered
+And the response identifies which equipment selections are uncovered when no effective rate exists
+
 ## Scenario: Persist quote lifecycle events in the outbox
 
 Given the service stores quote lifecycle state and outbox events together

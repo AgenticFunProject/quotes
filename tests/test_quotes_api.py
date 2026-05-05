@@ -678,6 +678,104 @@ def test_get_quote_bookability_returns_404_when_missing(client) -> None:
     assert response.json() == {"detail": "Quote not found"}
 
 
+def test_validate_quote_rate_coverage_returns_covered_route_details(client) -> None:
+    test_client, _ = client
+
+    response = test_client.post(
+        "/quotes/coverage/validate",
+        json={
+            "originPort": "NLRTM",
+            "destinationPort": "USNYC",
+            "departureDate": "2026-08-18",
+            "equipment": [
+                {"type": "20FT", "quantity": 2},
+                {"type": "40FT_HC", "quantity": 1},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "covered": True,
+        "reason": "RATE_AVAILABLE",
+        "pricingBasis": "PUBLIC_TARIFF",
+        "referenceDataVersion": REFERENCE_DATA_VERSION,
+        "route": {
+            "originPort": "NLRTM",
+            "destinationPort": "USNYC",
+            "departureDate": "2026-08-18",
+        },
+        "coverage": [
+            {
+                "equipmentType": "20FT",
+                "quantity": 2,
+                "covered": True,
+                "rateTableId": response.json()["coverage"][0]["rateTableId"],
+                "validFrom": "2026-04-01",
+                "validTo": "2026-12-31",
+            },
+            {
+                "equipmentType": "40FT_HC",
+                "quantity": 1,
+                "covered": True,
+                "rateTableId": response.json()["coverage"][1]["rateTableId"],
+                "validFrom": "2026-04-01",
+                "validTo": "2026-12-31",
+            },
+        ],
+        "uncoveredEquipment": [],
+    }
+
+
+def test_validate_quote_rate_coverage_reports_missing_equipment_rates(client) -> None:
+    test_client, _ = client
+
+    response = test_client.post(
+        "/quotes/coverage/validate",
+        json={
+            "originPort": "BRSSZ",
+            "destinationPort": "USLAX",
+            "departureDate": "2026-07-12",
+            "equipment": [
+                {"type": "20FT", "quantity": 1},
+                {"type": "40FT", "quantity": 1},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "covered": False,
+        "reason": "RATE_MISSING",
+        "pricingBasis": "PUBLIC_TARIFF",
+        "referenceDataVersion": REFERENCE_DATA_VERSION,
+        "route": {
+            "originPort": "BRSSZ",
+            "destinationPort": "USLAX",
+            "departureDate": "2026-07-12",
+        },
+        "coverage": [
+            {
+                "equipmentType": "20FT",
+                "quantity": 1,
+                "covered": False,
+                "rateTableId": None,
+                "validFrom": None,
+                "validTo": None,
+            },
+            {
+                "equipmentType": "40FT",
+                "quantity": 1,
+                "covered": False,
+                "rateTableId": None,
+                "validFrom": None,
+                "validTo": None,
+            },
+        ],
+        "uncoveredEquipment": ["20FT", "40FT"],
+    }
+
+
 def test_scenario_peak_season_quote_returns_the_documented_commercial_payload(client) -> None:
     test_client, _ = client
 
@@ -727,6 +825,36 @@ def test_scenario_booking_can_validate_quote_bookability(client) -> None:
     assert response.json()["bookable"] is True
     assert response.json()["status"] == "ACTIVE"
     assert response.json()["reason"] == "VALIDITY_WINDOW_OPEN"
+
+
+def test_scenario_route_coverage_validation_distinguishes_quoteable_lanes(client) -> None:
+    test_client, _ = client
+
+    covered_response = test_client.post(
+        "/quotes/coverage/validate",
+        json={
+            "originPort": "CNSHA",
+            "destinationPort": "DEHAM",
+            "departureDate": "2026-06-05",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+        },
+    )
+    uncovered_response = test_client.post(
+        "/quotes/coverage/validate",
+        json={
+            "originPort": "BRSSZ",
+            "destinationPort": "USLAX",
+            "departureDate": "2026-07-12",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+        },
+    )
+
+    assert covered_response.status_code == 200
+    assert covered_response.json()["covered"] is True
+    assert covered_response.json()["uncoveredEquipment"] == []
+    assert uncovered_response.status_code == 200
+    assert uncovered_response.json()["covered"] is False
+    assert uncovered_response.json()["uncoveredEquipment"] == ["20FT"]
 
 
 def test_scenario_quote_lifecycle_events_are_written_to_the_outbox(client) -> None:
