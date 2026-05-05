@@ -3,6 +3,7 @@
 .dolt/
 *.db
 *.sqlite
+.beads/
 .beads-credential-key
 .runtime/
 
@@ -12,6 +13,9 @@
 __pycache__/
 .venv/
 .opencode/
+.claude/
+mayor/
+polecats/
 state.json
 CLAUDE.md
 CLAUDE.local.md
