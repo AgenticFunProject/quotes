@@ -14,7 +14,7 @@ from app import db
 from app.db import Base, get_db
 from app.main import app
 from app.models import CommercialChangeAction, CommercialChangeEvent, CommercialChangeResourceType, EquipmentType, OutboxEvent, PricingBasis, Quote, QuoteLifecycleState, RateTable, SurchargeRule
-from app.seed import REFERENCE_DATA_VERSION, seed_reference_data
+from app.seed import FX_PROVIDER, FX_REFERENCE_DATA_VERSION, REFERENCE_DATA_VERSION, seed_reference_data
 from app.schedules import Schedule, get_schedule_provider
 
 
@@ -54,6 +54,19 @@ def _public_tariff_pricing_provenance() -> dict[str, object]:
     return {
         "pricingBasis": PricingBasis.PUBLIC_TARIFF.value,
         "referenceDataVersion": REFERENCE_DATA_VERSION,
+        "sourceCurrency": "USD",
+        "responseCurrency": "USD",
+        "sourceTotalAmount": 1960.0,
+        "currencyConversion": {
+            "provider": FX_PROVIDER,
+            "baseCurrency": "USD",
+            "quoteCurrency": "USD",
+            "rate": 1.0,
+            "observedAt": "2026-05-06T00:00:00+00:00",
+            "referenceDataVersion": FX_REFERENCE_DATA_VERSION,
+            "roundingPolicy": "LINE_ITEM_HALF_UP_2DP",
+            "conversionLevel": "LINE_ITEM",
+        },
         "baseRateRules": [
             {
                 "rateTableId": "rate-20ft-nlrtm-usnyc",
@@ -86,6 +99,17 @@ def _public_tariff_pricing_provenance() -> dict[str, object]:
     }
 
 
+def _fx_snapshot(*, currency: str = "USD", rate: float = 1.0) -> dict[str, object]:
+    return {
+        "provider": FX_PROVIDER,
+        "baseCurrency": "USD",
+        "quoteCurrency": currency,
+        "rate": rate,
+        "observedAt": "2026-05-06T00:00:00+00:00",
+        "referenceDataVersion": FX_REFERENCE_DATA_VERSION,
+    }
+
+
 def test_create_quote_returns_itemized_quote_and_persists_it(client) -> None:
     test_client, session_factory = client
 
@@ -107,6 +131,10 @@ def test_create_quote_returns_itemized_quote_and_persists_it(client) -> None:
         "quoteReference": response.json()["quoteReference"],
         "validUntil": response.json()["validUntil"],
         "currency": "USD",
+        "sourceCurrency": "USD",
+        "responseCurrency": "USD",
+        "fx": _fx_snapshot(),
+        "roundingPolicy": "LINE_ITEM_HALF_UP_2DP",
         "lineItems": [
             {"description": "Ocean Freight - 20FT x 2", "amount": 1900.0},
             {"description": "Ocean Freight - 40FT x 1", "amount": 1400.0},
@@ -114,6 +142,7 @@ def test_create_quote_returns_itemized_quote_and_persists_it(client) -> None:
             {"description": "Port Congestion Surcharge - Destination USNYC", "amount": 450.0},
             {"description": "Peak Season Surcharge", "amount": 360.0},
         ],
+        "sourceTotalAmount": 4350.0,
         "totalAmount": 4350.0,
     }
     assert response.json()["id"]
@@ -132,10 +161,18 @@ def test_create_quote_returns_itemized_quote_and_persists_it(client) -> None:
     assert stored_quote.id == response.json()["id"]
     assert stored_quote.quote_reference == response.json()["quoteReference"]
     assert float(stored_quote.total_amount) == response.json()["totalAmount"]
+    assert stored_quote.source_currency == "USD"
+    assert stored_quote.fx_snapshot == _fx_snapshot()
+    assert stored_quote.rounding_policy == "LINE_ITEM_HALF_UP_2DP"
     assert stored_quote.lifecycle_state == QuoteLifecycleState.ISSUED
     assert stored_quote.pricing_basis == PricingBasis.PUBLIC_TARIFF
     assert stored_quote.pricing_provenance["pricingBasis"] == PricingBasis.PUBLIC_TARIFF.value
     assert stored_quote.pricing_provenance["referenceDataVersion"] == REFERENCE_DATA_VERSION
+    assert stored_quote.pricing_provenance["currencyConversion"] == {
+        **_fx_snapshot(),
+        "roundingPolicy": "LINE_ITEM_HALF_UP_2DP",
+        "conversionLevel": "LINE_ITEM",
+    }
     assert stored_quote.pricing_provenance["baseRateRules"] == [
         {
             "rateTableId": stored_quote.pricing_provenance["baseRateRules"][0]["rateTableId"],
@@ -229,6 +266,50 @@ def test_create_quote_returns_itemized_quote_and_persists_it(client) -> None:
     assert stored_event.payload["pricingProvenance"] == stored_quote.pricing_provenance
 
 
+def test_create_quote_can_return_a_requested_currency_with_fx_provenance(client) -> None:
+    test_client, session_factory = client
+
+    response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+            "currency": "EUR",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json() == {
+        "id": response.json()["id"],
+        "quoteReference": response.json()["quoteReference"],
+        "validUntil": response.json()["validUntil"],
+        "currency": "EUR",
+        "sourceCurrency": "USD",
+        "responseCurrency": "EUR",
+        "fx": _fx_snapshot(currency="EUR", rate=0.92),
+        "roundingPolicy": "LINE_ITEM_HALF_UP_2DP",
+        "lineItems": [
+            {"description": "Ocean Freight - 20FT x 1", "amount": 874.0},
+            {"description": "Bunker Adjustment Factor (BAF)", "amount": 73.6},
+            {"description": "Port Congestion Surcharge - Destination USNYC", "amount": 138.0},
+            {"description": "Peak Season Surcharge", "amount": 110.4},
+        ],
+        "sourceTotalAmount": 1300.0,
+        "totalAmount": 1196.0,
+    }
+
+    with session_factory() as session:
+        stored_quote = session.scalar(select(Quote).where(Quote.id == response.json()["id"]))
+
+    assert stored_quote is not None
+    assert stored_quote.currency == "EUR"
+    assert stored_quote.source_currency == "USD"
+    assert stored_quote.fx_snapshot == _fx_snapshot(currency="EUR", rate=0.92)
+    assert stored_quote.pricing_provenance["responseCurrency"] == "EUR"
+    assert stored_quote.pricing_provenance["sourceTotalAmount"] == 1300.0
+
+
 def test_create_quote_increments_quote_reference_sequence(client) -> None:
     test_client, _ = client
 
@@ -269,6 +350,23 @@ def test_create_quote_returns_404_for_unknown_schedule(client) -> None:
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Schedule not found"}
+
+
+def test_create_quote_rejects_unsupported_requested_currency(client) -> None:
+    test_client, _ = client
+
+    response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 10000,
+            "currency": "JPY",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Unsupported currency: JPY"}
 
 
 def test_create_quote_uses_schedule_provider_dependency(client) -> None:
@@ -706,6 +804,7 @@ def test_admin_quote_preview_can_use_draft_rate_and_surcharge_versions(client) -
             "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
             "equipment": [{"type": "20FT", "quantity": 1}],
             "cargoWeightKg": 18000,
+            "currency": "EUR",
             "rateTableIds": [rate_response.json()["id"]],
             "surchargeRuleIds": [surcharge_response.json()["id"]],
         },
@@ -715,11 +814,23 @@ def test_admin_quote_preview_can_use_draft_rate_and_surcharge_versions(client) -
     assert surcharge_response.status_code == 201
     assert preview_response.status_code == 200
     assert preview_response.json() == {
-        "currency": "USD",
+        "currency": "EUR",
+        "sourceCurrency": "USD",
+        "responseCurrency": "EUR",
+        "fx": _fx_snapshot(currency="EUR", rate=0.92),
+        "roundingPolicy": "LINE_ITEM_HALF_UP_2DP",
         "pricingBasis": "PUBLIC_TARIFF",
         "pricingProvenance": {
             "pricingBasis": "PUBLIC_TARIFF",
             "referenceDataVersion": REFERENCE_DATA_VERSION,
+            "sourceCurrency": "USD",
+            "responseCurrency": "EUR",
+            "sourceTotalAmount": 1520.0,
+            "currencyConversion": {
+                **_fx_snapshot(currency="EUR", rate=0.92),
+                "roundingPolicy": "LINE_ITEM_HALF_UP_2DP",
+                "conversionLevel": "LINE_ITEM",
+            },
             "baseRateRules": [
                 {
                     "rateTableId": rate_response.json()["id"],
@@ -778,13 +889,14 @@ def test_admin_quote_preview_can_use_draft_rate_and_surcharge_versions(client) -
                 },
             ],
         },
+        "sourceTotalAmount": 1520.0,
         "lineItems": [
-            {"description": "Ocean Freight - 20FT x 1", "amount": 1110.0},
-            {"description": "Bunker Adjustment Factor (BAF)", "amount": 80.0},
-            {"description": "Port Congestion Surcharge - Destination USNYC", "amount": 210.0},
-            {"description": "Peak Season Surcharge", "amount": 120.0},
+            {"description": "Ocean Freight - 20FT x 1", "amount": 1021.2},
+            {"description": "Bunker Adjustment Factor (BAF)", "amount": 73.6},
+            {"description": "Port Congestion Surcharge - Destination USNYC", "amount": 193.2},
+            {"description": "Peak Season Surcharge", "amount": 110.4},
         ],
-        "totalAmount": 1520.0,
+        "totalAmount": 1398.4,
     }
 
     with session_factory() as session:
@@ -889,8 +1001,11 @@ def _seed_quote(session_factory: sessionmaker[Session]) -> Quote:
             equipment=[{"type": "20FT", "quantity": 2}],
             cargo_weight_kg=Decimal("18000.00"),
             currency="USD",
+            source_currency="USD",
             pricing_basis=PricingBasis.PUBLIC_TARIFF,
             pricing_provenance=_public_tariff_pricing_provenance(),
+            fx_snapshot=_fx_snapshot(),
+            rounding_policy="LINE_ITEM_HALF_UP_2DP",
             idempotency_key="booking-request-42",
             line_items=[
                 {"description": "Ocean Freight - 20FT x 2", "amount": 1800.0},
@@ -920,10 +1035,19 @@ def _seed_expired_quote(session_factory: sessionmaker[Session]) -> Quote:
             equipment=[{"type": "40FT", "quantity": 1}],
             cargo_weight_kg=Decimal("12000.00"),
             currency="USD",
+            source_currency="USD",
             pricing_basis=PricingBasis.PUBLIC_TARIFF,
             pricing_provenance={
                 "pricingBasis": PricingBasis.PUBLIC_TARIFF.value,
                 "referenceDataVersion": REFERENCE_DATA_VERSION,
+                "sourceCurrency": "USD",
+                "responseCurrency": "USD",
+                "sourceTotalAmount": 1400.0,
+                "currencyConversion": {
+                    **_fx_snapshot(),
+                    "roundingPolicy": "LINE_ITEM_HALF_UP_2DP",
+                    "conversionLevel": "LINE_ITEM",
+                },
                 "baseRateRules": [
                     {
                         "rateTableId": "rate-40ft-nlrtm-usnyc",
@@ -939,6 +1063,8 @@ def _seed_expired_quote(session_factory: sessionmaker[Session]) -> Quote:
                 ],
                 "appliedSurchargeRules": [],
             },
+            fx_snapshot=_fx_snapshot(),
+            rounding_policy="LINE_ITEM_HALF_UP_2DP",
             line_items=[{"description": "Ocean Freight - 40FT x 1", "amount": 1400.0}],
             total_amount=Decimal("1400.00"),
             valid_until=datetime.now(timezone.utc) - timedelta(hours=1),
@@ -970,6 +1096,10 @@ def test_get_quote_by_uuid_returns_full_quote(client) -> None:
         "equipment": [{"type": "20FT", "quantity": 2}],
         "cargoWeightKg": 18000.0,
         "currency": "USD",
+        "sourceCurrency": "USD",
+        "responseCurrency": "USD",
+        "fx": _fx_snapshot(),
+        "roundingPolicy": "LINE_ITEM_HALF_UP_2DP",
         "pricingBasis": "PUBLIC_TARIFF",
         "pricingProvenance": _public_tariff_pricing_provenance(),
         "customerId": None,
@@ -980,6 +1110,7 @@ def test_get_quote_by_uuid_returns_full_quote(client) -> None:
             {"description": "Ocean Freight - 20FT x 2", "amount": 1800.0},
             {"description": "Bunker Adjustment Factor (BAF)", "amount": 160.0},
         ],
+        "sourceTotalAmount": 1960.0,
         "totalAmount": 1960.0,
         "validUntil": quote.valid_until.isoformat(),
         "createdAt": quote.created_at.isoformat(),
@@ -1007,6 +1138,10 @@ def test_get_quote_by_reference_returns_full_quote(client) -> None:
         "equipment": [{"type": "20FT", "quantity": 2}],
         "cargoWeightKg": 18000.0,
         "currency": "USD",
+        "sourceCurrency": "USD",
+        "responseCurrency": "USD",
+        "fx": _fx_snapshot(),
+        "roundingPolicy": "LINE_ITEM_HALF_UP_2DP",
         "pricingBasis": "PUBLIC_TARIFF",
         "pricingProvenance": _public_tariff_pricing_provenance(),
         "customerId": None,
@@ -1017,6 +1152,7 @@ def test_get_quote_by_reference_returns_full_quote(client) -> None:
             {"description": "Ocean Freight - 20FT x 2", "amount": 1800.0},
             {"description": "Bunker Adjustment Factor (BAF)", "amount": 160.0},
         ],
+        "sourceTotalAmount": 1960.0,
         "totalAmount": 1960.0,
         "validUntil": quote.valid_until.isoformat(),
         "createdAt": quote.created_at.isoformat(),
@@ -1044,6 +1180,10 @@ def test_get_quote_by_quote_reference_returns_full_quote(client) -> None:
         "equipment": [{"type": "20FT", "quantity": 2}],
         "cargoWeightKg": 18000.0,
         "currency": "USD",
+        "sourceCurrency": "USD",
+        "responseCurrency": "USD",
+        "fx": _fx_snapshot(),
+        "roundingPolicy": "LINE_ITEM_HALF_UP_2DP",
         "pricingBasis": "PUBLIC_TARIFF",
         "pricingProvenance": _public_tariff_pricing_provenance(),
         "customerId": None,
@@ -1054,6 +1194,7 @@ def test_get_quote_by_quote_reference_returns_full_quote(client) -> None:
             {"description": "Ocean Freight - 20FT x 2", "amount": 1800.0},
             {"description": "Bunker Adjustment Factor (BAF)", "amount": 160.0},
         ],
+        "sourceTotalAmount": 1960.0,
         "totalAmount": 1960.0,
         "validUntil": quote.valid_until.isoformat(),
         "createdAt": quote.created_at.isoformat(),
@@ -1284,7 +1425,19 @@ def test_scenario_peak_season_quote_returns_the_documented_commercial_payload(cl
     )
 
     assert response.status_code == 201
-    assert set(response.json()) == {"id", "quoteReference", "validUntil", "currency", "lineItems", "totalAmount"}
+    assert set(response.json()) == {
+        "id",
+        "quoteReference",
+        "validUntil",
+        "currency",
+        "sourceCurrency",
+        "responseCurrency",
+        "fx",
+        "roundingPolicy",
+        "lineItems",
+        "sourceTotalAmount",
+        "totalAmount",
+    }
     assert response.json()["quoteReference"].startswith("QTE-")
     assert response.json()["lineItems"] == [
         {"description": "Ocean Freight - 20FT x 1", "amount": 950.0},
@@ -1415,6 +1568,27 @@ def test_scenario_contract_pricing_uses_customer_context_and_deterministic_prece
     assert account_response.status_code == 201
     assert customer_response.json()["totalAmount"] == 930.0
     assert account_response.json()["totalAmount"] == 800.0
+
+
+def test_scenario_requested_currency_quotes_include_fx_provenance(client) -> None:
+    test_client, _ = client
+
+    response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+            "currency": "EUR",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["sourceCurrency"] == "USD"
+    assert response.json()["responseCurrency"] == "EUR"
+    assert response.json()["fx"] == _fx_snapshot(currency="EUR", rate=0.92)
+    assert response.json()["sourceTotalAmount"] == 1300.0
+    assert response.json()["totalAmount"] == 1196.0
 
 
 def test_scenario_known_schedule_without_rate_returns_a_commercial_validation_error(client) -> None:

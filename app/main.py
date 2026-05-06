@@ -3,15 +3,15 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import Depends, FastAPI, HTTPException, Header, Query
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db import get_db, init_db
-from app.models import CommercialChangeAction, CommercialChangeEvent, CommercialChangeResourceType, Contract, ContractMatchType, ContractRateRule, EquipmentType, OutboxEvent, PortScope, PricingBasis, Quote, QuoteLifecycleState, RateTable, SurchargeRule, SurchargeType
+from app.models import CommercialChangeAction, CommercialChangeEvent, CommercialChangeResourceType, Contract, ContractMatchType, ContractRateRule, EquipmentType, ExchangeRate, OutboxEvent, PortScope, PricingBasis, Quote, QuoteLifecycleState, RateTable, SurchargeRule, SurchargeType
 from app.seed import REFERENCE_DATA_VERSION, seed_reference_data
 from app.schedules import Schedule, ScheduleProvider, get_schedule_provider
 from app.surcharges import EquipmentSelection, SurchargeLineItem, calculate_surcharges, total_surcharges
@@ -26,6 +26,8 @@ _OUTBOX_AGGREGATE_QUOTE = "quote"
 _QUOTE_CREATED_EVENT = "quote.created"
 _QUOTE_EXPIRED_EVENT = "quote.expired"
 _OUTBOX_EVENT_VERSION = 1
+_SOURCE_CURRENCY = "USD"
+_ROUNDING_POLICY = "LINE_ITEM_HALF_UP_2DP"
 
 
 @dataclass(frozen=True)
@@ -34,6 +36,16 @@ class ResolvedPricing:
     rates_by_type: dict[EquipmentType, object]
     surcharge_line_items: list[SurchargeLineItem]
     contract: Contract | None = None
+
+
+@dataclass(frozen=True)
+class ResolvedFxRate:
+    base_currency: str
+    quote_currency: str
+    rate: Decimal
+    provider: str
+    observed_at: datetime
+    reference_data_version: str
 
 
 class QuoteEquipmentRequest(BaseModel):
@@ -49,6 +61,12 @@ class CreateQuoteRequest(BaseModel):
     cargo_weight_kg: Decimal = Field(alias="cargoWeightKg", gt=0)
     customer_id: str | None = Field(default=None, alias="customerId", min_length=1)
     account_id: str | None = Field(default=None, alias="accountId", min_length=1)
+    currency: str = Field(default=_SOURCE_CURRENCY, min_length=3, max_length=3)
+
+    @field_validator("currency")
+    @classmethod
+    def normalize_currency(cls, value: str) -> str:
+        return value.upper()
 
 
 class ValidateRateCoverageRequest(BaseModel):
@@ -177,6 +195,7 @@ def _require_actor(actor: str | None = Header(default=None, alias="X-Actor")) ->
 
 
 def _serialize_quote(quote: Quote) -> dict[str, object]:
+    source_total_amount = _quote_source_total_amount(quote)
     return {
         "id": quote.id,
         "quoteReference": quote.quote_reference,
@@ -186,6 +205,10 @@ def _serialize_quote(quote: Quote) -> dict[str, object]:
         "equipment": quote.equipment,
         "cargoWeightKg": _serialize_decimal(quote.cargo_weight_kg),
         "currency": quote.currency,
+        "sourceCurrency": quote.source_currency,
+        "responseCurrency": quote.currency,
+        "fx": _quote_fx_snapshot(quote),
+        "roundingPolicy": _quote_rounding_policy(quote),
         "pricingBasis": quote.pricing_basis.value,
         "pricingProvenance": quote.pricing_provenance,
         "customerId": quote.customer_id,
@@ -199,6 +222,7 @@ def _serialize_quote(quote: Quote) -> dict[str, object]:
             }
             for item in quote.line_items
         ],
+        "sourceTotalAmount": source_total_amount,
         "totalAmount": _serialize_decimal(quote.total_amount),
         "validUntil": quote.valid_until.isoformat(),
         "createdAt": quote.created_at.isoformat(),
@@ -206,11 +230,16 @@ def _serialize_quote(quote: Quote) -> dict[str, object]:
 
 
 def _serialize_created_quote(quote: Quote) -> dict[str, object]:
+    source_total_amount = _quote_source_total_amount(quote)
     return {
         "id": quote.id,
         "quoteReference": quote.quote_reference,
         "validUntil": quote.valid_until.isoformat(),
         "currency": quote.currency,
+        "sourceCurrency": quote.source_currency,
+        "responseCurrency": quote.currency,
+        "fx": _quote_fx_snapshot(quote),
+        "roundingPolicy": _quote_rounding_policy(quote),
         "lineItems": [
             {
                 "description": item["description"],
@@ -218,11 +247,13 @@ def _serialize_created_quote(quote: Quote) -> dict[str, object]:
             }
             for item in quote.line_items
         ],
+        "sourceTotalAmount": source_total_amount,
         "totalAmount": _serialize_decimal(quote.total_amount),
     }
 
 
 def _build_quote_event_payload(quote: Quote) -> dict[str, object]:
+    source_total_amount = _quote_source_total_amount(quote)
     return {
         "quoteId": quote.id,
         "quoteReference": quote.quote_reference,
@@ -232,12 +263,17 @@ def _build_quote_event_payload(quote: Quote) -> dict[str, object]:
         "equipment": quote.equipment,
         "cargoWeightKg": _serialize_decimal(quote.cargo_weight_kg),
         "currency": quote.currency,
+        "sourceCurrency": quote.source_currency,
+        "responseCurrency": quote.currency,
+        "fx": _quote_fx_snapshot(quote),
+        "roundingPolicy": _quote_rounding_policy(quote),
         "customerId": quote.customer_id,
         "accountId": quote.account_id,
         "contractId": quote.contract_id,
         "pricingBasis": quote.pricing_basis.value,
         "pricingProvenance": quote.pricing_provenance,
         "lineItems": quote.line_items,
+        "sourceTotalAmount": source_total_amount,
         "totalAmount": _serialize_decimal(quote.total_amount),
         "validUntil": quote.valid_until.isoformat(),
         "createdAt": quote.created_at.isoformat(),
@@ -316,6 +352,69 @@ def _serialize_bookability(quote: Quote) -> dict[str, object]:
         "expired": expired,
         "validUntil": quote.valid_until.isoformat(),
     }
+
+
+def _quote_fx_snapshot(quote: Quote) -> dict[str, object]:
+    if quote.fx_snapshot:
+        return quote.fx_snapshot
+
+    return {
+        "provider": "legacy-identity-fx",
+        "baseCurrency": quote.source_currency,
+        "quoteCurrency": quote.currency,
+        "rate": 1.0,
+        "observedAt": quote.created_at.isoformat(),
+        "referenceDataVersion": "legacy",
+    }
+
+
+def _quote_rounding_policy(quote: Quote) -> str:
+    return quote.rounding_policy or _ROUNDING_POLICY
+
+
+def _quote_source_total_amount(quote: Quote) -> float:
+    source_total_amount = quote.pricing_provenance.get("sourceTotalAmount")
+    if source_total_amount is not None:
+        return float(source_total_amount)
+
+    return _serialize_decimal(quote.total_amount)
+
+
+def _resolve_fx_rate(*, db: Session, currency: str) -> ResolvedFxRate:
+    fx_rate = db.scalar(
+        select(ExchangeRate)
+        .where(
+            ExchangeRate.base_currency == _SOURCE_CURRENCY,
+            ExchangeRate.quote_currency == currency,
+        )
+        .order_by(ExchangeRate.observed_at.desc())
+    )
+    if fx_rate is None:
+        raise HTTPException(status_code=400, detail=f"Unsupported currency: {currency}")
+
+    return ResolvedFxRate(
+        base_currency=fx_rate.base_currency,
+        quote_currency=fx_rate.quote_currency,
+        rate=fx_rate.rate,
+        provider=fx_rate.provider,
+        observed_at=_normalize_utc(fx_rate.observed_at),
+        reference_data_version=fx_rate.reference_data_version,
+    )
+
+
+def _serialize_fx_snapshot(fx_rate: ResolvedFxRate) -> dict[str, object]:
+    return {
+        "provider": fx_rate.provider,
+        "baseCurrency": fx_rate.base_currency,
+        "quoteCurrency": fx_rate.quote_currency,
+        "rate": _serialize_decimal(fx_rate.rate),
+        "observedAt": fx_rate.observed_at.isoformat(),
+        "referenceDataVersion": fx_rate.reference_data_version,
+    }
+
+
+def _convert_money(amount: Decimal, *, fx_rate: ResolvedFxRate) -> Decimal:
+    return (amount * fx_rate.rate).quantize(_MONEY_PRECISION, rounding=ROUND_HALF_UP)
 
 
 def _generate_quote_reference(db: Session) -> str:
@@ -747,10 +846,20 @@ def _build_pricing_provenance(
     payload: CreateQuoteRequest,
     pricing: ResolvedPricing,
     surcharge_line_items: list[SurchargeLineItem],
+    source_total_amount: Decimal,
+    fx_rate: ResolvedFxRate,
 ) -> dict[str, object]:
     provenance: dict[str, object] = {
         "pricingBasis": pricing.pricing_basis.value,
         "referenceDataVersion": REFERENCE_DATA_VERSION,
+        "sourceCurrency": _SOURCE_CURRENCY,
+        "responseCurrency": payload.currency,
+        "sourceTotalAmount": _serialize_decimal(source_total_amount),
+        "currencyConversion": {
+            **_serialize_fx_snapshot(fx_rate),
+            "roundingPolicy": _ROUNDING_POLICY,
+            "conversionLevel": "LINE_ITEM",
+        },
         "baseRateRules": [
             {
                 "rateTableId": rate.id,
@@ -805,7 +914,7 @@ def _build_pricing_provenance(
     return provenance
 
 
-def _build_quote_line_items(
+def _build_source_quote_line_items(
     *,
     payload: CreateQuoteRequest,
     pricing: ResolvedPricing,
@@ -829,6 +938,26 @@ def _build_quote_line_items(
     return line_items, surcharge_line_items, total_amount
 
 
+def _convert_quote_line_items(
+    source_line_items: list[dict[str, object]],
+    *,
+    fx_rate: ResolvedFxRate,
+) -> tuple[list[dict[str, object]], Decimal]:
+    converted_line_items: list[dict[str, object]] = []
+    converted_total = Decimal("0.00")
+    for item in source_line_items:
+        converted_amount = _convert_money(Decimal(str(item["amount"])), fx_rate=fx_rate)
+        converted_total += converted_amount
+        converted_line_items.append(
+            {
+                "description": item["description"],
+                "amount": float(converted_amount),
+            }
+        )
+
+    return converted_line_items, converted_total.quantize(_MONEY_PRECISION)
+
+
 @app.post("/quotes", status_code=201)
 def create_quote(
     payload: CreateQuoteRequest,
@@ -836,6 +965,7 @@ def create_quote(
     schedule_provider: ScheduleProvider = Depends(get_schedule_provider),
 ) -> dict[str, object]:
     schedule = _get_schedule(payload.schedule_id, schedule_provider)
+    fx_rate = _resolve_fx_rate(db=db, currency=payload.currency)
     rates_by_type = _load_rate_table(
         db=db,
         schedule=schedule,
@@ -851,7 +981,11 @@ def create_quote(
     )
 
     equipment_payload = [{"type": item.type.value, "quantity": item.quantity} for item in payload.equipment]
-    line_items, surcharge_line_items, total_amount = _build_quote_line_items(payload=payload, pricing=pricing)
+    source_line_items, surcharge_line_items, source_total_amount = _build_source_quote_line_items(
+        payload=payload,
+        pricing=pricing,
+    )
+    line_items, total_amount = _convert_quote_line_items(source_line_items, fx_rate=fx_rate)
     schedule_snapshot = {
         "scheduleId": schedule.schedule_id,
         "originPort": schedule.origin_port,
@@ -865,7 +999,8 @@ def create_quote(
         schedule_snapshot=schedule_snapshot,
         equipment=equipment_payload,
         cargo_weight_kg=payload.cargo_weight_kg.quantize(_MONEY_PRECISION),
-        currency="USD",
+        currency=payload.currency,
+        source_currency=_SOURCE_CURRENCY,
         customer_id=payload.customer_id,
         account_id=payload.account_id,
         pricing_basis=pricing.pricing_basis,
@@ -874,7 +1009,11 @@ def create_quote(
             payload=payload,
             pricing=pricing,
             surcharge_line_items=surcharge_line_items,
+            source_total_amount=source_total_amount,
+            fx_rate=fx_rate,
         ),
+        fx_snapshot=_serialize_fx_snapshot(fx_rate),
+        rounding_policy=_ROUNDING_POLICY,
         line_items=line_items,
         total_amount=total_amount,
     )
@@ -1150,6 +1289,7 @@ def preview_quote(
     schedule_provider: ScheduleProvider = Depends(get_schedule_provider),
 ) -> dict[str, object]:
     schedule = _get_schedule(payload.schedule_id, schedule_provider)
+    fx_rate = _resolve_fx_rate(db=db, currency=payload.currency)
     equipment_types = {item.type for item in payload.equipment}
     public_rates_by_type = _find_rate_coverage(
         db=db,
@@ -1178,17 +1318,28 @@ def preview_quote(
         public_rates_by_type=preview_rates_by_type,
         surcharge_rules=surcharge_rules,
     )
-    line_items, surcharge_line_items, total_amount = _build_quote_line_items(payload=payload, pricing=pricing)
+    source_line_items, surcharge_line_items, source_total_amount = _build_source_quote_line_items(
+        payload=payload,
+        pricing=pricing,
+    )
+    line_items, total_amount = _convert_quote_line_items(source_line_items, fx_rate=fx_rate)
 
     return {
-        "currency": "USD",
+        "currency": payload.currency,
+        "sourceCurrency": _SOURCE_CURRENCY,
+        "responseCurrency": payload.currency,
+        "fx": _serialize_fx_snapshot(fx_rate),
+        "roundingPolicy": _ROUNDING_POLICY,
         "pricingBasis": pricing.pricing_basis.value,
         "pricingProvenance": _build_pricing_provenance(
             payload=payload,
             pricing=pricing,
             surcharge_line_items=surcharge_line_items,
+            source_total_amount=source_total_amount,
+            fx_rate=fx_rate,
         ),
         "lineItems": line_items,
+        "sourceTotalAmount": _serialize_decimal(source_total_amount),
         "totalAmount": _serialize_decimal(total_amount),
     }
 

@@ -36,6 +36,7 @@ Provides a quoted price that can be referenced when placing a booking.
   "scheduleId": "string",
   "customerId": "string",
   "accountId": "string",
+  "currency": "EUR",
   "equipment": [
     { "type": "20FT", "quantity": 2 },
     { "type": "40FT", "quantity": 1 }
@@ -45,8 +46,10 @@ Provides a quoted price that can be referenced when placing a booking.
 ```
 
 - `customerId` and `accountId` are optional request context fields.
+- `currency` is optional and defaults to `USD`.
 - When both are present, account-specific contracts take precedence over customer-level contracts.
 - If no matching contract covers the request, the service falls back to `PUBLIC_TARIFF` pricing.
+- The commercial source amount is still resolved in governed `USD` and then converted into the requested display currency.
 
 ### POST /quotes - Response
 ```json
@@ -54,15 +57,27 @@ Provides a quoted price that can be referenced when placing a booking.
   "quoteReference": "QTE-2026-00108",
   "id": "53c362b2-1229-4ea5-a24a-9891fb1f509d",
   "validUntil": "2026-04-07T23:59:59Z",
-  "currency": "USD",
+  "currency": "EUR",
+  "sourceCurrency": "USD",
+  "responseCurrency": "EUR",
+  "fx": {
+    "provider": "seeded-governed-fx",
+    "baseCurrency": "USD",
+    "quoteCurrency": "EUR",
+    "rate": 0.92,
+    "observedAt": "2026-05-06T00:00:00+00:00",
+    "referenceDataVersion": "seed-fx-2026-05-06"
+  },
+  "roundingPolicy": "LINE_ITEM_HALF_UP_2DP",
   "lineItems": [
-    { "description": "Ocean Freight - 20FT x 2", "amount": 1900.00 },
-    { "description": "Ocean Freight - 40FT x 1", "amount": 1400.00 },
-    { "description": "Bunker Adjustment Factor (BAF)", "amount": 240.00 },
-    { "description": "Port Congestion Surcharge - Destination USNYC", "amount": 450.00 },
-    { "description": "Peak Season Surcharge", "amount": 360.00 }
+    { "description": "Ocean Freight - 20FT x 2", "amount": 1748.00 },
+    { "description": "Ocean Freight - 40FT x 1", "amount": 1288.00 },
+    { "description": "Bunker Adjustment Factor (BAF)", "amount": 220.80 },
+    { "description": "Port Congestion Surcharge - Destination USNYC", "amount": 414.00 },
+    { "description": "Peak Season Surcharge", "amount": 331.20 }
   ],
-  "totalAmount": 4350.00
+  "sourceTotalAmount": 4350.00,
+  "totalAmount": 4002.00
 }
 ```
 
@@ -122,11 +137,35 @@ Provides a quoted price that can be referenced when placing a booking.
     { "type": "20FT", "quantity": 2 }
   ],
   "cargoWeightKg": 18000,
-  "currency": "USD",
+  "currency": "EUR",
+  "sourceCurrency": "USD",
+  "responseCurrency": "EUR",
+  "fx": {
+    "provider": "seeded-governed-fx",
+    "baseCurrency": "USD",
+    "quoteCurrency": "EUR",
+    "rate": 0.92,
+    "observedAt": "2026-05-06T00:00:00+00:00",
+    "referenceDataVersion": "seed-fx-2026-05-06"
+  },
+  "roundingPolicy": "LINE_ITEM_HALF_UP_2DP",
   "pricingBasis": "PUBLIC_TARIFF",
   "pricingProvenance": {
     "pricingBasis": "PUBLIC_TARIFF",
     "referenceDataVersion": "seed-2026-04-01",
+    "sourceCurrency": "USD",
+    "responseCurrency": "EUR",
+    "sourceTotalAmount": 1960,
+    "currencyConversion": {
+      "provider": "seeded-governed-fx",
+      "baseCurrency": "USD",
+      "quoteCurrency": "EUR",
+      "rate": 0.92,
+      "observedAt": "2026-05-06T00:00:00+00:00",
+      "referenceDataVersion": "seed-fx-2026-05-06",
+      "roundingPolicy": "LINE_ITEM_HALF_UP_2DP",
+      "conversionLevel": "LINE_ITEM"
+    },
     "baseRateRules": [
       {
         "rateTableId": "rate-20ft-nlrtm-usnyc",
@@ -160,10 +199,11 @@ Provides a quoted price that can be referenced when placing a booking.
   "contractId": null,
   "idempotencyKey": null,
   "lineItems": [
-    { "description": "Ocean Freight - 20FT x 2", "amount": 1800.00 },
-    { "description": "Bunker Adjustment Factor (BAF)", "amount": 160.00 }
+    { "description": "Ocean Freight - 20FT x 2", "amount": 1656.00 },
+    { "description": "Bunker Adjustment Factor (BAF)", "amount": 147.20 }
   ],
-  "totalAmount": 1960.00,
+  "sourceTotalAmount": 1960.00,
+  "totalAmount": 1803.20,
   "validUntil": "2026-04-07T23:59:59Z",
   "createdAt": "2026-04-01T09:30:00Z"
 }
@@ -258,6 +298,13 @@ Provides a quoted price that can be referenced when placing a booking.
 - This endpoint accepts direct route attributes instead of a `scheduleId` so clients can validate commercial data coverage before attempting a quote request.
 - `covered` is `true` only when every requested equipment selection has an effective public tariff rate for the submitted route and departure date.
 - `uncoveredEquipment` lists the equipment types that would fail commercial quote creation because no effective base rate exists.
+
+### Multi-currency quote behavior
+- Base freight, contracts, and surcharges are currently governed in `USD`.
+- `POST /quotes` and `POST /admin/quote-preview` can return a display currency by converting each line item from the governed `USD` source amount using the persisted FX snapshot and `LINE_ITEM_HALF_UP_2DP` rounding policy.
+- `currency` remains the display currency on the stored quote; `sourceCurrency` exposes the governed commercial basis.
+- `sourceTotalAmount` is the pre-conversion total, while `totalAmount` is the sum of the rounded display-currency line items.
+- `pricingProvenance.currencyConversion` records the persisted FX provider, rate, observed timestamp, reference-data version, and conversion level used for reproducibility.
 
 ### Admin managed commercial data endpoints
 - All `/admin/*` commercial data endpoints require the `X-Actor` request header so the service can persist who created, updated, or activated the change.

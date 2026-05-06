@@ -86,6 +86,7 @@ class Quote(Base):
     equipment: Mapped[list[dict[str, object]]] = mapped_column(JSON)
     cargo_weight_kg: Mapped[Decimal] = mapped_column(Numeric(10, 2))
     currency: Mapped[str] = mapped_column(String(3), default="USD")
+    source_currency: Mapped[str] = mapped_column(String(3), default="USD")
     customer_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     account_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     pricing_basis: Mapped[PricingBasis] = mapped_column(
@@ -98,6 +99,8 @@ class Quote(Base):
     )
     contract_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     pricing_provenance: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    fx_snapshot: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    rounding_policy: Mapped[str] = mapped_column(String(64), default="LINE_ITEM_HALF_UP_2DP")
     idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True, unique=True, index=True)
     line_items: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
     total_amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=Decimal("0.00"))
@@ -209,6 +212,18 @@ class ContractRateRule(Base):
         )
     )
     base_rate_usd: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+
+
+class ExchangeRate(Base):
+    __tablename__ = "exchange_rates"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    base_currency: Mapped[str] = mapped_column(String(3), index=True)
+    quote_currency: Mapped[str] = mapped_column(String(3), index=True)
+    rate: Mapped[Decimal] = mapped_column(Numeric(12, 6))
+    provider: Mapped[str] = mapped_column(String(64))
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    reference_data_version: Mapped[str] = mapped_column(String(64))
 
 
 class SurchargeRule(ManagedCommercialRecord, Base):

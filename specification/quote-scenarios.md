@@ -95,3 +95,11 @@ Given the service stores active public tariff data and draft replacement commerc
 When a commercial operator previews a quote with explicit draft rate-table and surcharge-rule identifiers
 Then the API prices the shipment without persisting a quote
 And the response provenance records the draft managed versions that would be used after activation
+
+## Scenario: Return a quote in a requested display currency
+
+Given the service stores governed FX data for supported quote currencies
+When a client requests a quote with `currency` set to `EUR`
+Then the API keeps the commercial source basis in `USD`
+And the response exposes the persisted FX snapshot and rounding policy used for conversion
+And the stored quote provenance records both the source total and the display-currency total deterministically

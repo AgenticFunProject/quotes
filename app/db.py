@@ -42,6 +42,14 @@ def _apply_sqlite_schema_fixes() -> None:
             connection.execute(text("ALTER TABLE quotes ADD COLUMN contract_id VARCHAR(36)"))
         if "pricing_provenance" not in quote_columns:
             connection.execute(text("ALTER TABLE quotes ADD COLUMN pricing_provenance JSON NOT NULL DEFAULT '{}'"))
+        if "source_currency" not in quote_columns:
+            connection.execute(text("ALTER TABLE quotes ADD COLUMN source_currency VARCHAR(3) NOT NULL DEFAULT 'USD'"))
+        if "fx_snapshot" not in quote_columns:
+            connection.execute(text("ALTER TABLE quotes ADD COLUMN fx_snapshot JSON NOT NULL DEFAULT '{}'"))
+        if "rounding_policy" not in quote_columns:
+            connection.execute(
+                text("ALTER TABLE quotes ADD COLUMN rounding_policy VARCHAR(64) NOT NULL DEFAULT 'LINE_ITEM_HALF_UP_2DP'")
+            )
 
     _backfill_managed_commercial_columns("rate_tables")
     _backfill_managed_commercial_columns("surcharge_rules")

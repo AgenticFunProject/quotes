@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import select
 
 from app.db import SessionLocal
-from app.models import Contract, ContractMatchType, ContractRateRule, EquipmentType, PortScope, RateTable, SurchargeRule, SurchargeType
+from app.models import Contract, ContractMatchType, ContractRateRule, EquipmentType, ExchangeRate, PortScope, RateTable, SurchargeRule, SurchargeType
 
 
 REFERENCE_DATA_VERSION = "seed-2026-04-01"
+FX_REFERENCE_DATA_VERSION = "seed-fx-2026-05-06"
+FX_PROVIDER = "seeded-governed-fx"
+FX_OBSERVED_AT = datetime(2026, 5, 6, 0, 0, tzinfo=timezone.utc)
 
 
 RATE_TABLE_ROWS = (
@@ -229,6 +232,36 @@ CONTRACT_RATE_RULE_ROWS = (
     },
 )
 
+EXCHANGE_RATE_ROWS = (
+    {
+        "id": "fx-usd-usd",
+        "base_currency": "USD",
+        "quote_currency": "USD",
+        "rate": Decimal("1.000000"),
+        "provider": FX_PROVIDER,
+        "observed_at": FX_OBSERVED_AT,
+        "reference_data_version": FX_REFERENCE_DATA_VERSION,
+    },
+    {
+        "id": "fx-usd-eur",
+        "base_currency": "USD",
+        "quote_currency": "EUR",
+        "rate": Decimal("0.920000"),
+        "provider": FX_PROVIDER,
+        "observed_at": FX_OBSERVED_AT,
+        "reference_data_version": FX_REFERENCE_DATA_VERSION,
+    },
+    {
+        "id": "fx-usd-gbp",
+        "base_currency": "USD",
+        "quote_currency": "GBP",
+        "rate": Decimal("0.790000"),
+        "provider": FX_PROVIDER,
+        "observed_at": FX_OBSERVED_AT,
+        "reference_data_version": FX_REFERENCE_DATA_VERSION,
+    },
+)
+
 
 def seed_reference_data() -> None:
     with SessionLocal() as session:
@@ -236,8 +269,9 @@ def seed_reference_data() -> None:
         has_surcharge_rows = session.scalar(select(SurchargeRule.id).limit(1)) is not None
         has_contract_rows = session.scalar(select(Contract.id).limit(1)) is not None
         has_contract_rate_rows = session.scalar(select(ContractRateRule.id).limit(1)) is not None
+        has_exchange_rate_rows = session.scalar(select(ExchangeRate.id).limit(1)) is not None
 
-        if has_rate_rows and has_surcharge_rows and has_contract_rows and has_contract_rate_rows:
+        if has_rate_rows and has_surcharge_rows and has_contract_rows and has_contract_rate_rows and has_exchange_rate_rows:
             return
 
         if not has_rate_rows:
@@ -251,5 +285,8 @@ def seed_reference_data() -> None:
 
         if not has_contract_rate_rows:
             session.add_all(ContractRateRule(**row) for row in CONTRACT_RATE_RULE_ROWS)
+
+        if not has_exchange_rate_rows:
+            session.add_all(ExchangeRate(**row) for row in EXCHANGE_RATE_ROWS)
 
         session.commit()

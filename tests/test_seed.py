@@ -6,8 +6,8 @@ import pytest
 
 from app import db
 from app.db import Base
-from app.models import Contract, ContractRateRule, EquipmentType, RateTable, SurchargeRule, SurchargeType
-from app.seed import CONTRACT_RATE_RULE_ROWS, CONTRACT_ROWS, RATE_TABLE_ROWS, SURCHARGE_RULE_ROWS, seed_reference_data
+from app.models import Contract, ContractRateRule, EquipmentType, ExchangeRate, RateTable, SurchargeRule, SurchargeType
+from app.seed import CONTRACT_RATE_RULE_ROWS, CONTRACT_ROWS, EXCHANGE_RATE_ROWS, RATE_TABLE_ROWS, SURCHARGE_RULE_ROWS, seed_reference_data
 
 
 @pytest.fixture()
@@ -37,11 +37,13 @@ def test_seed_reference_data_populates_rate_tables_and_surcharges(sqlite_databas
         surcharge_rows = session.query(SurchargeRule).order_by(SurchargeRule.description).all()
         contract_rows = session.query(Contract).order_by(Contract.id).all()
         contract_rate_rows = session.query(ContractRateRule).order_by(ContractRateRule.contract_id).all()
+        exchange_rate_rows = session.query(ExchangeRate).order_by(ExchangeRate.quote_currency).all()
 
     assert len(rate_rows) == len(RATE_TABLE_ROWS)
     assert len(surcharge_rows) == len(SURCHARGE_RULE_ROWS)
     assert len(contract_rows) == len(CONTRACT_ROWS)
     assert len(contract_rate_rows) == len(CONTRACT_RATE_RULE_ROWS)
+    assert len(exchange_rate_rows) == len(EXCHANGE_RATE_ROWS)
     assert {row.equipment_type for row in rate_rows} == set(EquipmentType)
     assert all(row.version == 1 for row in rate_rows)
     assert all(row.is_active for row in rate_rows)
@@ -64,3 +66,4 @@ def test_seed_reference_data_is_idempotent(sqlite_database) -> None:
         assert session.query(SurchargeRule).count() == len(SURCHARGE_RULE_ROWS)
         assert session.query(Contract).count() == len(CONTRACT_ROWS)
         assert session.query(ContractRateRule).count() == len(CONTRACT_RATE_RULE_ROWS)
+        assert session.query(ExchangeRate).count() == len(EXCHANGE_RATE_ROWS)

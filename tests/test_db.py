@@ -37,6 +37,7 @@ def test_models_create_sqlite_tables() -> None:
         "commercial_change_events",
         "contract_rate_rules",
         "contracts",
+        "exchange_rates",
         "outbox_events",
         "quotes",
         "rate_tables",
@@ -213,6 +214,9 @@ def test_init_db_backfills_pricing_provenance_column_for_existing_sqlite_quotes_
     assert "account_id" in quote_columns
     assert "contract_id" in quote_columns
     assert "pricing_provenance" in quote_columns
+    assert "source_currency" in quote_columns
+    assert "fx_snapshot" in quote_columns
+    assert "rounding_policy" in quote_columns
 
 
 def test_init_db_backfills_managed_commercial_columns_for_existing_sqlite_tables() -> None:
