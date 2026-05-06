@@ -43,12 +43,16 @@ def test_seed_reference_data_populates_rate_tables_and_surcharges(sqlite_databas
     assert len(contract_rows) == len(CONTRACT_ROWS)
     assert len(contract_rate_rows) == len(CONTRACT_RATE_RULE_ROWS)
     assert {row.equipment_type for row in rate_rows} == set(EquipmentType)
+    assert all(row.version == 1 for row in rate_rows)
+    assert all(row.is_active for row in rate_rows)
     assert {row.surcharge_type for row in surcharge_rows} == {
         SurchargeType.BAF,
         SurchargeType.PORT_CONGESTION,
         SurchargeType.HEAVY_CARGO,
         SurchargeType.PEAK_SEASON,
     }
+    assert all(row.version == 1 for row in surcharge_rows)
+    assert all(row.is_active for row in surcharge_rows)
 
 
 def test_seed_reference_data_is_idempotent(sqlite_database) -> None:

@@ -5,7 +5,7 @@ from decimal import Decimal
 from enum import Enum
 from uuid import uuid4
 
-from sqlalchemy import JSON, Date, DateTime, Enum as SqlEnum, Numeric, String
+from sqlalchemy import JSON, Boolean, Date, DateTime, Enum as SqlEnum, Integer, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -109,7 +109,18 @@ class OutboxEvent(Base):
     last_error: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
 
-class RateTable(Base):
+class ManagedCommercialRecord:
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    updated_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    activated_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class RateTable(ManagedCommercialRecord, Base):
     __tablename__ = "rate_tables"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
@@ -162,7 +173,7 @@ class ContractRateRule(Base):
     base_rate_usd: Mapped[Decimal] = mapped_column(Numeric(10, 2))
 
 
-class SurchargeRule(Base):
+class SurchargeRule(ManagedCommercialRecord, Base):
     __tablename__ = "surcharge_rules"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))

@@ -148,6 +148,10 @@ def test_models_persist_records() -> None:
     assert stored_quote.pricing_provenance["referenceDataVersion"] == REFERENCE_DATA_VERSION
     assert stored_quote.idempotency_key == "request-123"
     assert stored_event.event_type == "quote.created"
+    assert session.query(RateTable).one().version == 1
+    assert session.query(RateTable).one().is_active is True
+    assert session.query(SurchargeRule).one().version == 1
+    assert session.query(SurchargeRule).one().is_active is True
 
 
 def test_init_db_backfills_pricing_provenance_column_for_existing_sqlite_quotes_table() -> None:
@@ -193,3 +197,63 @@ def test_init_db_backfills_pricing_provenance_column_for_existing_sqlite_quotes_
     assert "account_id" in quote_columns
     assert "contract_id" in quote_columns
     assert "pricing_provenance" in quote_columns
+
+
+def test_init_db_backfills_managed_commercial_columns_for_existing_sqlite_tables() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE rate_tables ("
+                "id VARCHAR(36) PRIMARY KEY, "
+                "origin_port VARCHAR(16), "
+                "destination_port VARCHAR(16), "
+                "equipment_type VARCHAR(16), "
+                "base_rate_usd NUMERIC(10, 2), "
+                "valid_from DATE, "
+                "valid_to DATE"
+                ")"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE TABLE surcharge_rules ("
+                "id VARCHAR(36) PRIMARY KEY, "
+                "surcharge_type VARCHAR(32), "
+                "description VARCHAR(128), "
+                "amount_usd NUMERIC(10, 2), "
+                "currency VARCHAR(3), "
+                "port_code VARCHAR(16), "
+                "port_scope VARCHAR(16), "
+                "weight_threshold_kg_per_teu NUMERIC(10, 2), "
+                "valid_from DATE, "
+                "valid_to DATE"
+                ")"
+            )
+        )
+
+    original_engine = db_module.engine
+    original_session_local = db_module.SessionLocal
+    try:
+        db_module.engine = engine
+        db_module.SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db_module.init_db()
+    finally:
+        db_module.engine = original_engine
+        db_module.SessionLocal = original_session_local
+
+    inspector = inspect(engine)
+    rate_columns = {column["name"] for column in inspector.get_columns("rate_tables")}
+    surcharge_columns = {column["name"] for column in inspector.get_columns("surcharge_rules")}
+    for expected_column in {
+        "version",
+        "is_active",
+        "created_by",
+        "updated_by",
+        "activated_by",
+        "created_at",
+        "updated_at",
+        "activated_at",
+    }:
+        assert expected_column in rate_columns
+        assert expected_column in surcharge_columns

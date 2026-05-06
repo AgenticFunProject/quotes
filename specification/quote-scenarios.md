@@ -61,3 +61,23 @@ Given both a customer contract and a narrower account contract match the same sh
 When a client requests a quote with both `customerId` and `accountId`
 Then the account contract takes precedence deterministically
 And the resulting quote can differ from the customer-level contract for the same shipment inputs
+
+## Scenario: Create, update, and activate a managed rate-table version
+
+Given the service stores an active public tariff for a quoteable lane
+When a commercial operator creates a draft replacement rate table, updates it, and activates it
+Then later quote requests use the activated rate-table version instead of the superseded active version
+And the stored quote provenance records the selected `rateVersion`
+
+## Scenario: Create, update, and activate a managed surcharge-rule version
+
+Given the service stores an active surcharge rule for a quoteable lane
+When a commercial operator creates a draft replacement surcharge rule, updates it, and activates it
+Then later quote requests apply the activated surcharge-rule version instead of the superseded active version
+And the stored quote provenance records the selected `surchargeRuleVersion`
+
+## Scenario: Require actor identity for commercial admin changes
+
+Given the service exposes internal managed-commercial-data admin endpoints
+When a client attempts to create a managed rate or surcharge change without `X-Actor`
+Then the API rejects the request because the audit actor is required

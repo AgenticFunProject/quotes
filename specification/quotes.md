@@ -10,6 +10,7 @@ Provides a quoted price that can be referenced when placing a booking.
 - Store quotes with a validity period so they can be referenced by Booking
 - Persist durable quote lifecycle events for downstream consumers through an outbox table
 - Return itemised price breakdown
+- Provide internal admin workflows for managed rate-table and surcharge-rule changes
 
 ## API Endpoints
 
@@ -20,6 +21,12 @@ Provides a quoted price that can be referenced when placing a booking.
 | GET | /quotes/{id} | Retrieve a quote by internal ID or public quote reference |
 | GET | /quotes/{id}/bookability | Validate whether a stored quote is still usable for booking |
 | GET | /quotes/reference/{quoteReference} | Retrieve a quote by human-readable quote reference |
+| POST | /admin/rate-tables | Create a draft managed rate-table version |
+| PATCH | /admin/rate-tables/{id} | Update a draft managed rate-table version |
+| POST | /admin/rate-tables/{id}/activate | Activate a managed rate-table version |
+| POST | /admin/surcharge-rules | Create a draft managed surcharge-rule version |
+| PATCH | /admin/surcharge-rules/{id} | Update a draft managed surcharge-rule version |
+| POST | /admin/surcharge-rules/{id}/activate | Activate a managed surcharge-rule version |
 
 ### POST /quotes - Request Body
 ```json
@@ -172,6 +179,75 @@ Provides a quoted price that can be referenced when placing a booking.
 }
 ```
 
+### POST /admin/rate-tables - Request Body
+```json
+{
+  "originPort": "NLRTM",
+  "destinationPort": "USNYC",
+  "equipmentType": "20FT",
+  "baseRateUsd": 1000,
+  "validFrom": "2026-04-01",
+  "validTo": "2026-12-31"
+}
+```
+
+### POST /admin/rate-tables - Response
+```json
+{
+  "id": "<uuid>",
+  "originPort": "NLRTM",
+  "destinationPort": "USNYC",
+  "equipmentType": "20FT",
+  "baseRateUsd": 1000,
+  "validFrom": "2026-04-01",
+  "validTo": "2026-12-31",
+  "version": 2,
+  "isActive": false,
+  "createdBy": "pricing.ops@quotes",
+  "updatedBy": "pricing.ops@quotes",
+  "activatedBy": null,
+  "createdAt": "2026-05-06T14:00:00+00:00",
+  "updatedAt": "2026-05-06T14:00:00+00:00",
+  "activatedAt": null
+}
+```
+
+### POST /admin/surcharge-rules - Request Body
+```json
+{
+  "surchargeType": "PORT_CONGESTION",
+  "description": "Port Congestion Surcharge - Destination USNYC",
+  "amountUsd": 175,
+  "currency": "USD",
+  "portCode": "USNYC",
+  "portScope": "DESTINATION"
+}
+```
+
+### POST /admin/surcharge-rules - Response
+```json
+{
+  "id": "<uuid>",
+  "surchargeType": "PORT_CONGESTION",
+  "description": "Port Congestion Surcharge - Destination USNYC",
+  "amountUsd": 175,
+  "currency": "USD",
+  "portCode": "USNYC",
+  "portScope": "DESTINATION",
+  "weightThresholdKgPerTeu": null,
+  "validFrom": null,
+  "validTo": null,
+  "version": 2,
+  "isActive": false,
+  "createdBy": "pricing.ops@quotes",
+  "updatedBy": "pricing.ops@quotes",
+  "activatedBy": null,
+  "createdAt": "2026-05-06T14:00:00+00:00",
+  "updatedAt": "2026-05-06T14:00:00+00:00",
+  "activatedAt": null
+}
+```
+
 ### GET /quotes/{id}
 - The `{id}` path parameter accepts either the stored quote UUID or the public `quoteReference`.
 - This endpoint is the primary lookup path used by the current implementation.
@@ -180,6 +256,13 @@ Provides a quoted price that can be referenced when placing a booking.
 - This endpoint accepts direct route attributes instead of a `scheduleId` so clients can validate commercial data coverage before attempting a quote request.
 - `covered` is `true` only when every requested equipment selection has an effective public tariff rate for the submitted route and departure date.
 - `uncoveredEquipment` lists the equipment types that would fail commercial quote creation because no effective base rate exists.
+
+### Admin managed commercial data endpoints
+- All `/admin/*` commercial data endpoints require the `X-Actor` request header so the service can persist who created, updated, or activated the change.
+- `POST /admin/rate-tables` and `POST /admin/surcharge-rules` create draft versions with `isActive=false`.
+- `PATCH /admin/rate-tables/{id}` and `PATCH /admin/surcharge-rules/{id}` only allow draft edits. Active managed rows are immutable; clients must create a new draft version instead.
+- `POST /admin/rate-tables/{id}/activate` and `POST /admin/surcharge-rules/{id}/activate` promote the selected draft version and deactivate overlapping active versions for the same commercial scope.
+- Quote creation and coverage validation read only active managed commercial data.
 
 ### GET /quotes/reference/{quoteReference}
 - The `{quoteReference}` path parameter is the business-facing quote reference in `QTE-YYYY-NNNNN` format.
@@ -262,6 +345,8 @@ Expected result:
 - `MARKET` is reserved for future externally sourced market pricing.
 - `HYBRID` is reserved for future explicitly approved combinations of pricing sources.
 - `pricingBasis` names the commercial mode, while `pricingProvenance` captures the exact stored rule snapshot that mode used.
+- `pricingProvenance.baseRateRules[*].rateVersion` identifies the active managed rate-table version used for public tariff pricing.
+- `pricingProvenance.appliedSurchargeRules[*].surchargeRuleVersion` identifies the active managed surcharge-rule version used for each applied surcharge.
 
 ### Contract Pricing Rules
 - Contract matching is deterministic: account-specific contracts win over customer-level contracts for the same lane and departure date.
@@ -312,6 +397,36 @@ Expected result:
 | baseRateUSD | decimal | |
 | validFrom | date | Rate effective date |
 | validTo | date | Rate expiry date |
+| version | integer | Monotonic managed version within the same lane and equipment scope |
+| isActive | boolean | Only active rows are eligible for quote pricing |
+| createdBy | string nullable | Actor from `X-Actor` when created through the admin API |
+| updatedBy | string nullable | Last actor to edit the draft or activate it |
+| activatedBy | string nullable | Actor who promoted the row into use |
+| createdAt | timestamp | Draft creation time |
+| updatedAt | timestamp | Last draft edit or activation time |
+| activatedAt | timestamp nullable | When the row became active |
+
+## Data Model (Surcharge Rule)
+| Field | Type | Notes |
+|-------|------|-------|
+| id | UUID | |
+| surchargeType | enum | BAF, PORT_CONGESTION, HEAVY_CARGO, PEAK_SEASON |
+| description | string | Human-readable commercial label |
+| amountUSD | decimal | |
+| currency | string | ISO 4217 |
+| portCode | string nullable | Scope port when relevant |
+| portScope | enum nullable | ORIGIN or DESTINATION when relevant |
+| weightThresholdKgPerTeu | decimal nullable | Heavy cargo threshold |
+| validFrom | date nullable | Effective date start |
+| validTo | date nullable | Effective date end |
+| version | integer | Monotonic managed version within the same surcharge scope |
+| isActive | boolean | Only active rows are eligible for quote pricing |
+| createdBy | string nullable | Actor from `X-Actor` when created through the admin API |
+| updatedBy | string nullable | Last actor to edit the draft or activate it |
+| activatedBy | string nullable | Actor who promoted the row into use |
+| createdAt | timestamp | Draft creation time |
+| updatedAt | timestamp | Last draft edit or activation time |
+| activatedAt | timestamp nullable | When the row became active |
 
 ## Dependencies
 | Service | Why |
@@ -339,6 +454,9 @@ Expected result:
 - Quote lifecycle state is persisted on the quote row and synchronized with `validUntil` when a quote is read after expiry.
 - Quote reads persist the commercial mode as `pricingBasis` and return the stored `pricingProvenance` snapshot used to explain the amount later.
 - The current implementation versions seeded tariff and surcharge reference data as `seed-2026-04-01` inside `pricingProvenance.referenceDataVersion`.
+- The current implementation exposes internal admin endpoints for managed rate-table and surcharge-rule draft creation, draft update, and activation.
+- Active managed rate-table and surcharge-rule rows are the only rows used during quote pricing; drafts are inert until explicitly activated.
+- Public tariff provenance now records the active `rateVersion` and `surchargeRuleVersion` selected for the quote so later support workflows can explain which managed commercial change produced the amount.
 - Quote lifecycle changes are written to `outbox_events` in the same transaction as the quote write that caused them.
 - The current implementation emits `quote.created` when a quote is created and `quote.expired` the first time an issued quote is observed past `validUntil`, and both payloads include the stored pricing provenance snapshot.
 - These notes describe the present behavior of the generated code and should be folded into the business specification when they are confirmed as intended behavior.

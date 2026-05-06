@@ -8,6 +8,12 @@ from app.models import EquipmentType, PortScope, SurchargeRule, SurchargeType
 
 
 _MONEY_PRECISION = Decimal("0.01")
+_SURCHARGE_ORDER = {
+    SurchargeType.BAF: 0,
+    SurchargeType.PORT_CONGESTION: 1,
+    SurchargeType.HEAVY_CARGO: 2,
+    SurchargeType.PEAK_SEASON: 3,
+}
 _TEU_PER_EQUIPMENT = {
     EquipmentType.TWENTY_FT: Decimal("1"),
     EquipmentType.FORTY_FT: Decimal("2"),
@@ -47,7 +53,7 @@ def calculate_surcharges(
     total_teu = sum(_TEU_PER_EQUIPMENT[item.equipment_type] * item.quantity for item in equipment)
     weight_per_teu = cargo_weight_kg / total_teu if total_teu else Decimal("0")
 
-    line_items: list[SurchargeLineItem] = []
+    applicable_rules: dict[tuple[object, ...], SurchargeRule] = {}
     for rule in surcharge_rules:
         if not _rule_applies(
             rule=rule,
@@ -58,6 +64,18 @@ def calculate_surcharges(
         ):
             continue
 
+        key = (
+            rule.surcharge_type,
+            rule.port_code,
+            rule.port_scope,
+            None if rule.weight_threshold_kg_per_teu is None else str(rule.weight_threshold_kg_per_teu),
+        )
+        current = applicable_rules.get(key)
+        if current is None or rule.version > current.version:
+            applicable_rules[key] = rule
+
+    line_items: list[SurchargeLineItem] = []
+    for rule in sorted(applicable_rules.values(), key=lambda item: _SURCHARGE_ORDER[item.surcharge_type]):
         amount = (rule.amount_usd * total_containers).quantize(_MONEY_PRECISION)
         if amount <= 0:
             continue

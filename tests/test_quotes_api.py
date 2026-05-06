@@ -13,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 from app import db
 from app.db import Base, get_db
 from app.main import app
-from app.models import OutboxEvent, PricingBasis, Quote, QuoteLifecycleState
+from app.models import EquipmentType, OutboxEvent, PricingBasis, Quote, QuoteLifecycleState, RateTable
 from app.seed import REFERENCE_DATA_VERSION, seed_reference_data
 from app.schedules import Schedule, get_schedule_provider
 
@@ -62,6 +62,7 @@ def _public_tariff_pricing_provenance() -> dict[str, object]:
                 "currency": "USD",
                 "unitAmount": 900.0,
                 "totalAmount": 1800.0,
+                "rateVersion": 1,
                 "validFrom": "2026-04-01",
                 "validTo": "2026-04-30",
             }
@@ -74,6 +75,7 @@ def _public_tariff_pricing_provenance() -> dict[str, object]:
                 "currency": "USD",
                 "unitAmount": 80.0,
                 "totalAmount": 160.0,
+                "surchargeRuleVersion": 1,
                 "portCode": None,
                 "portScope": None,
                 "weightThresholdKgPerTeu": None,
@@ -142,6 +144,7 @@ def test_create_quote_returns_itemized_quote_and_persists_it(client) -> None:
             "currency": "USD",
             "unitAmount": 950.0,
             "totalAmount": 1900.0,
+            "rateVersion": 1,
             "validFrom": "2026-04-01",
             "validTo": "2026-12-31",
         },
@@ -152,6 +155,7 @@ def test_create_quote_returns_itemized_quote_and_persists_it(client) -> None:
             "currency": "USD",
             "unitAmount": 1400.0,
             "totalAmount": 1400.0,
+            "rateVersion": 1,
             "validFrom": "2026-04-01",
             "validTo": "2026-12-31",
         },
@@ -164,6 +168,7 @@ def test_create_quote_returns_itemized_quote_and_persists_it(client) -> None:
             "currency": "USD",
             "unitAmount": 80.0,
             "totalAmount": 240.0,
+            "surchargeRuleVersion": 1,
             "portCode": None,
             "portScope": None,
             "weightThresholdKgPerTeu": None,
@@ -177,6 +182,7 @@ def test_create_quote_returns_itemized_quote_and_persists_it(client) -> None:
             "currency": "USD",
             "unitAmount": 150.0,
             "totalAmount": 450.0,
+            "surchargeRuleVersion": 1,
             "portCode": "USNYC",
             "portScope": "DESTINATION",
             "weightThresholdKgPerTeu": None,
@@ -190,6 +196,7 @@ def test_create_quote_returns_itemized_quote_and_persists_it(client) -> None:
             "currency": "USD",
             "unitAmount": 120.0,
             "totalAmount": 360.0,
+            "surchargeRuleVersion": 1,
             "portCode": None,
             "portScope": None,
             "weightThresholdKgPerTeu": None,
@@ -459,6 +466,174 @@ def test_create_quote_returns_different_customer_prices_for_same_shipment(client
     assert globex_response.json()["totalAmount"] == 1020.0
 
 
+def test_admin_rate_table_draft_can_be_updated_and_activated(client) -> None:
+    test_client, session_factory = client
+
+    create_response = test_client.post(
+        "/admin/rate-tables",
+        headers={"X-Actor": "pricing.ops@quotes"},
+        json={
+            "originPort": "NLRTM",
+            "destinationPort": "USNYC",
+            "equipmentType": "20FT",
+            "baseRateUsd": 990,
+            "validFrom": "2026-04-01",
+            "validTo": "2026-12-31",
+        },
+    )
+
+    assert create_response.status_code == 201
+    assert create_response.json()["version"] == 2
+    assert create_response.json()["isActive"] is False
+    assert create_response.json()["createdBy"] == "pricing.ops@quotes"
+    assert create_response.json()["activatedAt"] is None
+
+    update_response = test_client.patch(
+        f"/admin/rate-tables/{create_response.json()['id']}",
+        headers={"X-Actor": "pricing.ops@quotes"},
+        json={"baseRateUsd": 1000},
+    )
+
+    assert update_response.status_code == 200
+    assert update_response.json()["baseRateUsd"] == 1000.0
+
+    activate_response = test_client.post(
+        f"/admin/rate-tables/{create_response.json()['id']}/activate",
+        headers={"X-Actor": "pricing.manager@quotes"},
+    )
+
+    assert activate_response.status_code == 200
+    assert activate_response.json()["isActive"] is True
+    assert activate_response.json()["activatedBy"] == "pricing.manager@quotes"
+
+    quote_response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+
+    assert quote_response.status_code == 201
+    assert quote_response.json()["lineItems"][0] == {"description": "Ocean Freight - 20FT x 1", "amount": 1000.0}
+    assert quote_response.json()["totalAmount"] == 1350.0
+
+    with session_factory() as session:
+        stored_quote = session.scalar(select(Quote).where(Quote.id == quote_response.json()["id"]))
+        superseded_rate = session.scalar(
+            select(RateTable).where(
+                RateTable.origin_port == "NLRTM",
+                RateTable.destination_port == "USNYC",
+                RateTable.equipment_type == EquipmentType.TWENTY_FT,
+                RateTable.version == 1,
+            )
+        )
+
+    assert stored_quote is not None
+    assert stored_quote.pricing_provenance["baseRateRules"][0]["rateVersion"] == 2
+    assert superseded_rate is not None
+    assert superseded_rate.is_active is False
+
+
+def test_admin_cannot_patch_an_active_rate_table(client) -> None:
+    test_client, session_factory = client
+
+    with session_factory() as session:
+        active_rate = session.scalar(select(RateTable).where(RateTable.is_active.is_(True)).limit(1))
+
+    assert active_rate is not None
+    response = test_client.patch(
+        f"/admin/rate-tables/{active_rate.id}",
+        headers={"X-Actor": "pricing.ops@quotes"},
+        json={"baseRateUsd": 1001},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Active rate tables cannot be edited; create a new draft version"}
+
+
+def test_admin_surcharge_rule_draft_can_be_updated_and_activated(client) -> None:
+    test_client, session_factory = client
+
+    create_response = test_client.post(
+        "/admin/surcharge-rules",
+        headers={"X-Actor": "pricing.ops@quotes"},
+        json={
+            "surchargeType": "PORT_CONGESTION",
+            "description": "Port Congestion Surcharge - Destination USNYC",
+            "amountUsd": 165,
+            "currency": "USD",
+            "portCode": "USNYC",
+            "portScope": "DESTINATION",
+        },
+    )
+
+    assert create_response.status_code == 201
+    assert create_response.json()["version"] == 2
+    assert create_response.json()["isActive"] is False
+
+    update_response = test_client.patch(
+        f"/admin/surcharge-rules/{create_response.json()['id']}",
+        headers={"X-Actor": "pricing.ops@quotes"},
+        json={"amountUsd": 175},
+    )
+
+    assert update_response.status_code == 200
+    assert update_response.json()["amountUsd"] == 175.0
+
+    activate_response = test_client.post(
+        f"/admin/surcharge-rules/{create_response.json()['id']}/activate",
+        headers={"X-Actor": "pricing.manager@quotes"},
+    )
+
+    assert activate_response.status_code == 200
+    assert activate_response.json()["isActive"] is True
+
+    quote_response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+
+    assert quote_response.status_code == 201
+    assert quote_response.json()["lineItems"] == [
+        {"description": "Ocean Freight - 20FT x 1", "amount": 950.0},
+        {"description": "Bunker Adjustment Factor (BAF)", "amount": 80.0},
+        {"description": "Port Congestion Surcharge - Destination USNYC", "amount": 175.0},
+        {"description": "Peak Season Surcharge", "amount": 120.0},
+    ]
+    assert quote_response.json()["totalAmount"] == 1325.0
+
+    with session_factory() as session:
+        stored_quote = session.scalar(select(Quote).where(Quote.id == quote_response.json()["id"]))
+
+    assert stored_quote is not None
+    assert stored_quote.pricing_provenance["appliedSurchargeRules"][1]["surchargeRuleVersion"] == 2
+
+
+def test_admin_requires_actor_header_for_managed_commercial_changes(client) -> None:
+    test_client, _ = client
+
+    response = test_client.post(
+        "/admin/rate-tables",
+        json={
+            "originPort": "NLRTM",
+            "destinationPort": "USNYC",
+            "equipmentType": "20FT",
+            "baseRateUsd": 990,
+            "validFrom": "2026-04-01",
+            "validTo": "2026-12-31",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "X-Actor header is required for admin commercial data changes"}
+
+
 @pytest.mark.parametrize(
     ("payload", "error_field"),
     [
@@ -568,6 +743,7 @@ def _seed_expired_quote(session_factory: sessionmaker[Session]) -> Quote:
                         "currency": "USD",
                         "unitAmount": 1400.0,
                         "totalAmount": 1400.0,
+                        "rateVersion": 1,
                         "validFrom": "2026-04-01",
                         "validTo": "2026-12-31",
                     }

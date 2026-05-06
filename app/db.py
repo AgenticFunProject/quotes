@@ -43,6 +43,34 @@ def _apply_sqlite_schema_fixes() -> None:
         if "pricing_provenance" not in quote_columns:
             connection.execute(text("ALTER TABLE quotes ADD COLUMN pricing_provenance JSON NOT NULL DEFAULT '{}'"))
 
+    _backfill_managed_commercial_columns("rate_tables")
+    _backfill_managed_commercial_columns("surcharge_rules")
+
+
+def _backfill_managed_commercial_columns(table_name: str) -> None:
+    inspector = inspect(engine)
+    if table_name not in inspector.get_table_names():
+        return
+
+    managed_columns = {column["name"] for column in inspector.get_columns(table_name)}
+    with engine.begin() as connection:
+        if "version" not in managed_columns:
+            connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN version INTEGER NOT NULL DEFAULT 1"))
+        if "is_active" not in managed_columns:
+            connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1"))
+        if "created_by" not in managed_columns:
+            connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN created_by VARCHAR(64)"))
+        if "updated_by" not in managed_columns:
+            connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN updated_by VARCHAR(64)"))
+        if "activated_by" not in managed_columns:
+            connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN activated_by VARCHAR(64)"))
+        if "created_at" not in managed_columns:
+            connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN created_at DATETIME"))
+        if "updated_at" not in managed_columns:
+            connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN updated_at DATETIME"))
+        if "activated_at" not in managed_columns:
+            connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN activated_at DATETIME"))
+
 
 def init_db() -> None:
     from app import models  # noqa: F401
