@@ -27,6 +27,8 @@ Provides a quoted price that can be referenced when placing a booking.
 | POST | /admin/surcharge-rules | Create a draft managed surcharge-rule version |
 | PATCH | /admin/surcharge-rules/{id} | Update a draft managed surcharge-rule version |
 | POST | /admin/surcharge-rules/{id}/activate | Activate a managed surcharge-rule version |
+| GET | /admin/commercial-change-events | List managed commercial data audit events |
+| POST | /admin/quote-preview | Preview quote pricing with draft managed commercial rows |
 
 ### POST /quotes - Request Body
 ```json
@@ -262,6 +264,9 @@ Provides a quoted price that can be referenced when placing a booking.
 - `POST /admin/rate-tables` and `POST /admin/surcharge-rules` create draft versions with `isActive=false`.
 - `PATCH /admin/rate-tables/{id}` and `PATCH /admin/surcharge-rules/{id}` only allow draft edits. Active managed rows are immutable; clients must create a new draft version instead.
 - `POST /admin/rate-tables/{id}/activate` and `POST /admin/surcharge-rules/{id}/activate` promote the selected draft version and deactivate overlapping active versions for the same commercial scope.
+- Every managed commercial create, update, and activate operation appends a durable row to `commercial_change_events` with the actor, action, resource version, and post-change snapshot.
+- `GET /admin/commercial-change-events` returns the audit trail and can be filtered by `resourceType` and `resourceId`.
+- `POST /admin/quote-preview` accepts the same shipment request shape as `POST /quotes` plus optional `rateTableIds` and `surchargeRuleIds` to preview explicit draft versions before activation.
 - Quote creation and coverage validation read only active managed commercial data.
 
 ### GET /quotes/reference/{quoteReference}
@@ -428,6 +433,18 @@ Expected result:
 | updatedAt | timestamp | Last draft edit or activation time |
 | activatedAt | timestamp nullable | When the row became active |
 
+## Data Model (Commercial Change Event)
+| Field | Type | Notes |
+|-------|------|-------|
+| id | UUID | Internal primary key |
+| resourceType | enum | `RATE_TABLE` or `SURCHARGE_RULE` |
+| resourceId | UUID | Managed row identifier |
+| action | enum | `CREATED`, `UPDATED`, or `ACTIVATED` |
+| actor | string | `X-Actor` value that made the change |
+| resourceVersion | integer | Managed version after the change |
+| snapshot | JSON object | Full post-change managed row snapshot |
+| occurredAt | timestamp | When the change was recorded |
+
 ## Dependencies
 | Service | Why |
 |---------|-----|
@@ -457,6 +474,8 @@ Expected result:
 - The current implementation exposes internal admin endpoints for managed rate-table and surcharge-rule draft creation, draft update, and activation.
 - Active managed rate-table and surcharge-rule rows are the only rows used during quote pricing; drafts are inert until explicitly activated.
 - Public tariff provenance now records the active `rateVersion` and `surchargeRuleVersion` selected for the quote so later support workflows can explain which managed commercial change produced the amount.
+- The current implementation records managed commercial create, update, and activate actions in `commercial_change_events` so support and finance workflows can reconstruct the audit trail.
+- The current implementation exposes `POST /admin/quote-preview` so commercial operators can preview quote pricing with explicit draft rate-table and surcharge-rule versions before activation.
 - Quote lifecycle changes are written to `outbox_events` in the same transaction as the quote write that caused them.
 - The current implementation emits `quote.created` when a quote is created and `quote.expired` the first time an issued quote is observed past `validUntil`, and both payloads include the stored pricing provenance snapshot.
 - These notes describe the present behavior of the generated code and should be folded into the business specification when they are confirmed as intended behavior.

@@ -48,6 +48,17 @@ class ContractMatchType(str, Enum):
     ACCOUNT = "ACCOUNT"
 
 
+class CommercialChangeResourceType(str, Enum):
+    RATE_TABLE = "RATE_TABLE"
+    SURCHARGE_RULE = "SURCHARGE_RULE"
+
+
+class CommercialChangeAction(str, Enum):
+    CREATED = "CREATED"
+    UPDATED = "UPDATED"
+    ACTIVATED = "ACTIVATED"
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -107,6 +118,33 @@ class OutboxEvent(Base):
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     publish_attempts: Mapped[int] = mapped_column(default=0)
     last_error: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+
+class CommercialChangeEvent(Base):
+    __tablename__ = "commercial_change_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    resource_type: Mapped[CommercialChangeResourceType] = mapped_column(
+        SqlEnum(
+            CommercialChangeResourceType,
+            native_enum=False,
+            values_callable=lambda members: [member.value for member in members],
+        ),
+        index=True,
+    )
+    resource_id: Mapped[str] = mapped_column(String(36), index=True)
+    action: Mapped[CommercialChangeAction] = mapped_column(
+        SqlEnum(
+            CommercialChangeAction,
+            native_enum=False,
+            values_callable=lambda members: [member.value for member in members],
+        ),
+        index=True,
+    )
+    actor: Mapped[str] = mapped_column(String(64), index=True)
+    resource_version: Mapped[int] = mapped_column(Integer)
+    snapshot: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, index=True)
 
 
 class ManagedCommercialRecord:

@@ -5,13 +5,13 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from fastapi import Depends, FastAPI, HTTPException, Header
+from fastapi import Depends, FastAPI, HTTPException, Header, Query
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db import get_db, init_db
-from app.models import Contract, ContractMatchType, ContractRateRule, EquipmentType, OutboxEvent, PortScope, PricingBasis, Quote, QuoteLifecycleState, RateTable, SurchargeRule, SurchargeType
+from app.models import CommercialChangeAction, CommercialChangeEvent, CommercialChangeResourceType, Contract, ContractMatchType, ContractRateRule, EquipmentType, OutboxEvent, PortScope, PricingBasis, Quote, QuoteLifecycleState, RateTable, SurchargeRule, SurchargeType
 from app.seed import REFERENCE_DATA_VERSION, seed_reference_data
 from app.schedules import Schedule, ScheduleProvider, get_schedule_provider
 from app.surcharges import EquipmentSelection, SurchargeLineItem, calculate_surcharges, total_surcharges
@@ -122,6 +122,11 @@ class AdminSurchargeRuleUpdateRequest(BaseModel):
     weight_threshold_kg_per_teu: Decimal | None = Field(default=None, alias="weightThresholdKgPerTeu", gt=0)
     valid_from: date | None = Field(default=None, alias="validFrom")
     valid_to: date | None = Field(default=None, alias="validTo")
+
+
+class AdminQuotePreviewRequest(CreateQuoteRequest):
+    rate_table_ids: list[str] = Field(default_factory=list, alias="rateTableIds")
+    surcharge_rule_ids: list[str] = Field(default_factory=list, alias="surchargeRuleIds")
 
 
 @asynccontextmanager
@@ -430,6 +435,32 @@ def _get_surcharge_rule_or_404(surcharge_rule_id: str, db: Session) -> Surcharge
     return surcharge_rule
 
 
+def _load_rate_tables_by_id(rate_table_ids: list[str], db: Session) -> list[RateTable]:
+    if not rate_table_ids:
+        return []
+
+    rows = db.scalars(select(RateTable).where(RateTable.id.in_(rate_table_ids))).all()
+    rows_by_id = {row.id: row for row in rows}
+    missing_ids = [rate_table_id for rate_table_id in rate_table_ids if rate_table_id not in rows_by_id]
+    if missing_ids:
+        raise HTTPException(status_code=404, detail=f"Rate table not found: {missing_ids[0]}")
+
+    return [rows_by_id[rate_table_id] for rate_table_id in rate_table_ids]
+
+
+def _load_surcharge_rules_by_id(surcharge_rule_ids: list[str], db: Session) -> list[SurchargeRule]:
+    if not surcharge_rule_ids:
+        return []
+
+    rows = db.scalars(select(SurchargeRule).where(SurchargeRule.id.in_(surcharge_rule_ids))).all()
+    rows_by_id = {row.id: row for row in rows}
+    missing_ids = [surcharge_rule_id for surcharge_rule_id in surcharge_rule_ids if surcharge_rule_id not in rows_by_id]
+    if missing_ids:
+        raise HTTPException(status_code=404, detail=f"Surcharge rule not found: {missing_ids[0]}")
+
+    return [rows_by_id[surcharge_rule_id] for surcharge_rule_id in surcharge_rule_ids]
+
+
 def _date_windows_overlap(
     start_a: date | None,
     end_a: date | None,
@@ -519,6 +550,43 @@ def _serialize_surcharge_rule(surcharge_rule: SurchargeRule) -> dict[str, object
     }
 
 
+def _serialize_commercial_change_event(event: CommercialChangeEvent) -> dict[str, object]:
+    return {
+        "id": event.id,
+        "resourceType": event.resource_type.value,
+        "resourceId": event.resource_id,
+        "action": event.action.value,
+        "actor": event.actor,
+        "resourceVersion": event.resource_version,
+        "snapshot": event.snapshot,
+        "occurredAt": event.occurred_at.isoformat(),
+    }
+
+
+def _record_commercial_change(
+    db: Session,
+    *,
+    resource_type: CommercialChangeResourceType,
+    resource_id: str,
+    action: CommercialChangeAction,
+    actor: str,
+    resource_version: int,
+    snapshot: dict[str, object],
+    occurred_at: datetime,
+) -> None:
+    db.add(
+        CommercialChangeEvent(
+            resource_type=resource_type,
+            resource_id=resource_id,
+            action=action,
+            actor=actor,
+            resource_version=resource_version,
+            snapshot=snapshot,
+            occurred_at=occurred_at,
+        )
+    )
+
+
 def _deactivate_superseded_rate_tables(rate_table: RateTable, *, actor: str, changed_at: datetime, db: Session) -> None:
     active_candidates = db.scalars(
         select(RateTable).where(
@@ -560,6 +628,35 @@ def _deactivate_superseded_surcharge_rules(
         candidate.is_active = False
         candidate.updated_by = actor
         candidate.updated_at = changed_at
+
+
+def _apply_preview_rate_tables(
+    *,
+    rates_by_type: dict[EquipmentType, RateTable],
+    schedule: Schedule,
+    preview_rate_tables: list[RateTable],
+) -> dict[EquipmentType, RateTable]:
+    preview_rates = dict(rates_by_type)
+    for rate_table in preview_rate_tables:
+        if rate_table.origin_port != schedule.origin_port or rate_table.destination_port != schedule.destination_port:
+            raise HTTPException(status_code=400, detail=f"Preview rate table {rate_table.id} does not match the selected schedule route")
+        if rate_table.valid_from > schedule.departure_date or rate_table.valid_to < schedule.departure_date:
+            raise HTTPException(status_code=400, detail=f"Preview rate table {rate_table.id} is not effective for the selected departure date")
+        preview_rates[rate_table.equipment_type] = rate_table
+
+    return preview_rates
+
+
+def _apply_preview_surcharge_rules(
+    *,
+    active_surcharge_rules: list[SurchargeRule],
+    preview_surcharge_rules: list[SurchargeRule],
+) -> list[SurchargeRule]:
+    if not preview_surcharge_rules:
+        return active_surcharge_rules
+
+    preview_rule_ids = {rule.id for rule in preview_surcharge_rules}
+    return [rule for rule in active_surcharge_rules if rule.id not in preview_rule_ids] + preview_surcharge_rules
 
 
 def _waive_surcharges(
@@ -708,6 +805,30 @@ def _build_pricing_provenance(
     return provenance
 
 
+def _build_quote_line_items(
+    *,
+    payload: CreateQuoteRequest,
+    pricing: ResolvedPricing,
+) -> tuple[list[dict[str, object]], list[SurchargeLineItem], Decimal]:
+    base_line_items: list[dict[str, object]] = []
+    base_total = Decimal("0.00")
+    for item in payload.equipment:
+        rate = pricing.rates_by_type[item.type]
+        amount = (rate.base_rate_usd * item.quantity).quantize(_MONEY_PRECISION)
+        base_total += amount
+        base_line_items.append(
+            {
+                "description": f"Ocean Freight - {item.type.value} x {item.quantity}",
+                "amount": float(amount),
+            }
+        )
+
+    surcharge_line_items = pricing.surcharge_line_items
+    line_items = base_line_items + [item.as_dict() for item in surcharge_line_items]
+    total_amount = (base_total + total_surcharges(surcharge_line_items)).quantize(_MONEY_PRECISION)
+    return line_items, surcharge_line_items, total_amount
+
+
 @app.post("/quotes", status_code=201)
 def create_quote(
     payload: CreateQuoteRequest,
@@ -730,22 +851,7 @@ def create_quote(
     )
 
     equipment_payload = [{"type": item.type.value, "quantity": item.quantity} for item in payload.equipment]
-    base_line_items: list[dict[str, object]] = []
-    base_total = Decimal("0.00")
-    for item in payload.equipment:
-        rate = pricing.rates_by_type[item.type]
-        amount = (rate.base_rate_usd * item.quantity).quantize(_MONEY_PRECISION)
-        base_total += amount
-        base_line_items.append(
-            {
-                "description": f"Ocean Freight - {item.type.value} x {item.quantity}",
-                "amount": float(amount),
-            }
-        )
-
-    surcharge_line_items = pricing.surcharge_line_items
-    line_items = base_line_items + [item.as_dict() for item in surcharge_line_items]
-    total_amount = (base_total + total_surcharges(surcharge_line_items)).quantize(_MONEY_PRECISION)
+    line_items, surcharge_line_items, total_amount = _build_quote_line_items(payload=payload, pricing=pricing)
     schedule_snapshot = {
         "scheduleId": schedule.schedule_id,
         "originPort": schedule.origin_port,
@@ -805,6 +911,17 @@ def create_rate_table(
         activated_at=None,
     )
     db.add(rate_table)
+    db.flush()
+    _record_commercial_change(
+        db,
+        resource_type=CommercialChangeResourceType.RATE_TABLE,
+        resource_id=rate_table.id,
+        action=CommercialChangeAction.CREATED,
+        actor=actor,
+        resource_version=rate_table.version,
+        snapshot=_serialize_rate_table(rate_table),
+        occurred_at=now,
+    )
     db.commit()
     db.refresh(rate_table)
     return _serialize_rate_table(rate_table)
@@ -838,6 +955,16 @@ def update_rate_table(
     rate_table.updated_by = actor
     rate_table.updated_at = _normalize_utc(datetime.now(timezone.utc))
     db.add(rate_table)
+    _record_commercial_change(
+        db,
+        resource_type=CommercialChangeResourceType.RATE_TABLE,
+        resource_id=rate_table.id,
+        action=CommercialChangeAction.UPDATED,
+        actor=actor,
+        resource_version=rate_table.version,
+        snapshot=_serialize_rate_table(rate_table),
+        occurred_at=rate_table.updated_at,
+    )
     db.commit()
     db.refresh(rate_table)
     return _serialize_rate_table(rate_table)
@@ -858,6 +985,16 @@ def activate_rate_table(
     rate_table.activated_by = actor
     rate_table.activated_at = changed_at
     db.add(rate_table)
+    _record_commercial_change(
+        db,
+        resource_type=CommercialChangeResourceType.RATE_TABLE,
+        resource_id=rate_table.id,
+        action=CommercialChangeAction.ACTIVATED,
+        actor=actor,
+        resource_version=rate_table.version,
+        snapshot=_serialize_rate_table(rate_table),
+        occurred_at=changed_at,
+    )
     db.commit()
     db.refresh(rate_table)
     return _serialize_rate_table(rate_table)
@@ -892,6 +1029,17 @@ def create_surcharge_rule(
         activated_at=None,
     )
     db.add(surcharge_rule)
+    db.flush()
+    _record_commercial_change(
+        db,
+        resource_type=CommercialChangeResourceType.SURCHARGE_RULE,
+        resource_id=surcharge_rule.id,
+        action=CommercialChangeAction.CREATED,
+        actor=actor,
+        resource_version=surcharge_rule.version,
+        snapshot=_serialize_surcharge_rule(surcharge_rule),
+        occurred_at=now,
+    )
     db.commit()
     db.refresh(surcharge_rule)
     return _serialize_surcharge_rule(surcharge_rule)
@@ -933,6 +1081,16 @@ def update_surcharge_rule(
     surcharge_rule.updated_by = actor
     surcharge_rule.updated_at = _normalize_utc(datetime.now(timezone.utc))
     db.add(surcharge_rule)
+    _record_commercial_change(
+        db,
+        resource_type=CommercialChangeResourceType.SURCHARGE_RULE,
+        resource_id=surcharge_rule.id,
+        action=CommercialChangeAction.UPDATED,
+        actor=actor,
+        resource_version=surcharge_rule.version,
+        snapshot=_serialize_surcharge_rule(surcharge_rule),
+        occurred_at=surcharge_rule.updated_at,
+    )
     db.commit()
     db.refresh(surcharge_rule)
     return _serialize_surcharge_rule(surcharge_rule)
@@ -953,9 +1111,86 @@ def activate_surcharge_rule(
     surcharge_rule.activated_by = actor
     surcharge_rule.activated_at = changed_at
     db.add(surcharge_rule)
+    _record_commercial_change(
+        db,
+        resource_type=CommercialChangeResourceType.SURCHARGE_RULE,
+        resource_id=surcharge_rule.id,
+        action=CommercialChangeAction.ACTIVATED,
+        actor=actor,
+        resource_version=surcharge_rule.version,
+        snapshot=_serialize_surcharge_rule(surcharge_rule),
+        occurred_at=changed_at,
+    )
     db.commit()
     db.refresh(surcharge_rule)
     return _serialize_surcharge_rule(surcharge_rule)
+
+
+@app.get("/admin/commercial-change-events")
+def list_commercial_change_events(
+    resource_type: CommercialChangeResourceType | None = Query(default=None, alias="resourceType"),
+    resource_id: str | None = Query(default=None, alias="resourceId"),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    query = select(CommercialChangeEvent).order_by(CommercialChangeEvent.occurred_at.desc())
+    if resource_type is not None:
+        query = query.where(CommercialChangeEvent.resource_type == resource_type)
+    if resource_id is not None:
+        query = query.where(CommercialChangeEvent.resource_id == resource_id)
+
+    events = db.scalars(query).all()
+    return {"events": [_serialize_commercial_change_event(event) for event in events]}
+
+
+@app.post("/admin/quote-preview")
+def preview_quote(
+    payload: AdminQuotePreviewRequest,
+    _: str = Depends(_require_actor),
+    db: Session = Depends(get_db),
+    schedule_provider: ScheduleProvider = Depends(get_schedule_provider),
+) -> dict[str, object]:
+    schedule = _get_schedule(payload.schedule_id, schedule_provider)
+    equipment_types = {item.type for item in payload.equipment}
+    public_rates_by_type = _find_rate_coverage(
+        db=db,
+        origin_port=schedule.origin_port,
+        destination_port=schedule.destination_port,
+        departure_date=schedule.departure_date,
+        equipment_types=equipment_types,
+    )
+    preview_rates_by_type = _apply_preview_rate_tables(
+        rates_by_type=public_rates_by_type,
+        schedule=schedule,
+        preview_rate_tables=_load_rate_tables_by_id(payload.rate_table_ids, db),
+    )
+    for equipment_type in equipment_types:
+        if equipment_type not in preview_rates_by_type:
+            raise HTTPException(status_code=400, detail=f"No rate available for {equipment_type.value} on selected schedule")
+
+    surcharge_rules = _apply_preview_surcharge_rules(
+        active_surcharge_rules=_load_active_surcharge_rules(db),
+        preview_surcharge_rules=_load_surcharge_rules_by_id(payload.surcharge_rule_ids, db),
+    )
+    pricing = _resolve_pricing(
+        db=db,
+        payload=payload,
+        schedule=schedule,
+        public_rates_by_type=preview_rates_by_type,
+        surcharge_rules=surcharge_rules,
+    )
+    line_items, surcharge_line_items, total_amount = _build_quote_line_items(payload=payload, pricing=pricing)
+
+    return {
+        "currency": "USD",
+        "pricingBasis": pricing.pricing_basis.value,
+        "pricingProvenance": _build_pricing_provenance(
+            payload=payload,
+            pricing=pricing,
+            surcharge_line_items=surcharge_line_items,
+        ),
+        "lineItems": line_items,
+        "totalAmount": _serialize_decimal(total_amount),
+    }
 
 
 @app.post("/quotes/coverage/validate")

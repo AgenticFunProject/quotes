@@ -52,6 +52,10 @@ and seeds reference rates and surcharge rules used by `POST /quotes`.
   returns the same payload as `GET /quotes/{quote_id}`.
 - `GET /quotes/{quote_id}/bookability` returns whether a stored quote is still
   within its validity window and therefore usable by Booking.
+- `GET /admin/commercial-change-events` returns the managed-commercial audit
+  trail for rate-table and surcharge-rule create, update, and activate flows.
+- `POST /admin/quote-preview` lets commercial operators evaluate draft managed
+  rate-table and surcharge-rule versions against a shipment before activation.
 - Quote lifecycle writes also create durable rows in `outbox_events`, starting
   with `quote.created` at creation time and `quote.expired` when an issued quote
   is first observed past `validUntil`. Those payloads include the same stored

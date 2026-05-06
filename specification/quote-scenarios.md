@@ -81,3 +81,17 @@ And the stored quote provenance records the selected `surchargeRuleVersion`
 Given the service exposes internal managed-commercial-data admin endpoints
 When a client attempts to create a managed rate or surcharge change without `X-Actor`
 Then the API rejects the request because the audit actor is required
+
+## Scenario: Record an audit trail for managed commercial changes
+
+Given a commercial operator creates, edits, and activates a managed rate-table version
+When support reads the managed commercial audit trail for that rate table
+Then the API returns the recorded `CREATED`, `UPDATED`, and `ACTIVATED` events
+And each event includes the actor, managed version, and post-change snapshot
+
+## Scenario: Preview quote pricing with draft managed commercial data
+
+Given the service stores active public tariff data and draft replacement commercial rows
+When a commercial operator previews a quote with explicit draft rate-table and surcharge-rule identifiers
+Then the API prices the shipment without persisting a quote
+And the response provenance records the draft managed versions that would be used after activation

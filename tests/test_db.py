@@ -9,6 +9,9 @@ from sqlalchemy.orm import sessionmaker
 from app import db as db_module
 from app.db import Base
 from app.models import (
+    CommercialChangeAction,
+    CommercialChangeEvent,
+    CommercialChangeResourceType,
     Contract,
     ContractMatchType,
     ContractRateRule,
@@ -31,6 +34,7 @@ def test_models_create_sqlite_tables() -> None:
 
     inspector = inspect(engine)
     assert set(inspector.get_table_names()) == {
+        "commercial_change_events",
         "contract_rate_rules",
         "contracts",
         "outbox_events",
@@ -124,6 +128,16 @@ def test_models_persist_records() -> None:
         )
     )
     session.add(
+        CommercialChangeEvent(
+            resource_type=CommercialChangeResourceType.RATE_TABLE,
+            resource_id="rate-1",
+            action=CommercialChangeAction.CREATED,
+            actor="pricing.ops@quotes",
+            resource_version=1,
+            snapshot={"id": "rate-1"},
+        )
+    )
+    session.add(
         OutboxEvent(
             aggregate_type="quote",
             aggregate_id="53c362b2-1229-4ea5-a24a-9891fb1f509d",
@@ -133,6 +147,7 @@ def test_models_persist_records() -> None:
     )
     session.commit()
 
+    assert session.query(CommercialChangeEvent).count() == 1
     assert session.query(OutboxEvent).count() == 1
     assert session.query(Contract).count() == 1
     assert session.query(ContractRateRule).count() == 1
@@ -147,6 +162,7 @@ def test_models_persist_records() -> None:
     assert stored_quote.customer_id == "cust-acme"
     assert stored_quote.pricing_provenance["referenceDataVersion"] == REFERENCE_DATA_VERSION
     assert stored_quote.idempotency_key == "request-123"
+    assert session.query(CommercialChangeEvent).one().action == CommercialChangeAction.CREATED
     assert stored_event.event_type == "quote.created"
     assert session.query(RateTable).one().version == 1
     assert session.query(RateTable).one().is_active is True

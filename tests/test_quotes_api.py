@@ -6,14 +6,14 @@ from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app import db
 from app.db import Base, get_db
 from app.main import app
-from app.models import EquipmentType, OutboxEvent, PricingBasis, Quote, QuoteLifecycleState, RateTable
+from app.models import CommercialChangeAction, CommercialChangeEvent, CommercialChangeResourceType, EquipmentType, OutboxEvent, PricingBasis, Quote, QuoteLifecycleState, RateTable, SurchargeRule
 from app.seed import REFERENCE_DATA_VERSION, seed_reference_data
 from app.schedules import Schedule, get_schedule_provider
 
@@ -536,6 +536,62 @@ def test_admin_rate_table_draft_can_be_updated_and_activated(client) -> None:
     assert superseded_rate.is_active is False
 
 
+def test_admin_rate_table_changes_are_recorded_in_audit_trail(client) -> None:
+    test_client, session_factory = client
+
+    create_response = test_client.post(
+        "/admin/rate-tables",
+        headers={"X-Actor": "pricing.ops@quotes"},
+        json={
+            "originPort": "NLRTM",
+            "destinationPort": "USNYC",
+            "equipmentType": "40FT_HC",
+            "baseRateUsd": 1600,
+            "validFrom": "2026-04-01",
+            "validTo": "2026-12-31",
+        },
+    )
+    rate_table_id = create_response.json()["id"]
+
+    update_response = test_client.patch(
+        f"/admin/rate-tables/{rate_table_id}",
+        headers={"X-Actor": "pricing.ops@quotes"},
+        json={"baseRateUsd": 1615},
+    )
+    activate_response = test_client.post(
+        f"/admin/rate-tables/{rate_table_id}/activate",
+        headers={"X-Actor": "pricing.manager@quotes"},
+    )
+
+    assert create_response.status_code == 201
+    assert update_response.status_code == 200
+    assert activate_response.status_code == 200
+
+    audit_response = test_client.get(
+        "/admin/commercial-change-events",
+        params={"resourceType": "RATE_TABLE", "resourceId": rate_table_id},
+    )
+
+    assert audit_response.status_code == 200
+    assert [event["action"] for event in audit_response.json()["events"]] == ["ACTIVATED", "UPDATED", "CREATED"]
+    assert audit_response.json()["events"][0]["actor"] == "pricing.manager@quotes"
+    assert audit_response.json()["events"][0]["snapshot"]["isActive"] is True
+
+    with session_factory() as session:
+        stored_events = session.scalars(
+            select(CommercialChangeEvent)
+            .where(CommercialChangeEvent.resource_id == rate_table_id)
+            .order_by(CommercialChangeEvent.occurred_at)
+        ).all()
+
+    assert [event.action for event in stored_events] == [
+        CommercialChangeAction.CREATED,
+        CommercialChangeAction.UPDATED,
+        CommercialChangeAction.ACTIVATED,
+    ]
+    assert all(event.resource_type == CommercialChangeResourceType.RATE_TABLE for event in stored_events)
+
+
 def test_admin_cannot_patch_an_active_rate_table(client) -> None:
     test_client, session_factory = client
 
@@ -615,6 +671,127 @@ def test_admin_surcharge_rule_draft_can_be_updated_and_activated(client) -> None
     assert stored_quote.pricing_provenance["appliedSurchargeRules"][1]["surchargeRuleVersion"] == 2
 
 
+def test_admin_quote_preview_can_use_draft_rate_and_surcharge_versions(client) -> None:
+    test_client, session_factory = client
+
+    rate_response = test_client.post(
+        "/admin/rate-tables",
+        headers={"X-Actor": "pricing.ops@quotes"},
+        json={
+            "originPort": "NLRTM",
+            "destinationPort": "USNYC",
+            "equipmentType": "20FT",
+            "baseRateUsd": 1110,
+            "validFrom": "2026-04-01",
+            "validTo": "2026-12-31",
+        },
+    )
+    surcharge_response = test_client.post(
+        "/admin/surcharge-rules",
+        headers={"X-Actor": "pricing.ops@quotes"},
+        json={
+            "surchargeType": "PORT_CONGESTION",
+            "description": "Port Congestion Surcharge - Destination USNYC",
+            "amountUsd": 210,
+            "currency": "USD",
+            "portCode": "USNYC",
+            "portScope": "DESTINATION",
+        },
+    )
+
+    preview_response = test_client.post(
+        "/admin/quote-preview",
+        headers={"X-Actor": "pricing.ops@quotes"},
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+            "rateTableIds": [rate_response.json()["id"]],
+            "surchargeRuleIds": [surcharge_response.json()["id"]],
+        },
+    )
+
+    assert rate_response.status_code == 201
+    assert surcharge_response.status_code == 201
+    assert preview_response.status_code == 200
+    assert preview_response.json() == {
+        "currency": "USD",
+        "pricingBasis": "PUBLIC_TARIFF",
+        "pricingProvenance": {
+            "pricingBasis": "PUBLIC_TARIFF",
+            "referenceDataVersion": REFERENCE_DATA_VERSION,
+            "baseRateRules": [
+                {
+                    "rateTableId": rate_response.json()["id"],
+                    "equipmentType": "20FT",
+                    "quantity": 1,
+                    "currency": "USD",
+                    "unitAmount": 1110.0,
+                    "totalAmount": 1110.0,
+                    "rateVersion": 2,
+                    "validFrom": "2026-04-01",
+                    "validTo": "2026-12-31",
+                }
+            ],
+            "appliedSurchargeRules": [
+                {
+                    "surchargeRuleId": preview_response.json()["pricingProvenance"]["appliedSurchargeRules"][0]["surchargeRuleId"],
+                    "surchargeType": "BAF",
+                    "description": "Bunker Adjustment Factor (BAF)",
+                    "currency": "USD",
+                    "unitAmount": 80.0,
+                    "totalAmount": 80.0,
+                    "surchargeRuleVersion": 1,
+                    "portCode": None,
+                    "portScope": None,
+                    "weightThresholdKgPerTeu": None,
+                    "validFrom": None,
+                    "validTo": None,
+                },
+                {
+                    "surchargeRuleId": surcharge_response.json()["id"],
+                    "surchargeType": "PORT_CONGESTION",
+                    "description": "Port Congestion Surcharge - Destination USNYC",
+                    "currency": "USD",
+                    "unitAmount": 210.0,
+                    "totalAmount": 210.0,
+                    "surchargeRuleVersion": 2,
+                    "portCode": "USNYC",
+                    "portScope": "DESTINATION",
+                    "weightThresholdKgPerTeu": None,
+                    "validFrom": None,
+                    "validTo": None,
+                },
+                {
+                    "surchargeRuleId": preview_response.json()["pricingProvenance"]["appliedSurchargeRules"][2]["surchargeRuleId"],
+                    "surchargeType": "PEAK_SEASON",
+                    "description": "Peak Season Surcharge",
+                    "currency": "USD",
+                    "unitAmount": 120.0,
+                    "totalAmount": 120.0,
+                    "surchargeRuleVersion": 1,
+                    "portCode": None,
+                    "portScope": None,
+                    "weightThresholdKgPerTeu": None,
+                    "validFrom": "2026-08-01",
+                    "validTo": "2026-09-30",
+                },
+            ],
+        },
+        "lineItems": [
+            {"description": "Ocean Freight - 20FT x 1", "amount": 1110.0},
+            {"description": "Bunker Adjustment Factor (BAF)", "amount": 80.0},
+            {"description": "Port Congestion Surcharge - Destination USNYC", "amount": 210.0},
+            {"description": "Peak Season Surcharge", "amount": 120.0},
+        ],
+        "totalAmount": 1520.0,
+    }
+
+    with session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(Quote)) == 0
+        assert session.scalar(select(func.count()).select_from(SurchargeRule).where(SurchargeRule.id == surcharge_response.json()["id"])) == 1
+
+
 def test_admin_requires_actor_header_for_managed_commercial_changes(client) -> None:
     test_client, _ = client
 
@@ -632,6 +809,18 @@ def test_admin_requires_actor_header_for_managed_commercial_changes(client) -> N
 
     assert response.status_code == 400
     assert response.json() == {"detail": "X-Actor header is required for admin commercial data changes"}
+
+    preview_response = test_client.post(
+        "/admin/quote-preview",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+
+    assert preview_response.status_code == 400
+    assert preview_response.json() == {"detail": "X-Actor header is required for admin commercial data changes"}
 
 
 @pytest.mark.parametrize(
