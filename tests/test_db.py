@@ -9,6 +9,9 @@ from sqlalchemy.orm import sessionmaker
 from app import db as db_module
 from app.db import Base
 from app.models import (
+    Contract,
+    ContractMatchType,
+    ContractRateRule,
     EquipmentType,
     OutboxEvent,
     PortScope,
@@ -27,7 +30,14 @@ def test_models_create_sqlite_tables() -> None:
     Base.metadata.create_all(bind=engine)
 
     inspector = inspect(engine)
-    assert set(inspector.get_table_names()) == {"outbox_events", "quotes", "rate_tables", "surcharge_rules"}
+    assert set(inspector.get_table_names()) == {
+        "contract_rate_rules",
+        "contracts",
+        "outbox_events",
+        "quotes",
+        "rate_tables",
+        "surcharge_rules",
+    }
 
 
 def test_models_persist_records() -> None:
@@ -46,6 +56,26 @@ def test_models_persist_records() -> None:
         )
     )
     session.add(
+        Contract(
+            id="contract-1",
+            customer_id="cust-acme",
+            account_id=None,
+            match_type=ContractMatchType.CUSTOMER,
+            origin_port="NLRTM",
+            destination_port="USNYC",
+            waived_surcharge_types=[SurchargeType.PEAK_SEASON.value],
+            valid_from=date(2026, 4, 1),
+            valid_to=date(2026, 12, 31),
+        )
+    )
+    session.add(
+        ContractRateRule(
+            contract_id="contract-1",
+            equipment_type=EquipmentType.TWENTY_FT,
+            base_rate_usd=Decimal("700.00"),
+        )
+    )
+    session.add(
         Quote(
             quote_reference="QTE-2026-00001",
             lifecycle_state=QuoteLifecycleState.ISSUED,
@@ -58,7 +88,10 @@ def test_models_persist_records() -> None:
             },
             equipment=[{"type": EquipmentType.TWENTY_FT.value, "quantity": 2}],
             cargo_weight_kg=Decimal("18000.00"),
+            customer_id="cust-acme",
+            account_id=None,
             pricing_basis=PricingBasis.PUBLIC_TARIFF,
+            contract_id=None,
             pricing_provenance={
                 "pricingBasis": PricingBasis.PUBLIC_TARIFF.value,
                 "referenceDataVersion": REFERENCE_DATA_VERSION,
@@ -101,6 +134,8 @@ def test_models_persist_records() -> None:
     session.commit()
 
     assert session.query(OutboxEvent).count() == 1
+    assert session.query(Contract).count() == 1
+    assert session.query(ContractRateRule).count() == 1
     assert session.query(Quote).count() == 1
     assert session.query(RateTable).count() == 1
     assert session.query(SurchargeRule).count() == 1
@@ -109,6 +144,7 @@ def test_models_persist_records() -> None:
     assert stored_quote.lifecycle_state == QuoteLifecycleState.ISSUED
     assert stored_quote.schedule_snapshot["originPort"] == "NLRTM"
     assert stored_quote.pricing_basis == PricingBasis.PUBLIC_TARIFF
+    assert stored_quote.customer_id == "cust-acme"
     assert stored_quote.pricing_provenance["referenceDataVersion"] == REFERENCE_DATA_VERSION
     assert stored_quote.idempotency_key == "request-123"
     assert stored_event.event_type == "quote.created"
@@ -128,7 +164,10 @@ def test_init_db_backfills_pricing_provenance_column_for_existing_sqlite_quotes_
                 "equipment JSON, "
                 "cargo_weight_kg NUMERIC(10, 2), "
                 "currency VARCHAR(3), "
+                "customer_id VARCHAR(64), "
+                "account_id VARCHAR(64), "
                 "pricing_basis VARCHAR(32), "
+                "contract_id VARCHAR(36), "
                 "idempotency_key VARCHAR(128), "
                 "line_items JSON, "
                 "total_amount NUMERIC(10, 2), "
@@ -150,4 +189,7 @@ def test_init_db_backfills_pricing_provenance_column_for_existing_sqlite_quotes_
 
     inspector = inspect(engine)
     quote_columns = {column["name"] for column in inspector.get_columns("quotes")}
+    assert "customer_id" in quote_columns
+    assert "account_id" in quote_columns
+    assert "contract_id" in quote_columns
     assert "pricing_provenance" in quote_columns

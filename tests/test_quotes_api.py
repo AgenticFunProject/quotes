@@ -338,6 +338,127 @@ def test_create_quote_applies_baf_heavy_cargo_and_peak_season_surcharges(client)
     assert response.json()["totalAmount"] == 1500.0
 
 
+def test_create_quote_uses_customer_contract_pricing_and_waives_contract_surcharges(client) -> None:
+    test_client, session_factory = client
+
+    response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "customerId": "cust-acme",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["lineItems"] == [
+        {"description": "Ocean Freight - 20FT x 1", "amount": 700.0},
+        {"description": "Bunker Adjustment Factor (BAF)", "amount": 80.0},
+        {"description": "Port Congestion Surcharge - Destination USNYC", "amount": 150.0},
+    ]
+    assert response.json()["totalAmount"] == 930.0
+
+    with session_factory() as session:
+        stored_quote = session.scalar(select(Quote).where(Quote.id == response.json()["id"]))
+
+    assert stored_quote is not None
+    assert stored_quote.customer_id == "cust-acme"
+    assert stored_quote.account_id is None
+    assert stored_quote.contract_id == "7c9cc0a4-bd6d-4e6f-9c1c-e5c3a1300001"
+    assert stored_quote.pricing_basis == PricingBasis.CONTRACT
+    assert stored_quote.pricing_provenance["contract"] == {
+        "contractId": "7c9cc0a4-bd6d-4e6f-9c1c-e5c3a1300001",
+        "matchType": "CUSTOMER",
+        "waivedSurchargeTypes": ["PEAK_SEASON"],
+    }
+
+
+def test_create_quote_prefers_account_contract_over_customer_contract(client) -> None:
+    test_client, session_factory = client
+
+    response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "customerId": "cust-acme",
+            "accountId": "acct-acme-premium",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["lineItems"] == [
+        {"description": "Ocean Freight - 20FT x 1", "amount": 650.0},
+        {"description": "Port Congestion Surcharge - Destination USNYC", "amount": 150.0},
+    ]
+    assert response.json()["totalAmount"] == 800.0
+
+    with session_factory() as session:
+        stored_quote = session.scalar(select(Quote).where(Quote.id == response.json()["id"]))
+
+    assert stored_quote is not None
+    assert stored_quote.contract_id == "7c9cc0a4-bd6d-4e6f-9c1c-e5c3a1300002"
+    assert stored_quote.pricing_basis == PricingBasis.CONTRACT
+    assert stored_quote.pricing_provenance["contract"] == {
+        "contractId": "7c9cc0a4-bd6d-4e6f-9c1c-e5c3a1300002",
+        "matchType": "ACCOUNT",
+        "waivedSurchargeTypes": ["BAF", "PEAK_SEASON"],
+    }
+
+
+def test_create_quote_matches_account_contract_when_only_account_context_is_provided(client) -> None:
+    test_client, session_factory = client
+
+    response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "accountId": "acct-acme-premium",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["totalAmount"] == 800.0
+
+    with session_factory() as session:
+        stored_quote = session.scalar(select(Quote).where(Quote.id == response.json()["id"]))
+
+    assert stored_quote is not None
+    assert stored_quote.contract_id == "7c9cc0a4-bd6d-4e6f-9c1c-e5c3a1300002"
+
+
+def test_create_quote_returns_different_customer_prices_for_same_shipment(client) -> None:
+    test_client, _ = client
+
+    acme_response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "customerId": "cust-acme",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+    globex_response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "customerId": "cust-globex",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+
+    assert acme_response.status_code == 201
+    assert globex_response.status_code == 201
+    assert acme_response.json()["totalAmount"] == 930.0
+    assert globex_response.json()["totalAmount"] == 1020.0
+
+
 @pytest.mark.parametrize(
     ("payload", "error_field"),
     [
@@ -486,6 +607,9 @@ def test_get_quote_by_uuid_returns_full_quote(client) -> None:
         "currency": "USD",
         "pricingBasis": "PUBLIC_TARIFF",
         "pricingProvenance": _public_tariff_pricing_provenance(),
+        "customerId": None,
+        "accountId": None,
+        "contractId": None,
         "idempotencyKey": "booking-request-42",
         "lineItems": [
             {"description": "Ocean Freight - 20FT x 2", "amount": 1800.0},
@@ -520,6 +644,9 @@ def test_get_quote_by_reference_returns_full_quote(client) -> None:
         "currency": "USD",
         "pricingBasis": "PUBLIC_TARIFF",
         "pricingProvenance": _public_tariff_pricing_provenance(),
+        "customerId": None,
+        "accountId": None,
+        "contractId": None,
         "idempotencyKey": "booking-request-42",
         "lineItems": [
             {"description": "Ocean Freight - 20FT x 2", "amount": 1800.0},
@@ -554,6 +681,9 @@ def test_get_quote_by_quote_reference_returns_full_quote(client) -> None:
         "currency": "USD",
         "pricingBasis": "PUBLIC_TARIFF",
         "pricingProvenance": _public_tariff_pricing_provenance(),
+        "customerId": None,
+        "accountId": None,
+        "contractId": None,
         "idempotencyKey": "booking-request-42",
         "lineItems": [
             {"description": "Ocean Freight - 20FT x 2", "amount": 1800.0},
@@ -891,6 +1021,35 @@ def test_scenario_quote_lifecycle_events_are_written_to_the_outbox(client) -> No
         ).all()
 
     assert event_types == ["quote.created", "quote.expired"]
+
+
+def test_scenario_contract_pricing_uses_customer_context_and_deterministic_precedence(client) -> None:
+    test_client, _ = client
+
+    customer_response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "customerId": "cust-acme",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+    account_response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "customerId": "cust-acme",
+            "accountId": "acct-acme-premium",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+
+    assert customer_response.status_code == 201
+    assert account_response.status_code == 201
+    assert customer_response.json()["totalAmount"] == 930.0
+    assert account_response.json()["totalAmount"] == 800.0
 
 
 def test_scenario_known_schedule_without_rate_returns_a_commercial_validation_error(client) -> None:

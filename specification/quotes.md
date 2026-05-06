@@ -25,6 +25,8 @@ Provides a quoted price that can be referenced when placing a booking.
 ```json
 {
   "scheduleId": "string",
+  "customerId": "string",
+  "accountId": "string",
   "equipment": [
     { "type": "20FT", "quantity": 2 },
     { "type": "40FT", "quantity": 1 }
@@ -32,6 +34,10 @@ Provides a quoted price that can be referenced when placing a booking.
   "cargoWeightKg": 18000
 }
 ```
+
+- `customerId` and `accountId` are optional request context fields.
+- When both are present, account-specific contracts take precedence over customer-level contracts.
+- If no matching contract covers the request, the service falls back to `PUBLIC_TARIFF` pricing.
 
 ### POST /quotes - Response
 ```json
@@ -140,6 +146,9 @@ Provides a quoted price that can be referenced when placing a booking.
       }
     ]
   },
+  "customerId": null,
+  "accountId": null,
+  "contractId": null,
   "idempotencyKey": null,
   "lineItems": [
     { "description": "Ocean Freight - 20FT x 2", "amount": 1800.00 },
@@ -249,10 +258,16 @@ Expected result:
 
 ### Pricing Basis Semantics
 - `PUBLIC_TARIFF` means the quote was priced from this service's stored rate-table and surcharge-rule reference data.
-- `CONTRACT` is reserved for future customer-specific commercial agreements.
+- `CONTRACT` means the quote was priced from stored customer or account contract rules, with explicit precedence and surcharge-waiver metadata captured in `pricingProvenance`.
 - `MARKET` is reserved for future externally sourced market pricing.
 - `HYBRID` is reserved for future explicitly approved combinations of pricing sources.
 - `pricingBasis` names the commercial mode, while `pricingProvenance` captures the exact stored rule snapshot that mode used.
+
+### Contract Pricing Rules
+- Contract matching is deterministic: account-specific contracts win over customer-level contracts for the same lane and departure date.
+- A contract must cover every requested equipment type; otherwise the service falls back to public tariff pricing.
+- Contracts can waive selected surcharges while still using the same surcharge rule catalog for non-waived items.
+- Contract provenance records the matched customer/account context, contract identifier, match type, and waived surcharge types.
 
 ## Data Model (Quote)
 | Field | Type | Notes |

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
@@ -10,7 +11,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db import get_db, init_db
-from app.models import EquipmentType, OutboxEvent, PricingBasis, Quote, QuoteLifecycleState, RateTable, SurchargeRule
+from app.models import Contract, ContractMatchType, ContractRateRule, EquipmentType, OutboxEvent, PricingBasis, Quote, QuoteLifecycleState, RateTable, SurchargeRule, SurchargeType
 from app.seed import REFERENCE_DATA_VERSION, seed_reference_data
 from app.schedules import Schedule, ScheduleProvider, get_schedule_provider
 from app.surcharges import EquipmentSelection, SurchargeLineItem, calculate_surcharges, total_surcharges
@@ -27,6 +28,14 @@ _QUOTE_EXPIRED_EVENT = "quote.expired"
 _OUTBOX_EVENT_VERSION = 1
 
 
+@dataclass(frozen=True)
+class ResolvedPricing:
+    pricing_basis: PricingBasis
+    rates_by_type: dict[EquipmentType, object]
+    surcharge_line_items: list[SurchargeLineItem]
+    contract: Contract | None = None
+
+
 class QuoteEquipmentRequest(BaseModel):
     type: EquipmentType
     quantity: int = Field(gt=0)
@@ -38,6 +47,8 @@ class CreateQuoteRequest(BaseModel):
     schedule_id: str = Field(alias="scheduleId")
     equipment: list[QuoteEquipmentRequest] = Field(min_length=1)
     cargo_weight_kg: Decimal = Field(alias="cargoWeightKg", gt=0)
+    customer_id: str | None = Field(default=None, alias="customerId", min_length=1)
+    account_id: str | None = Field(default=None, alias="accountId", min_length=1)
 
 
 class ValidateRateCoverageRequest(BaseModel):
@@ -94,6 +105,9 @@ def _serialize_quote(quote: Quote) -> dict[str, object]:
         "currency": quote.currency,
         "pricingBasis": quote.pricing_basis.value,
         "pricingProvenance": quote.pricing_provenance,
+        "customerId": quote.customer_id,
+        "accountId": quote.account_id,
+        "contractId": quote.contract_id,
         "idempotencyKey": quote.idempotency_key,
         "lineItems": [
             {
@@ -135,6 +149,9 @@ def _build_quote_event_payload(quote: Quote) -> dict[str, object]:
         "equipment": quote.equipment,
         "cargoWeightKg": _serialize_decimal(quote.cargo_weight_kg),
         "currency": quote.currency,
+        "customerId": quote.customer_id,
+        "accountId": quote.account_id,
+        "contractId": quote.contract_id,
         "pricingBasis": quote.pricing_basis.value,
         "pricingProvenance": quote.pricing_provenance,
         "lineItems": quote.line_items,
@@ -270,6 +287,89 @@ def _find_rate_coverage(
     return {row.equipment_type: row for row in rate_rows}
 
 
+def _find_contracts(
+    *,
+    db: Session,
+    payload: CreateQuoteRequest,
+    schedule: Schedule,
+) -> list[Contract]:
+    if payload.customer_id is None and payload.account_id is None:
+        return []
+
+    contracts = db.scalars(
+        select(Contract).where(
+            Contract.origin_port == schedule.origin_port,
+            Contract.destination_port == schedule.destination_port,
+            Contract.valid_from <= schedule.departure_date,
+            Contract.valid_to >= schedule.departure_date,
+        )
+    ).all()
+
+    matches: list[Contract] = []
+    for contract in contracts:
+        if contract.match_type == ContractMatchType.ACCOUNT:
+            if payload.account_id is None or contract.account_id != payload.account_id:
+                continue
+            if payload.customer_id is not None and contract.customer_id is not None and contract.customer_id != payload.customer_id:
+                continue
+            matches.append(contract)
+            continue
+
+        if payload.customer_id is not None and contract.customer_id == payload.customer_id:
+            matches.append(contract)
+
+    return sorted(matches, key=lambda contract: 0 if contract.match_type == ContractMatchType.ACCOUNT else 1)
+
+
+def _load_contract_rate_rules(db: Session, contract_id: str) -> dict[EquipmentType, ContractRateRule]:
+    rate_rules = db.scalars(select(ContractRateRule).where(ContractRateRule.contract_id == contract_id)).all()
+    return {row.equipment_type: row for row in rate_rules}
+
+
+def _waive_surcharges(
+    surcharge_line_items: list[SurchargeLineItem],
+    waived_surcharge_types: list[str],
+) -> list[SurchargeLineItem]:
+    waived_types = {SurchargeType(value) for value in waived_surcharge_types}
+    return [item for item in surcharge_line_items if item.rule.surcharge_type not in waived_types]
+
+
+def _resolve_pricing(
+    *,
+    db: Session,
+    payload: CreateQuoteRequest,
+    schedule: Schedule,
+    public_rates_by_type: dict[EquipmentType, RateTable],
+    surcharge_rules: list[SurchargeRule],
+) -> ResolvedPricing:
+    public_surcharge_line_items = calculate_surcharges(
+        equipment=[EquipmentSelection(equipment_type=item.type, quantity=item.quantity) for item in payload.equipment],
+        cargo_weight_kg=payload.cargo_weight_kg,
+        shipment_date=schedule.departure_date,
+        origin_port=schedule.origin_port,
+        destination_port=schedule.destination_port,
+        surcharge_rules=surcharge_rules,
+    )
+
+    for contract in _find_contracts(db=db, payload=payload, schedule=schedule):
+        contract_rates_by_type = _load_contract_rate_rules(db, contract.id)
+        if any(item.type not in contract_rates_by_type for item in payload.equipment):
+            continue
+
+        return ResolvedPricing(
+            pricing_basis=PricingBasis.CONTRACT,
+            rates_by_type=contract_rates_by_type,
+            surcharge_line_items=_waive_surcharges(public_surcharge_line_items, contract.waived_surcharge_types),
+            contract=contract,
+        )
+
+    return ResolvedPricing(
+        pricing_basis=PricingBasis.PUBLIC_TARIFF,
+        rates_by_type=public_rates_by_type,
+        surcharge_line_items=public_surcharge_line_items,
+    )
+
+
 def _serialize_rate_coverage(
     payload: ValidateRateCoverageRequest,
     rates_by_type: dict[EquipmentType, RateTable],
@@ -312,11 +412,11 @@ def _serialize_rate_coverage(
 def _build_pricing_provenance(
     *,
     payload: CreateQuoteRequest,
-    rates_by_type: dict[EquipmentType, RateTable],
+    pricing: ResolvedPricing,
     surcharge_line_items: list[SurchargeLineItem],
 ) -> dict[str, object]:
-    return {
-        "pricingBasis": PricingBasis.PUBLIC_TARIFF.value,
+    provenance: dict[str, object] = {
+        "pricingBasis": pricing.pricing_basis.value,
         "referenceDataVersion": REFERENCE_DATA_VERSION,
         "baseRateRules": [
             {
@@ -326,11 +426,11 @@ def _build_pricing_provenance(
                 "currency": "USD",
                 "unitAmount": _serialize_decimal(rate.base_rate_usd),
                 "totalAmount": _serialize_decimal((rate.base_rate_usd * item.quantity).quantize(_MONEY_PRECISION)),
-                "validFrom": rate.valid_from.isoformat(),
-                "validTo": rate.valid_to.isoformat(),
+                "validFrom": None if pricing.contract is None else pricing.contract.valid_from.isoformat(),
+                "validTo": None if pricing.contract is None else pricing.contract.valid_to.isoformat(),
             }
             for item in payload.equipment
-            for rate in [rates_by_type[item.type]]
+            for rate in [pricing.rates_by_type[item.type]]
         ],
         "appliedSurchargeRules": [
             {
@@ -350,6 +450,25 @@ def _build_pricing_provenance(
         ],
     }
 
+    if pricing.contract is None:
+        for rate_rule in provenance["baseRateRules"]:
+            equipment_type = EquipmentType(rate_rule["equipmentType"])
+            rate = pricing.rates_by_type[equipment_type]
+            rate_rule["validFrom"] = rate.valid_from.isoformat()
+            rate_rule["validTo"] = rate.valid_to.isoformat()
+        return provenance
+
+    provenance["customerContext"] = {
+        "customerId": payload.customer_id,
+        "accountId": payload.account_id,
+    }
+    provenance["contract"] = {
+        "contractId": pricing.contract.id,
+        "matchType": pricing.contract.match_type.value,
+        "waivedSurchargeTypes": pricing.contract.waived_surcharge_types,
+    }
+    return provenance
+
 
 @app.post("/quotes", status_code=201)
 def create_quote(
@@ -364,12 +483,19 @@ def create_quote(
         equipment_types={item.type for item in payload.equipment},
     )
     surcharge_rules = db.scalars(select(SurchargeRule)).all()
+    pricing = _resolve_pricing(
+        db=db,
+        payload=payload,
+        schedule=schedule,
+        public_rates_by_type=rates_by_type,
+        surcharge_rules=surcharge_rules,
+    )
 
     equipment_payload = [{"type": item.type.value, "quantity": item.quantity} for item in payload.equipment]
     base_line_items: list[dict[str, object]] = []
     base_total = Decimal("0.00")
     for item in payload.equipment:
-        rate = rates_by_type[item.type]
+        rate = pricing.rates_by_type[item.type]
         amount = (rate.base_rate_usd * item.quantity).quantize(_MONEY_PRECISION)
         base_total += amount
         base_line_items.append(
@@ -379,16 +505,7 @@ def create_quote(
             }
         )
 
-    surcharge_line_items = calculate_surcharges(
-        equipment=[
-            EquipmentSelection(equipment_type=item.type, quantity=item.quantity) for item in payload.equipment
-        ],
-        cargo_weight_kg=payload.cargo_weight_kg,
-        shipment_date=schedule.departure_date,
-        origin_port=schedule.origin_port,
-        destination_port=schedule.destination_port,
-        surcharge_rules=surcharge_rules,
-    )
+    surcharge_line_items = pricing.surcharge_line_items
     line_items = base_line_items + [item.as_dict() for item in surcharge_line_items]
     total_amount = (base_total + total_surcharges(surcharge_line_items)).quantize(_MONEY_PRECISION)
     schedule_snapshot = {
@@ -405,10 +522,13 @@ def create_quote(
         equipment=equipment_payload,
         cargo_weight_kg=payload.cargo_weight_kg.quantize(_MONEY_PRECISION),
         currency="USD",
-        pricing_basis=PricingBasis.PUBLIC_TARIFF,
+        customer_id=payload.customer_id,
+        account_id=payload.account_id,
+        pricing_basis=pricing.pricing_basis,
+        contract_id=None if pricing.contract is None else pricing.contract.id,
         pricing_provenance=_build_pricing_provenance(
             payload=payload,
-            rates_by_type=rates_by_type,
+            pricing=pricing,
             surcharge_line_items=surcharge_line_items,
         ),
         line_items=line_items,

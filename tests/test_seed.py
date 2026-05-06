@@ -6,8 +6,8 @@ import pytest
 
 from app import db
 from app.db import Base
-from app.models import EquipmentType, RateTable, SurchargeRule, SurchargeType
-from app.seed import RATE_TABLE_ROWS, SURCHARGE_RULE_ROWS, seed_reference_data
+from app.models import Contract, ContractRateRule, EquipmentType, RateTable, SurchargeRule, SurchargeType
+from app.seed import CONTRACT_RATE_RULE_ROWS, CONTRACT_ROWS, RATE_TABLE_ROWS, SURCHARGE_RULE_ROWS, seed_reference_data
 
 
 @pytest.fixture()
@@ -35,9 +35,13 @@ def test_seed_reference_data_populates_rate_tables_and_surcharges(sqlite_databas
     with db.SessionLocal() as session:
         rate_rows = session.query(RateTable).order_by(RateTable.origin_port, RateTable.equipment_type).all()
         surcharge_rows = session.query(SurchargeRule).order_by(SurchargeRule.description).all()
+        contract_rows = session.query(Contract).order_by(Contract.id).all()
+        contract_rate_rows = session.query(ContractRateRule).order_by(ContractRateRule.contract_id).all()
 
     assert len(rate_rows) == len(RATE_TABLE_ROWS)
     assert len(surcharge_rows) == len(SURCHARGE_RULE_ROWS)
+    assert len(contract_rows) == len(CONTRACT_ROWS)
+    assert len(contract_rate_rows) == len(CONTRACT_RATE_RULE_ROWS)
     assert {row.equipment_type for row in rate_rows} == set(EquipmentType)
     assert {row.surcharge_type for row in surcharge_rows} == {
         SurchargeType.BAF,
@@ -54,3 +58,5 @@ def test_seed_reference_data_is_idempotent(sqlite_database) -> None:
     with db.SessionLocal() as session:
         assert session.query(RateTable).count() == len(RATE_TABLE_ROWS)
         assert session.query(SurchargeRule).count() == len(SURCHARGE_RULE_ROWS)
+        assert session.query(Contract).count() == len(CONTRACT_ROWS)
+        assert session.query(ContractRateRule).count() == len(CONTRACT_RATE_RULE_ROWS)

@@ -47,3 +47,17 @@ Given the service recognizes the schedule identifier
 And no seeded base freight row exists for that route and equipment
 When the client requests a quote
 Then the API rejects the request with a commercial validation error
+
+## Scenario: Apply customer contract pricing with surcharge waivers
+
+Given the service stores seeded customer contract rules for the Rotterdam to New York lane
+When a client requests a quote with `customerId` for that lane
+Then the API prices the shipment from the matched contract instead of the public tariff
+And the stored quote records the matched contract basis and waived surcharge types
+
+## Scenario: Prefer account contract pricing over customer pricing
+
+Given both a customer contract and a narrower account contract match the same shipment
+When a client requests a quote with both `customerId` and `accountId`
+Then the account contract takes precedence deterministically
+And the resulting quote can differ from the customer-level contract for the same shipment inputs

@@ -33,11 +33,15 @@ def _apply_sqlite_schema_fixes() -> None:
         return
 
     quote_columns = {column["name"] for column in inspector.get_columns("quotes")}
-    if "pricing_provenance" in quote_columns:
-        return
-
     with engine.begin() as connection:
-        connection.execute(text("ALTER TABLE quotes ADD COLUMN pricing_provenance JSON NOT NULL DEFAULT '{}'"))
+        if "customer_id" not in quote_columns:
+            connection.execute(text("ALTER TABLE quotes ADD COLUMN customer_id VARCHAR(64)"))
+        if "account_id" not in quote_columns:
+            connection.execute(text("ALTER TABLE quotes ADD COLUMN account_id VARCHAR(64)"))
+        if "contract_id" not in quote_columns:
+            connection.execute(text("ALTER TABLE quotes ADD COLUMN contract_id VARCHAR(36)"))
+        if "pricing_provenance" not in quote_columns:
+            connection.execute(text("ALTER TABLE quotes ADD COLUMN pricing_provenance JSON NOT NULL DEFAULT '{}'"))
 
 
 def init_db() -> None:

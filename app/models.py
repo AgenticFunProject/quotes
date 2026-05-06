@@ -43,6 +43,11 @@ class PricingBasis(str, Enum):
     HYBRID = "HYBRID"
 
 
+class ContractMatchType(str, Enum):
+    CUSTOMER = "CUSTOMER"
+    ACCOUNT = "ACCOUNT"
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -70,6 +75,8 @@ class Quote(Base):
     equipment: Mapped[list[dict[str, object]]] = mapped_column(JSON)
     cargo_weight_kg: Mapped[Decimal] = mapped_column(Numeric(10, 2))
     currency: Mapped[str] = mapped_column(String(3), default="USD")
+    customer_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    account_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     pricing_basis: Mapped[PricingBasis] = mapped_column(
         SqlEnum(
             PricingBasis,
@@ -78,6 +85,7 @@ class Quote(Base):
         ),
         default=PricingBasis.PUBLIC_TARIFF,
     )
+    contract_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     pricing_provenance: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True, unique=True, index=True)
     line_items: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
@@ -117,6 +125,41 @@ class RateTable(Base):
     base_rate_usd: Mapped[Decimal] = mapped_column(Numeric(10, 2))
     valid_from: Mapped[date] = mapped_column(Date)
     valid_to: Mapped[date] = mapped_column(Date)
+
+
+class Contract(Base):
+    __tablename__ = "contracts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    customer_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    account_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    match_type: Mapped[ContractMatchType] = mapped_column(
+        SqlEnum(
+            ContractMatchType,
+            native_enum=False,
+            values_callable=lambda members: [member.value for member in members],
+        )
+    )
+    origin_port: Mapped[str] = mapped_column(String(16), index=True)
+    destination_port: Mapped[str] = mapped_column(String(16), index=True)
+    waived_surcharge_types: Mapped[list[str]] = mapped_column(JSON, default=list)
+    valid_from: Mapped[date] = mapped_column(Date)
+    valid_to: Mapped[date] = mapped_column(Date)
+
+
+class ContractRateRule(Base):
+    __tablename__ = "contract_rate_rules"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    contract_id: Mapped[str] = mapped_column(String(36), index=True)
+    equipment_type: Mapped[EquipmentType] = mapped_column(
+        SqlEnum(
+            EquipmentType,
+            native_enum=False,
+            values_callable=lambda members: [member.value for member in members],
+        )
+    )
+    base_rate_usd: Mapped[Decimal] = mapped_column(Numeric(10, 2))
 
 
 class SurchargeRule(Base):
