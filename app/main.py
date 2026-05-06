@@ -7,11 +7,11 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import Depends, FastAPI, HTTPException, Header, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db import get_db, init_db
-from app.models import CommercialChangeAction, CommercialChangeEvent, CommercialChangeResourceType, Contract, ContractMatchType, ContractRateRule, EquipmentType, ExchangeRate, OutboxEvent, PortScope, PricingBasis, Quote, QuoteLifecycleState, RateTable, SurchargeRule, SurchargeType
+from app.models import CommercialChangeAction, CommercialChangeEvent, CommercialChangeResourceType, Contract, ContractMatchType, ContractRateRule, EquipmentType, ExchangeRate, ImpactAnalysisChangeType, ImpactAnalysisRun, OutboxConsumerCheckpoint, OutboxEvent, PortScope, PricingBasis, Quote, QuoteLifecycleState, RateTable, SurchargeRule, SurchargeType
 from app.seed import REFERENCE_DATA_VERSION, seed_reference_data
 from app.schedules import Schedule, ScheduleProvider, get_schedule_provider
 from app.surcharges import EquipmentSelection, SurchargeLineItem, calculate_surcharges, total_surcharges
@@ -23,8 +23,12 @@ _QUOTE_STATUS_EXPIRED = "EXPIRED"
 _BOOKABILITY_REASON_OPEN = "VALIDITY_WINDOW_OPEN"
 _BOOKABILITY_REASON_EXPIRED = "VALIDITY_WINDOW_EXPIRED"
 _OUTBOX_AGGREGATE_QUOTE = "quote"
+_OUTBOX_AGGREGATE_RATE_TABLE = "rate_table"
+_OUTBOX_AGGREGATE_SURCHARGE_RULE = "surcharge_rule"
 _QUOTE_CREATED_EVENT = "quote.created"
 _QUOTE_EXPIRED_EVENT = "quote.expired"
+_RATE_UPDATED_EVENT = "rate.updated"
+_SURCHARGE_UPDATED_EVENT = "surcharge.updated"
 _OUTBOX_EVENT_VERSION = 1
 _SOURCE_CURRENCY = "USD"
 _ROUNDING_POLICY = "LINE_ITEM_HALF_UP_2DP"
@@ -145,6 +149,37 @@ class AdminSurchargeRuleUpdateRequest(BaseModel):
 class AdminQuotePreviewRequest(CreateQuoteRequest):
     rate_table_ids: list[str] = Field(default_factory=list, alias="rateTableIds")
     surcharge_rule_ids: list[str] = Field(default_factory=list, alias="surchargeRuleIds")
+
+
+class ReplayOutboxRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    batch_size: int = Field(default=100, alias="batchSize", ge=1, le=500)
+    from_start: bool = Field(default=False, alias="fromStart")
+    event_types: list[str] = Field(default_factory=list, alias="eventTypes")
+    aggregate_types: list[str] = Field(default_factory=list, alias="aggregateTypes")
+
+
+class ImpactAnalysisRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    change_type: ImpactAnalysisChangeType = Field(alias="changeType")
+    schedule_id: str | None = Field(default=None, alias="scheduleId", min_length=1)
+    contract_id: str | None = Field(default=None, alias="contractId", min_length=1)
+
+    @model_validator(mode="after")
+    def validate_target(self) -> "ImpactAnalysisRequest":
+        if self.change_type == ImpactAnalysisChangeType.SCHEDULE:
+            if self.schedule_id is None:
+                raise ValueError("scheduleId is required for SCHEDULE impact analysis")
+            if self.contract_id is not None:
+                raise ValueError("contractId is not allowed for SCHEDULE impact analysis")
+        if self.change_type == ImpactAnalysisChangeType.CONTRACT:
+            if self.contract_id is None:
+                raise ValueError("contractId is required for CONTRACT impact analysis")
+            if self.schedule_id is not None:
+                raise ValueError("scheduleId is not allowed for CONTRACT impact analysis")
+        return self
 
 
 @asynccontextmanager
@@ -278,6 +313,71 @@ def _build_quote_event_payload(quote: Quote) -> dict[str, object]:
         "validUntil": quote.valid_until.isoformat(),
         "createdAt": quote.created_at.isoformat(),
     }
+
+
+def _serialize_outbox_event(event: OutboxEvent) -> dict[str, object]:
+    return {
+        "id": event.id,
+        "aggregateType": event.aggregate_type,
+        "aggregateId": event.aggregate_id,
+        "eventType": event.event_type,
+        "eventVersion": event.event_version,
+        "payload": event.payload,
+        "occurredAt": event.occurred_at.isoformat(),
+        "publishedAt": _serialize_optional_datetime(event.published_at),
+        "publishAttempts": event.publish_attempts,
+        "lastError": event.last_error,
+    }
+
+
+def _serialize_checkpoint(checkpoint: OutboxConsumerCheckpoint) -> dict[str, object]:
+    return {
+        "consumerName": checkpoint.consumer_name,
+        "lastEventId": checkpoint.last_event_id,
+        "lastOccurredAt": _serialize_optional_datetime(checkpoint.last_occurred_at),
+        "processedEventsCount": checkpoint.processed_events_count,
+        "lastReplayedBy": checkpoint.last_replayed_by,
+        "updatedAt": checkpoint.updated_at.isoformat(),
+    }
+
+
+def _serialize_impact_analysis(run: ImpactAnalysisRun) -> dict[str, object]:
+    return {
+        "id": run.id,
+        "changeType": run.change_type.value,
+        "targetId": run.target_id,
+        "actor": run.actor,
+        "summary": run.summary,
+        "createdAt": run.created_at.isoformat(),
+    }
+
+
+def _build_commercial_change_event_payload(
+    *,
+    resource_type: CommercialChangeResourceType,
+    resource_id: str,
+    action: CommercialChangeAction,
+    actor: str,
+    resource_version: int,
+    snapshot: dict[str, object],
+    occurred_at: datetime,
+) -> dict[str, object]:
+    return {
+        "resourceType": resource_type.value,
+        "resourceId": resource_id,
+        "action": action.value,
+        "actor": actor,
+        "resourceVersion": resource_version,
+        "snapshot": snapshot,
+        "occurredAt": _normalize_utc(occurred_at).isoformat(),
+    }
+
+
+def _commercial_change_event_contract(resource_type: CommercialChangeResourceType) -> tuple[str, str]:
+    if resource_type == CommercialChangeResourceType.RATE_TABLE:
+        return _OUTBOX_AGGREGATE_RATE_TABLE, _RATE_UPDATED_EVENT
+
+    return _OUTBOX_AGGREGATE_SURCHARGE_RULE, _SURCHARGE_UPDATED_EVENT
 
 
 def _enqueue_quote_event(
@@ -684,6 +784,59 @@ def _record_commercial_change(
             occurred_at=occurred_at,
         )
     )
+    aggregate_type, event_type = _commercial_change_event_contract(resource_type)
+    db.add(
+        OutboxEvent(
+            aggregate_type=aggregate_type,
+            aggregate_id=resource_id,
+            event_type=event_type,
+            event_version=_OUTBOX_EVENT_VERSION,
+            payload=_build_commercial_change_event_payload(
+                resource_type=resource_type,
+                resource_id=resource_id,
+                action=action,
+                actor=actor,
+                resource_version=resource_version,
+                snapshot=snapshot,
+                occurred_at=occurred_at,
+            ),
+            occurred_at=occurred_at,
+        )
+    )
+
+
+def _quote_lifecycle_state_for_reporting(quote: Quote) -> QuoteLifecycleState:
+    if quote.lifecycle_state == QuoteLifecycleState.ISSUED and _quote_is_expired(quote):
+        return QuoteLifecycleState.EXPIRED
+
+    return quote.lifecycle_state
+
+
+def _serialize_impacted_quote(quote: Quote) -> dict[str, object]:
+    lifecycle_state = _quote_lifecycle_state_for_reporting(quote)
+    bookable = lifecycle_state == QuoteLifecycleState.ISSUED and not _quote_is_expired(quote)
+    return {
+        "quoteId": quote.id,
+        "quoteReference": quote.quote_reference,
+        "lifecycleState": lifecycle_state.value,
+        "bookable": bookable,
+        "scheduleId": quote.schedule_id,
+        "contractId": quote.contract_id,
+        "pricingBasis": quote.pricing_basis.value,
+        "validUntil": quote.valid_until.isoformat(),
+        "createdAt": quote.created_at.isoformat(),
+    }
+
+
+def _build_impact_summary(payload: ImpactAnalysisRequest, quotes: list[Quote]) -> dict[str, object]:
+    target_id = payload.schedule_id if payload.change_type == ImpactAnalysisChangeType.SCHEDULE else payload.contract_id
+    affected_quotes = [_serialize_impacted_quote(quote) for quote in quotes]
+    return {
+        "changeType": payload.change_type.value,
+        "targetId": target_id,
+        "affectedCount": len(affected_quotes),
+        "affectedQuotes": affected_quotes,
+    }
 
 
 def _deactivate_superseded_rate_tables(rate_table: RateTable, *, actor: str, changed_at: datetime, db: Session) -> None:
@@ -1279,6 +1432,115 @@ def list_commercial_change_events(
 
     events = db.scalars(query).all()
     return {"events": [_serialize_commercial_change_event(event) for event in events]}
+
+
+@app.get("/admin/outbox-events")
+def list_outbox_events(
+    aggregate_type: str | None = Query(default=None, alias="aggregateType"),
+    event_type: str | None = Query(default=None, alias="eventType"),
+    published: bool | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    query = select(OutboxEvent).order_by(OutboxEvent.occurred_at, OutboxEvent.id)
+    if aggregate_type is not None:
+        query = query.where(OutboxEvent.aggregate_type == aggregate_type)
+    if event_type is not None:
+        query = query.where(OutboxEvent.event_type == event_type)
+    if published is True:
+        query = query.where(OutboxEvent.published_at.is_not(None))
+    if published is False:
+        query = query.where(OutboxEvent.published_at.is_(None))
+
+    events = db.scalars(query.limit(limit)).all()
+    return {"events": [_serialize_outbox_event(event) for event in events]}
+
+
+@app.post("/admin/outbox-consumers/{consumer_name}/replay")
+def replay_outbox_events(
+    consumer_name: str,
+    payload: ReplayOutboxRequest,
+    actor: str = Depends(_require_actor),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    checkpoint = db.get(OutboxConsumerCheckpoint, consumer_name)
+    if checkpoint is None:
+        checkpoint = OutboxConsumerCheckpoint(consumer_name=consumer_name)
+        db.add(checkpoint)
+        db.flush()
+
+    query = select(OutboxEvent)
+    if payload.aggregate_types:
+        query = query.where(OutboxEvent.aggregate_type.in_(payload.aggregate_types))
+    if payload.event_types:
+        query = query.where(OutboxEvent.event_type.in_(payload.event_types))
+    if not payload.from_start and checkpoint.last_occurred_at is not None:
+        if checkpoint.last_event_id is None:
+            query = query.where(OutboxEvent.occurred_at > checkpoint.last_occurred_at)
+        else:
+            query = query.where(
+                or_(
+                    OutboxEvent.occurred_at > checkpoint.last_occurred_at,
+                    and_(
+                        OutboxEvent.occurred_at == checkpoint.last_occurred_at,
+                        OutboxEvent.id > checkpoint.last_event_id,
+                    ),
+                )
+            )
+
+    events = db.scalars(query.order_by(OutboxEvent.occurred_at, OutboxEvent.id).limit(payload.batch_size)).all()
+    if events:
+        checkpoint.last_event_id = events[-1].id
+        checkpoint.last_occurred_at = events[-1].occurred_at
+        checkpoint.processed_events_count += len(events)
+    checkpoint.last_replayed_by = actor
+    checkpoint.updated_at = _normalize_utc(datetime.now(timezone.utc))
+    db.add(checkpoint)
+    db.commit()
+    db.refresh(checkpoint)
+
+    return {
+        "consumerName": consumer_name,
+        "replayedCount": len(events),
+        "events": [_serialize_outbox_event(event) for event in events],
+        "checkpoint": _serialize_checkpoint(checkpoint),
+    }
+
+
+@app.post("/admin/impact-analyses", status_code=201)
+def create_impact_analysis(
+    payload: ImpactAnalysisRequest,
+    actor: str = Depends(_require_actor),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    if payload.change_type == ImpactAnalysisChangeType.SCHEDULE:
+        quotes = db.scalars(select(Quote).where(Quote.schedule_id == payload.schedule_id).order_by(Quote.created_at.desc())).all()
+        target_id = payload.schedule_id
+    else:
+        quotes = db.scalars(select(Quote).where(Quote.contract_id == payload.contract_id).order_by(Quote.created_at.desc())).all()
+        target_id = payload.contract_id
+
+    summary = _build_impact_summary(payload, quotes)
+    run = ImpactAnalysisRun(
+        change_type=payload.change_type,
+        target_id=target_id or "",
+        actor=actor,
+        summary=summary,
+        created_at=_normalize_utc(datetime.now(timezone.utc)),
+    )
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    return _serialize_impact_analysis(run)
+
+
+@app.get("/admin/impact-analyses/{run_id}")
+def get_impact_analysis(run_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
+    run = db.get(ImpactAnalysisRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Impact analysis not found")
+
+    return _serialize_impact_analysis(run)
 
 
 @app.post("/admin/quote-preview")

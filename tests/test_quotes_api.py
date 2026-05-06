@@ -13,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 from app import db
 from app.db import Base, get_db
 from app.main import app
-from app.models import CommercialChangeAction, CommercialChangeEvent, CommercialChangeResourceType, EquipmentType, OutboxEvent, PricingBasis, Quote, QuoteLifecycleState, RateTable, SurchargeRule
+from app.models import CommercialChangeAction, CommercialChangeEvent, CommercialChangeResourceType, EquipmentType, ImpactAnalysisRun, OutboxConsumerCheckpoint, OutboxEvent, PricingBasis, Quote, QuoteLifecycleState, RateTable, SurchargeRule
 from app.seed import FX_PROVIDER, FX_REFERENCE_DATA_VERSION, REFERENCE_DATA_VERSION, seed_reference_data
 from app.schedules import Schedule, get_schedule_provider
 
@@ -690,6 +690,61 @@ def test_admin_rate_table_changes_are_recorded_in_audit_trail(client) -> None:
     assert all(event.resource_type == CommercialChangeResourceType.RATE_TABLE for event in stored_events)
 
 
+def test_admin_rate_table_changes_are_published_to_outbox(client) -> None:
+    test_client, session_factory = client
+
+    create_response = test_client.post(
+        "/admin/rate-tables",
+        headers={"X-Actor": "pricing.ops@quotes"},
+        json={
+            "originPort": "NLRTM",
+            "destinationPort": "USNYC",
+            "equipmentType": "40FT",
+            "baseRateUsd": 1505,
+            "validFrom": "2026-04-01",
+            "validTo": "2026-12-31",
+        },
+    )
+    rate_table_id = create_response.json()["id"]
+
+    update_response = test_client.patch(
+        f"/admin/rate-tables/{rate_table_id}",
+        headers={"X-Actor": "pricing.ops@quotes"},
+        json={"baseRateUsd": 1510},
+    )
+    activate_response = test_client.post(
+        f"/admin/rate-tables/{rate_table_id}/activate",
+        headers={"X-Actor": "pricing.manager@quotes"},
+    )
+
+    assert create_response.status_code == 201
+    assert update_response.status_code == 200
+    assert activate_response.status_code == 200
+
+    outbox_response = test_client.get(
+        "/admin/outbox-events",
+        params={"aggregateType": "rate_table", "eventType": "rate.updated"},
+    )
+
+    assert outbox_response.status_code == 200
+    matching_events = [event for event in outbox_response.json()["events"] if event["aggregateId"] == rate_table_id]
+    assert [event["payload"]["action"] for event in matching_events] == ["CREATED", "UPDATED", "ACTIVATED"]
+    assert matching_events[-1]["payload"]["actor"] == "pricing.manager@quotes"
+    assert matching_events[-1]["payload"]["resourceVersion"] == 2
+
+    with session_factory() as session:
+        stored_events = session.scalars(
+            select(OutboxEvent)
+            .where(OutboxEvent.aggregate_id == rate_table_id, OutboxEvent.event_type == "rate.updated")
+            .order_by(OutboxEvent.occurred_at)
+        ).all()
+
+    assert len(stored_events) == 3
+    assert stored_events[0].aggregate_type == "rate_table"
+    assert stored_events[0].payload["snapshot"]["baseRateUsd"] == 1505.0
+    assert stored_events[1].payload["snapshot"]["baseRateUsd"] == 1510.0
+
+
 def test_admin_cannot_patch_an_active_rate_table(client) -> None:
     test_client, session_factory = client
 
@@ -902,6 +957,111 @@ def test_admin_quote_preview_can_use_draft_rate_and_surcharge_versions(client) -
     with session_factory() as session:
         assert session.scalar(select(func.count()).select_from(Quote)) == 0
         assert session.scalar(select(func.count()).select_from(SurchargeRule).where(SurchargeRule.id == surcharge_response.json()["id"])) == 1
+
+
+def test_admin_outbox_replay_advances_named_consumer_checkpoint(client) -> None:
+    test_client, session_factory = client
+
+    quote_response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+    assert quote_response.status_code == 201
+
+    first_replay = test_client.post(
+        "/admin/outbox-consumers/booking-cache/replay",
+        headers={"X-Actor": "booking.sync@quotes"},
+        json={"fromStart": True, "batchSize": 1, "eventTypes": ["quote.created"]},
+    )
+    second_replay = test_client.post(
+        "/admin/outbox-consumers/booking-cache/replay",
+        headers={"X-Actor": "booking.sync@quotes"},
+        json={"batchSize": 1, "eventTypes": ["quote.created"]},
+    )
+
+    assert first_replay.status_code == 200
+    assert first_replay.json()["replayedCount"] == 1
+    assert first_replay.json()["events"][0]["eventType"] == "quote.created"
+    assert second_replay.status_code == 200
+    assert second_replay.json()["replayedCount"] == 0
+
+    with session_factory() as session:
+        checkpoint = session.get(OutboxConsumerCheckpoint, "booking-cache")
+
+    assert checkpoint is not None
+    assert checkpoint.processed_events_count == 1
+    assert checkpoint.last_replayed_by == "booking.sync@quotes"
+
+
+def test_admin_impact_analysis_persists_schedule_and_contract_results(client) -> None:
+    test_client, session_factory = client
+
+    public_quote_response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+    contract_quote_response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "customerId": "cust-acme",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+
+    assert public_quote_response.status_code == 201
+    assert contract_quote_response.status_code == 201
+
+    schedule_response = test_client.post(
+        "/admin/impact-analyses",
+        headers={"X-Actor": "ops@quotes"},
+        json={
+            "changeType": "SCHEDULE",
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+        },
+    )
+    contract_response = test_client.post(
+        "/admin/impact-analyses",
+        headers={"X-Actor": "ops@quotes"},
+        json={
+            "changeType": "CONTRACT",
+            "contractId": "7c9cc0a4-bd6d-4e6f-9c1c-e5c3a1300001",
+        },
+    )
+
+    assert schedule_response.status_code == 201
+    assert schedule_response.json()["changeType"] == "SCHEDULE"
+    assert schedule_response.json()["summary"]["affectedCount"] == 2
+    assert {quote["quoteId"] for quote in schedule_response.json()["summary"]["affectedQuotes"]} == {
+        public_quote_response.json()["id"],
+        contract_quote_response.json()["id"],
+    }
+
+    assert contract_response.status_code == 201
+    assert contract_response.json()["changeType"] == "CONTRACT"
+    assert contract_response.json()["summary"]["affectedCount"] == 1
+    assert contract_response.json()["summary"]["affectedQuotes"][0]["quoteId"] == contract_quote_response.json()["id"]
+    assert contract_response.json()["summary"]["affectedQuotes"][0]["contractId"] == "7c9cc0a4-bd6d-4e6f-9c1c-e5c3a1300001"
+
+    get_response = test_client.get(f"/admin/impact-analyses/{contract_response.json()['id']}")
+    assert get_response.status_code == 200
+    assert get_response.json()["summary"]["affectedCount"] == 1
+
+    with session_factory() as session:
+        stored_runs = session.scalars(select(ImpactAnalysisRun).order_by(ImpactAnalysisRun.created_at)).all()
+
+    assert len(stored_runs) == 2
+    assert stored_runs[0].summary["affectedCount"] == 2
+    assert stored_runs[1].summary["affectedCount"] == 1
 
 
 def test_admin_requires_actor_header_for_managed_commercial_changes(client) -> None:

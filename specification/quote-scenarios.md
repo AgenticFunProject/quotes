@@ -89,6 +89,27 @@ When support reads the managed commercial audit trail for that rate table
 Then the API returns the recorded `CREATED`, `UPDATED`, and `ACTIVATED` events
 And each event includes the actor, managed version, and post-change snapshot
 
+## Scenario: Publish managed commercial changes to the outbox
+
+Given a commercial operator creates, edits, and activates a managed rate-table version
+When an integration consumer reads the outbox feed for rate-table changes
+Then the service returns stable `rate.updated` events for each managed change
+And each payload includes the commercial action, actor, resource version, and post-change snapshot
+
+## Scenario: Replay outbox events for a named downstream consumer
+
+Given the service stores quote lifecycle and managed commercial events in the outbox
+When a downstream consumer replays events with its named checkpoint
+Then the API returns the next ordered batch of matching events
+And the consumer checkpoint advances so the next replay can resume without rereading old events
+
+## Scenario: Analyze quote impact for schedule or contract changes
+
+Given the service stores quotes with schedule and contract provenance
+When an operator creates an impact analysis for a schedule or contract change
+Then the service persists a summary of the affected quotes
+And the summary reports each affected quote's identifiers, lifecycle state, and current bookability
+
 ## Scenario: Preview quote pricing with draft managed commercial data
 
 Given the service stores active public tariff data and draft replacement commercial rows

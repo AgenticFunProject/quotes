@@ -313,6 +313,10 @@ Provides a quoted price that can be referenced when placing a booking.
 - `POST /admin/rate-tables/{id}/activate` and `POST /admin/surcharge-rules/{id}/activate` promote the selected draft version and deactivate overlapping active versions for the same commercial scope.
 - Every managed commercial create, update, and activate operation appends a durable row to `commercial_change_events` with the actor, action, resource version, and post-change snapshot.
 - `GET /admin/commercial-change-events` returns the audit trail and can be filtered by `resourceType` and `resourceId`.
+- `GET /admin/outbox-events` returns the current durable event stream with optional aggregate, event-type, and publication filters.
+- `POST /admin/outbox-consumers/{consumerName}/replay` replays the next ordered outbox batch for a named consumer and advances its checkpoint.
+- `POST /admin/impact-analyses` persists a schedule- or contract-change impact summary for the affected quotes.
+- `GET /admin/impact-analyses/{id}` returns a previously recorded impact-analysis run.
 - `POST /admin/quote-preview` accepts the same shipment request shape as `POST /quotes` plus optional `rateTableIds` and `surchargeRuleIds` to preview explicit draft versions before activation.
 - Quote creation and coverage validation read only active managed commercial data.
 
@@ -522,9 +526,12 @@ Expected result:
 - Active managed rate-table and surcharge-rule rows are the only rows used during quote pricing; drafts are inert until explicitly activated.
 - Public tariff provenance now records the active `rateVersion` and `surchargeRuleVersion` selected for the quote so later support workflows can explain which managed commercial change produced the amount.
 - The current implementation records managed commercial create, update, and activate actions in `commercial_change_events` so support and finance workflows can reconstruct the audit trail.
+- The current implementation also publishes those managed commercial changes into `outbox_events` as stable `rate.updated` and `surcharge.updated` events, with the specific commercial action carried in the payload.
 - The current implementation exposes `POST /admin/quote-preview` so commercial operators can preview quote pricing with explicit draft rate-table and surcharge-rule versions before activation.
 - Quote lifecycle changes are written to `outbox_events` in the same transaction as the quote write that caused them.
 - The current implementation emits `quote.created` when a quote is created and `quote.expired` the first time an issued quote is observed past `validUntil`, and both payloads include the stored pricing provenance snapshot.
+- Outbox replay is checkpointed per named consumer in `outbox_consumer_checkpoints`, which lets downstream read models rebuild deterministically without a broker.
+- Schedule- and contract-change impact workflows persist their results in `impact_analysis_runs` so operators can inspect which stored quotes would need downstream attention.
 - These notes describe the present behavior of the generated code and should be folded into the business specification when they are confirmed as intended behavior.
 
 ## Out of Scope (v1)

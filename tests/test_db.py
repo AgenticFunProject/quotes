@@ -16,7 +16,10 @@ from app.models import (
     ContractMatchType,
     ContractRateRule,
     EquipmentType,
+    ImpactAnalysisChangeType,
+    ImpactAnalysisRun,
     OutboxEvent,
+    OutboxConsumerCheckpoint,
     PortScope,
     PricingBasis,
     Quote,
@@ -38,7 +41,9 @@ def test_models_create_sqlite_tables() -> None:
         "contract_rate_rules",
         "contracts",
         "exchange_rates",
+        "impact_analysis_runs",
         "outbox_events",
+        "outbox_consumer_checkpoints",
         "quotes",
         "rate_tables",
         "surcharge_rules",
@@ -146,10 +151,27 @@ def test_models_persist_records() -> None:
             payload={"quoteReference": "QTE-2026-00001"},
         )
     )
+    session.add(
+        OutboxConsumerCheckpoint(
+            consumer_name="booking-cache",
+            last_event_id="outbox-1",
+            processed_events_count=2,
+        )
+    )
+    session.add(
+        ImpactAnalysisRun(
+            change_type=ImpactAnalysisChangeType.SCHEDULE,
+            target_id="53c362b2-1229-4ea5-a24a-9891fb1f509d",
+            actor="ops@quotes",
+            summary={"affectedCount": 1},
+        )
+    )
     session.commit()
 
     assert session.query(CommercialChangeEvent).count() == 1
+    assert session.query(ImpactAnalysisRun).count() == 1
     assert session.query(OutboxEvent).count() == 1
+    assert session.query(OutboxConsumerCheckpoint).count() == 1
     assert session.query(Contract).count() == 1
     assert session.query(ContractRateRule).count() == 1
     assert session.query(Quote).count() == 1
@@ -165,6 +187,8 @@ def test_models_persist_records() -> None:
     assert stored_quote.idempotency_key == "request-123"
     assert session.query(CommercialChangeEvent).one().action == CommercialChangeAction.CREATED
     assert stored_event.event_type == "quote.created"
+    assert session.query(OutboxConsumerCheckpoint).one().consumer_name == "booking-cache"
+    assert session.query(ImpactAnalysisRun).one().change_type == ImpactAnalysisChangeType.SCHEDULE
     assert session.query(RateTable).one().version == 1
     assert session.query(RateTable).one().is_active is True
     assert session.query(SurchargeRule).one().version == 1

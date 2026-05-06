@@ -59,6 +59,11 @@ class CommercialChangeAction(str, Enum):
     ACTIVATED = "ACTIVATED"
 
 
+class ImpactAnalysisChangeType(str, Enum):
+    SCHEDULE = "SCHEDULE"
+    CONTRACT = "CONTRACT"
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -123,6 +128,17 @@ class OutboxEvent(Base):
     last_error: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
 
+class OutboxConsumerCheckpoint(Base):
+    __tablename__ = "outbox_consumer_checkpoints"
+
+    consumer_name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    last_event_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    last_occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    processed_events_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_replayed_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)
+
+
 class CommercialChangeEvent(Base):
     __tablename__ = "commercial_change_events"
 
@@ -148,6 +164,24 @@ class CommercialChangeEvent(Base):
     resource_version: Mapped[int] = mapped_column(Integer)
     snapshot: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, index=True)
+
+
+class ImpactAnalysisRun(Base):
+    __tablename__ = "impact_analysis_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    change_type: Mapped[ImpactAnalysisChangeType] = mapped_column(
+        SqlEnum(
+            ImpactAnalysisChangeType,
+            native_enum=False,
+            values_callable=lambda members: [member.value for member in members],
+        ),
+        index=True,
+    )
+    target_id: Mapped[str] = mapped_column(String(64), index=True)
+    actor: Mapped[str] = mapped_column(String(64), index=True)
+    summary: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, index=True)
 
 
 class ManagedCommercialRecord:
