@@ -124,3 +124,24 @@ When a client requests a quote with `currency` set to `EUR`
 Then the API keeps the commercial source basis in `USD`
 And the response exposes the persisted FX snapshot and rounding policy used for conversion
 And the stored quote provenance records both the source total and the display-currency total deterministically
+
+## Scenario: Use approved market pricing when the client hints MARKET
+
+Given the service stores approved market-rate snapshots for the requested lane and equipment
+When a client requests a quote with `pricingModeHint` set to `MARKET`
+Then the API prices the base freight from the approved market snapshot instead of tariff or contract data
+And the stored quote records the selected market source and optimization trace for explainability
+
+## Scenario: Fall back from MARKET to contract or tariff pricing when market coverage is missing
+
+Given the service cannot fully cover the request from approved market-rate snapshots
+When a client requests a quote with `pricingModeHint` set to `MARKET`
+Then the API falls back to the deterministic contract-or-tariff basis available for that request
+And the stored optimization trace records that market pricing was requested but unavailable
+
+## Scenario: Explain why a quote used market or fallback pricing
+
+Given a quote has been stored with market-pricing explainability data
+When support reads `GET /quotes/{id}/explain`
+Then the API returns the stored pricing basis, market source when present, and persisted optimization trace
+And the explainability payload matches the stored pricing provenance used at quote creation time

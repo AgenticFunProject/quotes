@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import create_engine, inspect, text
@@ -18,10 +18,12 @@ from app.models import (
     EquipmentType,
     ImpactAnalysisChangeType,
     ImpactAnalysisRun,
+    MarketRateSnapshot,
     OutboxEvent,
     OutboxConsumerCheckpoint,
     PortScope,
     PricingBasis,
+    PricingStrategyVersion,
     Quote,
     QuoteLifecycleState,
     RateTable,
@@ -42,8 +44,10 @@ def test_models_create_sqlite_tables() -> None:
         "contracts",
         "exchange_rates",
         "impact_analysis_runs",
+        "market_rate_snapshots",
         "outbox_events",
         "outbox_consumer_checkpoints",
+        "pricing_strategy_versions",
         "quotes",
         "rate_tables",
         "surcharge_rules",
@@ -102,6 +106,7 @@ def test_models_persist_records() -> None:
             account_id=None,
             pricing_basis=PricingBasis.PUBLIC_TARIFF,
             contract_id=None,
+            market_source=None,
             pricing_provenance={
                 "pricingBasis": PricingBasis.PUBLIC_TARIFF.value,
                 "referenceDataVersion": REFERENCE_DATA_VERSION,
@@ -119,9 +124,36 @@ def test_models_persist_records() -> None:
                 ],
                 "appliedSurchargeRules": [],
             },
+            optimization_trace={"decision": "STRATEGY_FALLBACK"},
             idempotency_key="request-123",
             line_items=[{"description": "Ocean Freight", "amount": 1800.0}],
             total_amount=Decimal("1800.00"),
+        )
+    )
+    session.add(
+        MarketRateSnapshot(
+            id="market-1",
+            source_name="approved-spot-market-feed",
+            source_reference="spot-quote-1",
+            origin_port="NLRTM",
+            destination_port="USNYC",
+            equipment_type=EquipmentType.TWENTY_FT,
+            rate_usd=Decimal("1010.00"),
+            valid_from=date(2026, 4, 1),
+            valid_to=date(2026, 4, 30),
+            capacity_pressure_index=Decimal("0.70"),
+            utilization_index=Decimal("0.82"),
+            seasonality_index=Decimal("0.60"),
+            captured_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
+            approved_at=datetime(2026, 4, 2, tzinfo=timezone.utc),
+            approved_by="pricing.manager@quotes",
+        )
+    )
+    session.add(
+        PricingStrategyVersion(
+            id="strategy-1",
+            strategy_name="market-optimization",
+            rules={"capacityPressureThreshold": 0.75},
         )
     )
     session.add(
@@ -174,6 +206,8 @@ def test_models_persist_records() -> None:
     assert session.query(OutboxConsumerCheckpoint).count() == 1
     assert session.query(Contract).count() == 1
     assert session.query(ContractRateRule).count() == 1
+    assert session.query(MarketRateSnapshot).count() == 1
+    assert session.query(PricingStrategyVersion).count() == 1
     assert session.query(Quote).count() == 1
     assert session.query(RateTable).count() == 1
     assert session.query(SurchargeRule).count() == 1
@@ -184,6 +218,7 @@ def test_models_persist_records() -> None:
     assert stored_quote.pricing_basis == PricingBasis.PUBLIC_TARIFF
     assert stored_quote.customer_id == "cust-acme"
     assert stored_quote.pricing_provenance["referenceDataVersion"] == REFERENCE_DATA_VERSION
+    assert stored_quote.optimization_trace["decision"] == "STRATEGY_FALLBACK"
     assert stored_quote.idempotency_key == "request-123"
     assert session.query(CommercialChangeEvent).one().action == CommercialChangeAction.CREATED
     assert stored_event.event_type == "quote.created"
@@ -237,7 +272,9 @@ def test_init_db_backfills_pricing_provenance_column_for_existing_sqlite_quotes_
     assert "customer_id" in quote_columns
     assert "account_id" in quote_columns
     assert "contract_id" in quote_columns
+    assert "market_source" in quote_columns
     assert "pricing_provenance" in quote_columns
+    assert "optimization_trace" in quote_columns
     assert "source_currency" in quote_columns
     assert "fx_snapshot" in quote_columns
     assert "rounding_policy" in quote_columns

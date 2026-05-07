@@ -103,7 +103,9 @@ class Quote(Base):
         default=PricingBasis.PUBLIC_TARIFF,
     )
     contract_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    market_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
     pricing_provenance: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    optimization_trace: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     fx_snapshot: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     rounding_policy: Mapped[str] = mapped_column(String(64), default="LINE_ITEM_HALF_UP_2DP")
     idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True, unique=True, index=True)
@@ -258,6 +260,40 @@ class ExchangeRate(Base):
     provider: Mapped[str] = mapped_column(String(64))
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     reference_data_version: Mapped[str] = mapped_column(String(64))
+
+
+class MarketRateSnapshot(Base):
+    __tablename__ = "market_rate_snapshots"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_name: Mapped[str] = mapped_column(String(64), index=True)
+    source_reference: Mapped[str] = mapped_column(String(128))
+    origin_port: Mapped[str] = mapped_column(String(16), index=True)
+    destination_port: Mapped[str] = mapped_column(String(16), index=True)
+    equipment_type: Mapped[EquipmentType] = mapped_column(
+        SqlEnum(
+            EquipmentType,
+            native_enum=False,
+            values_callable=lambda members: [member.value for member in members],
+        )
+    )
+    rate_usd: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    valid_from: Mapped[date] = mapped_column(Date)
+    valid_to: Mapped[date] = mapped_column(Date)
+    capacity_pressure_index: Mapped[Decimal] = mapped_column(Numeric(4, 2))
+    utilization_index: Mapped[Decimal] = mapped_column(Numeric(4, 2))
+    seasonality_index: Mapped[Decimal] = mapped_column(Numeric(4, 2))
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    approved_by: Mapped[str] = mapped_column(String(64))
+
+
+class PricingStrategyVersion(ManagedCommercialRecord, Base):
+    __tablename__ = "pricing_strategy_versions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    strategy_name: Mapped[str] = mapped_column(String(64), index=True)
+    rules: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
 
 
 class SurchargeRule(ManagedCommercialRecord, Base):

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
+from enum import Enum
 
 from fastapi import Depends, FastAPI, HTTPException, Header, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -11,7 +12,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db import get_db, init_db
-from app.models import CommercialChangeAction, CommercialChangeEvent, CommercialChangeResourceType, Contract, ContractMatchType, ContractRateRule, EquipmentType, ExchangeRate, ImpactAnalysisChangeType, ImpactAnalysisRun, OutboxConsumerCheckpoint, OutboxEvent, PortScope, PricingBasis, Quote, QuoteLifecycleState, RateTable, SurchargeRule, SurchargeType
+from app.models import CommercialChangeAction, CommercialChangeEvent, CommercialChangeResourceType, Contract, ContractMatchType, ContractRateRule, EquipmentType, ExchangeRate, ImpactAnalysisChangeType, ImpactAnalysisRun, MarketRateSnapshot, OutboxConsumerCheckpoint, OutboxEvent, PortScope, PricingBasis, PricingStrategyVersion, Quote, QuoteLifecycleState, RateTable, SurchargeRule, SurchargeType
 from app.seed import REFERENCE_DATA_VERSION, seed_reference_data
 from app.schedules import Schedule, ScheduleProvider, get_schedule_provider
 from app.surcharges import EquipmentSelection, SurchargeLineItem, calculate_surcharges, total_surcharges
@@ -40,6 +41,15 @@ class ResolvedPricing:
     rates_by_type: dict[EquipmentType, object]
     surcharge_line_items: list[SurchargeLineItem]
     contract: Contract | None = None
+    market_source: str | None = None
+    optimization_trace: dict[str, object] = field(default_factory=dict)
+
+
+class PricingModeHint(str, Enum):
+    AUTO = "AUTO"
+    PUBLIC_TARIFF = "PUBLIC_TARIFF"
+    CONTRACT = "CONTRACT"
+    MARKET = "MARKET"
 
 
 @dataclass(frozen=True)
@@ -66,6 +76,7 @@ class CreateQuoteRequest(BaseModel):
     customer_id: str | None = Field(default=None, alias="customerId", min_length=1)
     account_id: str | None = Field(default=None, alias="accountId", min_length=1)
     currency: str = Field(default=_SOURCE_CURRENCY, min_length=3, max_length=3)
+    pricing_mode_hint: PricingModeHint | None = Field(default=None, alias="pricingModeHint")
 
     @field_validator("currency")
     @classmethod
@@ -451,6 +462,20 @@ def _serialize_bookability(quote: Quote) -> dict[str, object]:
         "reason": _BOOKABILITY_REASON_EXPIRED if expired else _BOOKABILITY_REASON_OPEN,
         "expired": expired,
         "validUntil": quote.valid_until.isoformat(),
+    }
+
+
+def _serialize_quote_explainability(quote: Quote) -> dict[str, object]:
+    return {
+        "quoteId": quote.id,
+        "quoteReference": quote.quote_reference,
+        "pricingBasis": quote.pricing_basis.value,
+        "marketSource": quote.market_source,
+        "customerId": quote.customer_id,
+        "accountId": quote.account_id,
+        "contractId": quote.contract_id,
+        "optimizationTrace": quote.optimization_trace,
+        "pricingProvenance": quote.pricing_provenance,
     }
 
 
@@ -919,6 +944,102 @@ def _waive_surcharges(
     return [item for item in surcharge_line_items if item.rule.surcharge_type not in waived_types]
 
 
+def _resolve_contract_pricing(
+    *,
+    db: Session,
+    payload: CreateQuoteRequest,
+    schedule: Schedule,
+    public_surcharge_line_items: list[SurchargeLineItem],
+) -> ResolvedPricing | None:
+    for contract in _find_contracts(db=db, payload=payload, schedule=schedule):
+        contract_rates_by_type = _load_contract_rate_rules(db, contract.id)
+        if any(item.type not in contract_rates_by_type for item in payload.equipment):
+            continue
+
+        return ResolvedPricing(
+            pricing_basis=PricingBasis.CONTRACT,
+            rates_by_type=contract_rates_by_type,
+            surcharge_line_items=_waive_surcharges(public_surcharge_line_items, contract.waived_surcharge_types),
+            contract=contract,
+        )
+
+    return None
+
+
+def _load_market_rate_snapshots(
+    *,
+    db: Session,
+    schedule: Schedule,
+    equipment_types: set[EquipmentType],
+) -> dict[EquipmentType, MarketRateSnapshot]:
+    rows = db.scalars(
+        select(MarketRateSnapshot).where(
+            MarketRateSnapshot.origin_port == schedule.origin_port,
+            MarketRateSnapshot.destination_port == schedule.destination_port,
+            MarketRateSnapshot.equipment_type.in_(equipment_types),
+            MarketRateSnapshot.valid_from <= schedule.departure_date,
+            MarketRateSnapshot.valid_to >= schedule.departure_date,
+        )
+    ).all()
+    return {row.equipment_type: row for row in rows}
+
+
+def _load_active_pricing_strategy(db: Session) -> PricingStrategyVersion | None:
+    return db.scalar(
+        select(PricingStrategyVersion)
+        .where(PricingStrategyVersion.is_active.is_(True))
+        .order_by(PricingStrategyVersion.version.desc(), PricingStrategyVersion.activated_at.desc())
+    )
+
+
+def _market_signal_metrics(market_rates_by_type: dict[EquipmentType, MarketRateSnapshot]) -> dict[str, float]:
+    snapshots = list(market_rates_by_type.values())
+    if not snapshots:
+        return {
+            "capacityPressureIndex": 0.0,
+            "utilizationIndex": 0.0,
+            "seasonalityIndex": 0.0,
+        }
+
+    divisor = float(len(snapshots))
+    return {
+        "capacityPressureIndex": sum(float(snapshot.capacity_pressure_index) for snapshot in snapshots) / divisor,
+        "utilizationIndex": sum(float(snapshot.utilization_index) for snapshot in snapshots) / divisor,
+        "seasonalityIndex": sum(float(snapshot.seasonality_index) for snapshot in snapshots) / divisor,
+    }
+
+
+def _strategy_rule_decisions(
+    strategy: PricingStrategyVersion | None,
+    metrics: dict[str, float],
+) -> tuple[list[dict[str, object]], bool]:
+    if strategy is None:
+        return [], False
+
+    rules = strategy.rules or {}
+    decisions = [
+        {
+            "rule": "capacity-pressure",
+            "metric": metrics["capacityPressureIndex"],
+            "threshold": float(rules.get("capacityPressureThreshold", 1.0)),
+            "matched": metrics["capacityPressureIndex"] >= float(rules.get("capacityPressureThreshold", 1.0)),
+        },
+        {
+            "rule": "utilization",
+            "metric": metrics["utilizationIndex"],
+            "threshold": float(rules.get("utilizationThreshold", 1.0)),
+            "matched": metrics["utilizationIndex"] >= float(rules.get("utilizationThreshold", 1.0)),
+        },
+        {
+            "rule": "seasonality",
+            "metric": metrics["seasonalityIndex"],
+            "threshold": float(rules.get("seasonalityThreshold", 1.0)),
+            "matched": metrics["seasonalityIndex"] >= float(rules.get("seasonalityThreshold", 1.0)),
+        },
+    ]
+    return decisions, any(decision["matched"] for decision in decisions)
+
+
 def _resolve_pricing(
     *,
     db: Session,
@@ -936,23 +1057,82 @@ def _resolve_pricing(
         surcharge_rules=surcharge_rules,
     )
 
-    for contract in _find_contracts(db=db, payload=payload, schedule=schedule):
-        contract_rates_by_type = _load_contract_rate_rules(db, contract.id)
-        if any(item.type not in contract_rates_by_type for item in payload.equipment):
-            continue
-
-        return ResolvedPricing(
-            pricing_basis=PricingBasis.CONTRACT,
-            rates_by_type=contract_rates_by_type,
-            surcharge_line_items=_waive_surcharges(public_surcharge_line_items, contract.waived_surcharge_types),
-            contract=contract,
-        )
-
-    return ResolvedPricing(
+    public_pricing = ResolvedPricing(
         pricing_basis=PricingBasis.PUBLIC_TARIFF,
         rates_by_type=public_rates_by_type,
         surcharge_line_items=public_surcharge_line_items,
     )
+    contract_pricing = _resolve_contract_pricing(
+        db=db,
+        payload=payload,
+        schedule=schedule,
+        public_surcharge_line_items=public_surcharge_line_items,
+    )
+    default_fallback = contract_pricing or public_pricing
+    hint = payload.pricing_mode_hint or PricingModeHint.AUTO
+    market_rates_by_type = _load_market_rate_snapshots(
+        db=db,
+        schedule=schedule,
+        equipment_types={item.type for item in payload.equipment},
+    )
+    has_full_market_coverage = all(item.type in market_rates_by_type for item in payload.equipment)
+    strategy = _load_active_pricing_strategy(db)
+    metrics = _market_signal_metrics(market_rates_by_type)
+    rule_decisions, strategy_selected_market = _strategy_rule_decisions(strategy, metrics)
+
+    trace = {
+        "pricingModeHint": hint.value,
+        "fallbackPricingBasis": default_fallback.pricing_basis.value,
+        "marketAvailable": has_full_market_coverage,
+        "marketSignals": metrics,
+        "strategy": None
+        if strategy is None
+        else {
+            "strategyId": strategy.id,
+            "strategyName": strategy.strategy_name,
+            "version": strategy.version,
+            "selectionMode": strategy.rules.get("selectionMode", "ANY_SIGNAL"),
+            "rules": rule_decisions,
+        },
+    }
+
+    def with_trace(pricing: ResolvedPricing, *, decision: str, include_trace: bool) -> ResolvedPricing:
+        return ResolvedPricing(
+            pricing_basis=pricing.pricing_basis,
+            rates_by_type=pricing.rates_by_type,
+            surcharge_line_items=pricing.surcharge_line_items,
+            contract=pricing.contract,
+            market_source=pricing.market_source,
+            optimization_trace={}
+            if not include_trace
+            else {**trace, "decision": decision, "selectedPricingBasis": pricing.pricing_basis.value},
+        )
+
+    if hint == PricingModeHint.PUBLIC_TARIFF:
+        return with_trace(public_pricing, decision="CLIENT_HINT_PUBLIC_TARIFF", include_trace=True)
+
+    if hint == PricingModeHint.CONTRACT:
+        if contract_pricing is not None:
+            return with_trace(contract_pricing, decision="CLIENT_HINT_CONTRACT", include_trace=True)
+        return with_trace(public_pricing, decision="CLIENT_HINT_CONTRACT_FALLBACK_PUBLIC_TARIFF", include_trace=True)
+
+    if not has_full_market_coverage:
+        return with_trace(default_fallback, decision="MARKET_UNAVAILABLE_FALLBACK", include_trace=hint == PricingModeHint.MARKET)
+
+    market_pricing = ResolvedPricing(
+        pricing_basis=PricingBasis.MARKET,
+        rates_by_type=market_rates_by_type,
+        surcharge_line_items=public_surcharge_line_items,
+        market_source=next(iter(market_rates_by_type.values())).source_name,
+    )
+
+    if hint == PricingModeHint.MARKET:
+        return with_trace(market_pricing, decision="CLIENT_HINT_MARKET", include_trace=True)
+
+    if strategy_selected_market:
+        return with_trace(market_pricing, decision="STRATEGY_SELECTED_MARKET", include_trace=True)
+
+    return with_trace(default_fallback, decision="STRATEGY_FALLBACK", include_trace=False)
 
 
 def _serialize_rate_coverage(
@@ -1002,6 +1182,44 @@ def _build_pricing_provenance(
     source_total_amount: Decimal,
     fx_rate: ResolvedFxRate,
 ) -> dict[str, object]:
+    base_rate_rules: list[dict[str, object]] = []
+    for item in payload.equipment:
+        rate = pricing.rates_by_type[item.type]
+        rate_rule = {
+            "equipmentType": item.type.value,
+            "quantity": item.quantity,
+            "currency": "USD",
+            "unitAmount": _serialize_decimal(rate.base_rate_usd if hasattr(rate, "base_rate_usd") else rate.rate_usd),
+            "totalAmount": _serialize_decimal(
+                ((rate.base_rate_usd if hasattr(rate, "base_rate_usd") else rate.rate_usd) * item.quantity).quantize(_MONEY_PRECISION)
+            ),
+        }
+        if pricing.pricing_basis == PricingBasis.MARKET:
+            rate_rule.update(
+                {
+                    "marketRateSnapshotId": rate.id,
+                    "marketSource": rate.source_name,
+                    "sourceReference": rate.source_reference,
+                    "capturedAt": _normalize_utc(rate.captured_at).isoformat(),
+                    "approvedAt": _normalize_utc(rate.approved_at).isoformat(),
+                    "capacityPressureIndex": _serialize_decimal(rate.capacity_pressure_index),
+                    "utilizationIndex": _serialize_decimal(rate.utilization_index),
+                    "seasonalityIndex": _serialize_decimal(rate.seasonality_index),
+                    "validFrom": rate.valid_from.isoformat(),
+                    "validTo": rate.valid_to.isoformat(),
+                }
+            )
+        else:
+            rate_rule.update(
+                {
+                    "rateTableId": rate.id,
+                    "rateVersion": None if pricing.contract is not None else rate.version,
+                    "validFrom": None if pricing.contract is None else pricing.contract.valid_from.isoformat(),
+                    "validTo": None if pricing.contract is None else pricing.contract.valid_to.isoformat(),
+                }
+            )
+        base_rate_rules.append(rate_rule)
+
     provenance: dict[str, object] = {
         "pricingBasis": pricing.pricing_basis.value,
         "referenceDataVersion": REFERENCE_DATA_VERSION,
@@ -1013,21 +1231,7 @@ def _build_pricing_provenance(
             "roundingPolicy": _ROUNDING_POLICY,
             "conversionLevel": "LINE_ITEM",
         },
-        "baseRateRules": [
-            {
-                "rateTableId": rate.id,
-                "equipmentType": item.type.value,
-                "quantity": item.quantity,
-                "currency": "USD",
-                "unitAmount": _serialize_decimal(rate.base_rate_usd),
-                "totalAmount": _serialize_decimal((rate.base_rate_usd * item.quantity).quantize(_MONEY_PRECISION)),
-                "rateVersion": None if pricing.contract is not None else rate.version,
-                "validFrom": None if pricing.contract is None else pricing.contract.valid_from.isoformat(),
-                "validTo": None if pricing.contract is None else pricing.contract.valid_to.isoformat(),
-            }
-            for item in payload.equipment
-            for rate in [pricing.rates_by_type[item.type]]
-        ],
+        "baseRateRules": base_rate_rules,
         "appliedSurchargeRules": [
             {
                 "surchargeRuleId": item.rule.id,
@@ -1047,12 +1251,21 @@ def _build_pricing_provenance(
         ],
     }
 
-    if pricing.contract is None:
+    if pricing.optimization_trace:
+        provenance["optimizationTrace"] = pricing.optimization_trace
+
+    if pricing.market_source is not None:
+        provenance["marketSource"] = pricing.market_source
+
+    if pricing.contract is None and pricing.pricing_basis != PricingBasis.MARKET:
         for rate_rule in provenance["baseRateRules"]:
             equipment_type = EquipmentType(rate_rule["equipmentType"])
             rate = pricing.rates_by_type[equipment_type]
             rate_rule["validFrom"] = rate.valid_from.isoformat()
             rate_rule["validTo"] = rate.valid_to.isoformat()
+        return provenance
+
+    if pricing.pricing_basis == PricingBasis.MARKET:
         return provenance
 
     provenance["customerContext"] = {
@@ -1076,7 +1289,8 @@ def _build_source_quote_line_items(
     base_total = Decimal("0.00")
     for item in payload.equipment:
         rate = pricing.rates_by_type[item.type]
-        amount = (rate.base_rate_usd * item.quantity).quantize(_MONEY_PRECISION)
+        unit_rate = rate.base_rate_usd if hasattr(rate, "base_rate_usd") else rate.rate_usd
+        amount = (unit_rate * item.quantity).quantize(_MONEY_PRECISION)
         base_total += amount
         base_line_items.append(
             {
@@ -1158,6 +1372,7 @@ def create_quote(
         account_id=payload.account_id,
         pricing_basis=pricing.pricing_basis,
         contract_id=None if pricing.contract is None else pricing.contract.id,
+        market_source=pricing.market_source,
         pricing_provenance=_build_pricing_provenance(
             payload=payload,
             pricing=pricing,
@@ -1165,6 +1380,7 @@ def create_quote(
             source_total_amount=source_total_amount,
             fx_rate=fx_rate,
         ),
+        optimization_trace=pricing.optimization_trace,
         fx_snapshot=_serialize_fx_snapshot(fx_rate),
         rounding_policy=_ROUNDING_POLICY,
         line_items=line_items,
@@ -1626,6 +1842,11 @@ def validate_quote_rate_coverage(
 @app.get("/quotes/{quote_id}")
 def get_quote(quote_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
     return _serialize_quote(_sync_quote_lifecycle(_get_quote_or_404(quote_id, db), db))
+
+
+@app.get("/quotes/{quote_id}/explain")
+def get_quote_explainability(quote_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
+    return _serialize_quote_explainability(_sync_quote_lifecycle(_get_quote_or_404(quote_id, db), db))
 
 
 @app.get("/quotes/reference/{quote_reference}")

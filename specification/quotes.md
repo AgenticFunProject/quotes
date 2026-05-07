@@ -19,6 +19,7 @@ Provides a quoted price that can be referenced when placing a booking.
 | POST | /quotes | Request a new quote |
 | POST | /quotes/coverage/validate | Validate rate coverage for a route, departure date, and equipment selection |
 | GET | /quotes/{id} | Retrieve a quote by internal ID or public quote reference |
+| GET | /quotes/{id}/explain | Return stored pricing explainability for a quote |
 | GET | /quotes/{id}/bookability | Validate whether a stored quote is still usable for booking |
 | GET | /quotes/reference/{quoteReference} | Retrieve a quote by human-readable quote reference |
 | POST | /admin/rate-tables | Create a draft managed rate-table version |
@@ -37,6 +38,7 @@ Provides a quoted price that can be referenced when placing a booking.
   "customerId": "string",
   "accountId": "string",
   "currency": "EUR",
+  "pricingModeHint": "MARKET",
   "equipment": [
     { "type": "20FT", "quantity": 2 },
     { "type": "40FT", "quantity": 1 }
@@ -47,8 +49,10 @@ Provides a quoted price that can be referenced when placing a booking.
 
 - `customerId` and `accountId` are optional request context fields.
 - `currency` is optional and defaults to `USD`.
+- `pricingModeHint` is optional and can be `AUTO`, `PUBLIC_TARIFF`, `CONTRACT`, or `MARKET`.
 - When both are present, account-specific contracts take precedence over customer-level contracts.
 - If no matching contract covers the request, the service falls back to `PUBLIC_TARIFF` pricing.
+- `pricingModeHint=MARKET` asks the service to use approved market-rate snapshots when they fully cover the request; otherwise the service falls back to contract or public tariff pricing and persists that fallback decision.
 - The commercial source amount is still resolved in governed `USD` and then converted into the requested display currency.
 
 ### POST /quotes - Response
@@ -294,6 +298,10 @@ Provides a quoted price that can be referenced when placing a booking.
 - The `{id}` path parameter accepts either the stored quote UUID or the public `quoteReference`.
 - This endpoint is the primary lookup path used by the current implementation.
 
+### GET /quotes/{id}/explain
+- The `{id}` path parameter accepts either the stored quote UUID or the public `quoteReference`.
+- This endpoint returns the stored pricing basis, selected market source when present, persisted optimization trace, and the full stored pricing provenance used to create the quote.
+
 ### POST /quotes/coverage/validate
 - This endpoint accepts direct route attributes instead of a `scheduleId` so clients can validate commercial data coverage before attempting a quote request.
 - `covered` is `true` only when every requested equipment selection has an effective public tariff rate for the submitted route and departure date.
@@ -398,11 +406,19 @@ Expected result:
 ### Pricing Basis Semantics
 - `PUBLIC_TARIFF` means the quote was priced from this service's stored rate-table and surcharge-rule reference data.
 - `CONTRACT` means the quote was priced from stored customer or account contract rules, with explicit precedence and surcharge-waiver metadata captured in `pricingProvenance`.
-- `MARKET` is reserved for future externally sourced market pricing.
+- `MARKET` means the quote used fully covered approved market-rate snapshots for the base freight component while still applying governed surcharge rules.
 - `HYBRID` is reserved for future explicitly approved combinations of pricing sources.
 - `pricingBasis` names the commercial mode, while `pricingProvenance` captures the exact stored rule snapshot that mode used.
 - `pricingProvenance.baseRateRules[*].rateVersion` identifies the active managed rate-table version used for public tariff pricing.
 - `pricingProvenance.appliedSurchargeRules[*].surchargeRuleVersion` identifies the active managed surcharge-rule version used for each applied surcharge.
+- `pricingProvenance.marketSource` identifies the approved upstream market source when market pricing wins.
+- `pricingProvenance.optimizationTrace` persists the request hint, fallback basis, evaluated market signals, and the final pricing decision whenever the market/optimization path is exercised.
+
+### Market Pricing and Optimization Rules
+- The service only considers market pricing from approved `market_rate_snapshots` that fully cover every requested equipment type for the schedule lane and departure date.
+- `pricingModeHint=MARKET` prefers those approved market snapshots and falls back to contract or public tariff pricing when market coverage is incomplete.
+- Without a market hint, the service can still choose `MARKET` when an active pricing strategy version matches at least one stored signal threshold for capacity pressure, utilization, or seasonality.
+- The chosen basis and the exact rule path are stored in `optimizationTrace` and are retrievable through `GET /quotes/{id}/explain`.
 
 ### Contract Pricing Rules
 - Contract matching is deterministic: account-specific contracts win over customer-level contracts for the same lane and departure date.
@@ -422,7 +438,9 @@ Expected result:
 | cargoWeightKg | number | |
 | currency | string | ISO 4217, default USD |
 | pricingBasis | enum | Commercial pricing mode used for the quote |
+| marketSource | string nullable | Approved upstream market source when `pricingBasis=MARKET` |
 | pricingProvenance | JSON object | Stored matched base-rate and surcharge rules plus reference data version |
+| optimizationTrace | JSON object | Stored market/optimization decision path and fallback details |
 | idempotencyKey | string nullable | Reserved for request replay handling |
 | lineItems | JSON array | description + amount |
 | totalAmount | decimal | |

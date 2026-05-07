@@ -13,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 from app import db
 from app.db import Base, get_db
 from app.main import app
-from app.models import CommercialChangeAction, CommercialChangeEvent, CommercialChangeResourceType, EquipmentType, ImpactAnalysisRun, OutboxConsumerCheckpoint, OutboxEvent, PricingBasis, Quote, QuoteLifecycleState, RateTable, SurchargeRule
+from app.models import CommercialChangeAction, CommercialChangeEvent, CommercialChangeResourceType, EquipmentType, ImpactAnalysisRun, MarketRateSnapshot, OutboxConsumerCheckpoint, OutboxEvent, PricingBasis, PricingStrategyVersion, Quote, QuoteLifecycleState, RateTable, SurchargeRule
 from app.seed import FX_PROVIDER, FX_REFERENCE_DATA_VERSION, REFERENCE_DATA_VERSION, seed_reference_data
 from app.schedules import Schedule, get_schedule_provider
 
@@ -562,6 +562,130 @@ def test_create_quote_returns_different_customer_prices_for_same_shipment(client
     assert globex_response.status_code == 201
     assert acme_response.json()["totalAmount"] == 930.0
     assert globex_response.json()["totalAmount"] == 1020.0
+
+
+def test_create_quote_market_hint_uses_approved_market_rate_and_persists_trace(client) -> None:
+    test_client, session_factory = client
+
+    response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "pricingModeHint": "MARKET",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["lineItems"] == [
+        {"description": "Ocean Freight - 20FT x 1", "amount": 1085.0},
+        {"description": "Bunker Adjustment Factor (BAF)", "amount": 80.0},
+        {"description": "Port Congestion Surcharge - Destination USNYC", "amount": 150.0},
+        {"description": "Peak Season Surcharge", "amount": 120.0},
+    ]
+    assert response.json()["totalAmount"] == 1435.0
+
+    quote_id = response.json()["id"]
+    with session_factory() as session:
+        stored_quote = session.scalar(select(Quote).where(Quote.id == quote_id))
+
+    assert stored_quote is not None
+    assert stored_quote.pricing_basis == PricingBasis.MARKET
+    assert stored_quote.market_source == "approved-spot-market-feed"
+    assert stored_quote.optimization_trace["decision"] == "CLIENT_HINT_MARKET"
+    assert stored_quote.optimization_trace["selectedPricingBasis"] == PricingBasis.MARKET.value
+    assert stored_quote.pricing_provenance["marketSource"] == "approved-spot-market-feed"
+    assert stored_quote.pricing_provenance["baseRateRules"][0] == {
+        "marketRateSnapshotId": "market-nlrtm-usnyc-20ft",
+        "equipmentType": "20FT",
+        "quantity": 1,
+        "currency": "USD",
+        "unitAmount": 1085.0,
+        "totalAmount": 1085.0,
+        "marketSource": "approved-spot-market-feed",
+        "sourceReference": "spot-quote-2026-05-05-nlrtm-usnyc-20ft",
+        "capturedAt": "2026-05-05T12:00:00+00:00",
+        "approvedAt": "2026-05-06T09:30:00+00:00",
+        "capacityPressureIndex": 0.62,
+        "utilizationIndex": 0.81,
+        "seasonalityIndex": 0.58,
+        "validFrom": "2026-08-01",
+        "validTo": "2026-08-31",
+    }
+
+    explain_response = test_client.get(f"/quotes/{quote_id}/explain")
+
+    assert explain_response.status_code == 200
+    assert explain_response.json()["pricingBasis"] == PricingBasis.MARKET.value
+    assert explain_response.json()["marketSource"] == "approved-spot-market-feed"
+    assert explain_response.json()["optimizationTrace"]["decision"] == "CLIENT_HINT_MARKET"
+
+
+def test_create_quote_market_hint_falls_back_to_contract_when_market_is_unavailable(client) -> None:
+    test_client, session_factory = client
+
+    with session_factory() as session:
+        snapshots = session.scalars(select(MarketRateSnapshot)).all()
+        for snapshot in snapshots:
+            snapshot.valid_to = datetime(2026, 7, 31, tzinfo=timezone.utc).date()
+        session.commit()
+
+    response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "customerId": "cust-acme",
+            "pricingModeHint": "MARKET",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["totalAmount"] == 930.0
+
+    with session_factory() as session:
+        stored_quote = session.scalar(select(Quote).where(Quote.id == response.json()["id"]))
+
+    assert stored_quote is not None
+    assert stored_quote.pricing_basis == PricingBasis.CONTRACT
+    assert stored_quote.optimization_trace["decision"] == "MARKET_UNAVAILABLE_FALLBACK"
+    assert stored_quote.optimization_trace["fallbackPricingBasis"] == PricingBasis.CONTRACT.value
+
+
+def test_create_quote_auto_strategy_can_select_market(client) -> None:
+    test_client, session_factory = client
+
+    with session_factory() as session:
+        strategy = session.scalar(select(PricingStrategyVersion).where(PricingStrategyVersion.id == "strategy-market-optimization-v1"))
+        assert strategy is not None
+        strategy.rules = {
+            "capacityPressureThreshold": 0.6,
+            "utilizationThreshold": 0.8,
+            "seasonalityThreshold": 0.5,
+            "selectionMode": "ANY_SIGNAL",
+        }
+        session.commit()
+
+    response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+
+    assert response.status_code == 201
+
+    with session_factory() as session:
+        stored_quote = session.scalar(select(Quote).where(Quote.id == response.json()["id"]))
+
+    assert stored_quote is not None
+    assert stored_quote.pricing_basis == PricingBasis.MARKET
+    assert stored_quote.optimization_trace["decision"] == "STRATEGY_SELECTED_MARKET"
+    assert stored_quote.optimization_trace["strategy"]["rules"][0]["matched"] is True
 
 
 def test_admin_rate_table_draft_can_be_updated_and_activated(client) -> None:
