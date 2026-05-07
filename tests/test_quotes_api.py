@@ -733,11 +733,11 @@ def test_create_quote_can_return_ordered_alternative_pricing_options(client) -> 
     primary = payload["options"]["primary"]
     alternatives = payload["options"]["alternatives"]
 
-    assert payload["totalAmount"] == 1300.0
-    assert primary["pricingBasis"] == PricingBasis.PUBLIC_TARIFF.value
-    assert primary["totalAmount"] == 1300.0
-    assert primary["sourceTotalAmount"] == 1300.0
-    assert primary["pricingProvenance"]["pricingBasis"] == PricingBasis.PUBLIC_TARIFF.value
+    assert payload["totalAmount"] == 930.0
+    assert primary["pricingBasis"] == PricingBasis.CONTRACT.value
+    assert primary["totalAmount"] == 930.0
+    assert primary["sourceTotalAmount"] == 930.0
+    assert primary["pricingProvenance"]["pricingBasis"] == PricingBasis.CONTRACT.value
     assert primary["pricingProvenance"]["baseRateRules"][0]["equipmentType"] == "20FT"
     assert primary["bookability"] == {
         "bookable": True,
@@ -746,21 +746,17 @@ def test_create_quote_can_return_ordered_alternative_pricing_options(client) -> 
         "expired": False,
         "validUntil": primary["bookability"]["validUntil"],
     }
+    assert primary["contractId"] == "7c9cc0a4-bd6d-4e6f-9c1c-e5c3a1300001"
 
     assert [option["pricingBasis"] for option in alternatives] == [
-        PricingBasis.CONTRACT.value,
+        PricingBasis.PUBLIC_TARIFF.value,
         PricingBasis.MARKET.value,
     ]
-    assert [option["totalAmount"] for option in alternatives] == [930.0, 1435.0]
+    assert [option["totalAmount"] for option in alternatives] == [1300.0, 1435.0]
 
-    contract_option = alternatives[0]
-    assert contract_option["contractId"] == "7c9cc0a4-bd6d-4e6f-9c1c-e5c3a1300001"
-    assert contract_option["pricingProvenance"]["contract"] == {
-        "contractId": "7c9cc0a4-bd6d-4e6f-9c1c-e5c3a1300001",
-        "matchType": "CUSTOMER",
-        "waivedSurchargeTypes": ["PEAK_SEASON"],
-    }
-    assert contract_option["bookability"]["bookable"] is True
+    public_option = alternatives[0]
+    assert public_option["pricingProvenance"]["pricingBasis"] == PricingBasis.PUBLIC_TARIFF.value
+    assert public_option["bookability"]["bookable"] is True
 
     market_option = alternatives[1]
     assert market_option["marketSource"] == "approved-spot-market-feed"

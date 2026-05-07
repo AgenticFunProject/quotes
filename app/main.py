@@ -1275,6 +1275,7 @@ def _build_pricing_candidates(
             rates_by_type=market_rates_by_type,
             surcharge_line_items=public_surcharge_line_items,
             market_source=next(iter(market_rates_by_type.values())).source_name,
+            market_signals=_market_signal_metrics(market_rates_by_type),
         )
 
     return pricing_candidates
@@ -1319,6 +1320,7 @@ def _select_pricing(
             surcharge_line_items=pricing.surcharge_line_items,
             contract=pricing.contract,
             market_source=pricing.market_source,
+            market_signals=pricing.market_signals,
             optimization_trace={}
             if not include_trace
             else {**trace, "decision": decision, "selectedPricingBasis": pricing.pricing_basis.value},
