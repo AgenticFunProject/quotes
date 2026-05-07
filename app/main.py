@@ -42,6 +42,11 @@ _ROUNDING_POLICY = "LINE_ITEM_HALF_UP_2DP"
 _MARKET_APPROVAL_CAPACITY_PRESSURE_THRESHOLD = 0.85
 _MARKET_APPROVAL_UTILIZATION_THRESHOLD = 0.9
 _MARKET_APPROVAL_SEASONALITY_THRESHOLD = 0.75
+_ALTERNATIVE_PRICING_ORDER = {
+    PricingBasis.CONTRACT: 0,
+    PricingBasis.PUBLIC_TARIFF: 1,
+    PricingBasis.MARKET: 2,
+}
 
 
 @dataclass(frozen=True)
@@ -98,6 +103,7 @@ class CreateQuoteRequest(BaseModel):
     account_id: str | None = Field(default=None, alias="accountId", min_length=1)
     currency: str = Field(default=_SOURCE_CURRENCY, min_length=3, max_length=3)
     pricing_mode_hint: PricingModeHint | None = Field(default=None, alias="pricingModeHint")
+    include_alternative_options: bool = Field(default=False, alias="includeAlternativeOptions")
 
     @field_validator("currency")
     @classmethod
@@ -578,6 +584,16 @@ def _serialize_quote_explainability(quote: Quote) -> dict[str, object]:
         payload["varianceSummary"] = quote.variance_summary
 
     return payload
+
+
+def _build_bookability_snapshot(valid_until: datetime) -> dict[str, object]:
+    return {
+        "bookable": True,
+        "status": _QUOTE_STATUS_ACTIVE,
+        "reason": _BOOKABILITY_REASON_OPEN,
+        "expired": False,
+        "validUntil": valid_until.isoformat(),
+    }
 
 
 def _quote_fx_snapshot(quote: Quote) -> dict[str, object]:
@@ -1214,6 +1230,121 @@ def _resolve_contract_pricing(
     return None
 
 
+def _build_pricing_candidates(
+    *,
+    db: Session,
+    payload: CreateQuoteRequest,
+    schedule: Schedule,
+    public_rates_by_type: dict[EquipmentType, RateTable],
+    surcharge_rules: list[SurchargeRule],
+) -> dict[PricingBasis, ResolvedPricing]:
+    public_surcharge_line_items = calculate_surcharges(
+        equipment=[EquipmentSelection(equipment_type=item.type, quantity=item.quantity) for item in payload.equipment],
+        cargo_weight_kg=payload.cargo_weight_kg,
+        shipment_date=schedule.departure_date,
+        origin_port=schedule.origin_port,
+        destination_port=schedule.destination_port,
+        surcharge_rules=surcharge_rules,
+    )
+
+    pricing_candidates: dict[PricingBasis, ResolvedPricing] = {
+        PricingBasis.PUBLIC_TARIFF: ResolvedPricing(
+            pricing_basis=PricingBasis.PUBLIC_TARIFF,
+            rates_by_type=public_rates_by_type,
+            surcharge_line_items=public_surcharge_line_items,
+        )
+    }
+
+    contract_pricing = _resolve_contract_pricing(
+        db=db,
+        payload=payload,
+        schedule=schedule,
+        public_surcharge_line_items=public_surcharge_line_items,
+    )
+    if contract_pricing is not None:
+        pricing_candidates[PricingBasis.CONTRACT] = contract_pricing
+
+    market_rates_by_type = _load_market_rate_snapshots(
+        db=db,
+        schedule=schedule,
+        equipment_types={item.type for item in payload.equipment},
+    )
+    if all(item.type in market_rates_by_type for item in payload.equipment):
+        pricing_candidates[PricingBasis.MARKET] = ResolvedPricing(
+            pricing_basis=PricingBasis.MARKET,
+            rates_by_type=market_rates_by_type,
+            surcharge_line_items=public_surcharge_line_items,
+            market_source=next(iter(market_rates_by_type.values())).source_name,
+        )
+
+    return pricing_candidates
+
+
+def _select_pricing(
+    *,
+    db: Session,
+    payload: CreateQuoteRequest,
+    pricing_candidates: dict[PricingBasis, ResolvedPricing],
+) -> ResolvedPricing:
+    public_pricing = pricing_candidates[PricingBasis.PUBLIC_TARIFF]
+    contract_pricing = pricing_candidates.get(PricingBasis.CONTRACT)
+    market_pricing = pricing_candidates.get(PricingBasis.MARKET)
+    default_fallback = contract_pricing or public_pricing
+    hint = payload.pricing_mode_hint or PricingModeHint.AUTO
+    has_full_market_coverage = market_pricing is not None
+    strategy = _load_active_pricing_strategy(db)
+    metrics = _market_signal_metrics({} if market_pricing is None else market_pricing.rates_by_type)
+    rule_decisions, strategy_selected_market = _strategy_rule_decisions(strategy, metrics)
+
+    trace = {
+        "pricingModeHint": hint.value,
+        "fallbackPricingBasis": default_fallback.pricing_basis.value,
+        "marketAvailable": has_full_market_coverage,
+        "marketSignals": metrics,
+        "strategy": None
+        if strategy is None
+        else {
+            "strategyId": strategy.id,
+            "strategyName": strategy.strategy_name,
+            "version": strategy.version,
+            "selectionMode": strategy.rules.get("selectionMode", "ANY_SIGNAL"),
+            "rules": rule_decisions,
+        },
+    }
+
+    def with_trace(pricing: ResolvedPricing, *, decision: str, include_trace: bool) -> ResolvedPricing:
+        return ResolvedPricing(
+            pricing_basis=pricing.pricing_basis,
+            rates_by_type=pricing.rates_by_type,
+            surcharge_line_items=pricing.surcharge_line_items,
+            contract=pricing.contract,
+            market_source=pricing.market_source,
+            optimization_trace={}
+            if not include_trace
+            else {**trace, "decision": decision, "selectedPricingBasis": pricing.pricing_basis.value},
+        )
+
+    if hint == PricingModeHint.PUBLIC_TARIFF:
+        return with_trace(public_pricing, decision="CLIENT_HINT_PUBLIC_TARIFF", include_trace=True)
+
+    if hint == PricingModeHint.CONTRACT:
+        if contract_pricing is not None:
+            return with_trace(contract_pricing, decision="CLIENT_HINT_CONTRACT", include_trace=True)
+        return with_trace(public_pricing, decision="CLIENT_HINT_CONTRACT_FALLBACK_PUBLIC_TARIFF", include_trace=True)
+
+    if not has_full_market_coverage:
+        return with_trace(default_fallback, decision="MARKET_UNAVAILABLE_FALLBACK", include_trace=hint == PricingModeHint.MARKET)
+
+    assert market_pricing is not None
+    if hint == PricingModeHint.MARKET:
+        return with_trace(market_pricing, decision="CLIENT_HINT_MARKET", include_trace=True)
+
+    if strategy_selected_market:
+        return with_trace(market_pricing, decision="STRATEGY_SELECTED_MARKET", include_trace=True)
+
+    return with_trace(default_fallback, decision="STRATEGY_FALLBACK", include_trace=False)
+
+
 def _load_market_rate_snapshots(
     *,
     db: Session,
@@ -1296,94 +1427,14 @@ def _resolve_pricing(
     public_rates_by_type: dict[EquipmentType, RateTable],
     surcharge_rules: list[SurchargeRule],
 ) -> ResolvedPricing:
-    public_surcharge_line_items = calculate_surcharges(
-        equipment=[EquipmentSelection(equipment_type=item.type, quantity=item.quantity) for item in payload.equipment],
-        cargo_weight_kg=payload.cargo_weight_kg,
-        shipment_date=schedule.departure_date,
-        origin_port=schedule.origin_port,
-        destination_port=schedule.destination_port,
-        surcharge_rules=surcharge_rules,
-    )
-
-    public_pricing = ResolvedPricing(
-        pricing_basis=PricingBasis.PUBLIC_TARIFF,
-        rates_by_type=public_rates_by_type,
-        surcharge_line_items=public_surcharge_line_items,
-        market_signals={},
-    )
-    contract_pricing = _resolve_contract_pricing(
+    pricing_candidates = _build_pricing_candidates(
         db=db,
         payload=payload,
         schedule=schedule,
-        public_surcharge_line_items=public_surcharge_line_items,
+        public_rates_by_type=public_rates_by_type,
+        surcharge_rules=surcharge_rules,
     )
-    default_fallback = contract_pricing or public_pricing
-    hint = payload.pricing_mode_hint or PricingModeHint.AUTO
-    market_rates_by_type = _load_market_rate_snapshots(
-        db=db,
-        schedule=schedule,
-        equipment_types={item.type for item in payload.equipment},
-    )
-    has_full_market_coverage = all(item.type in market_rates_by_type for item in payload.equipment)
-    strategy = _load_active_pricing_strategy(db)
-    metrics = _market_signal_metrics(market_rates_by_type)
-    rule_decisions, strategy_selected_market = _strategy_rule_decisions(strategy, metrics)
-
-    trace = {
-        "pricingModeHint": hint.value,
-        "fallbackPricingBasis": default_fallback.pricing_basis.value,
-        "marketAvailable": has_full_market_coverage,
-        "marketSignals": metrics,
-        "strategy": None
-        if strategy is None
-        else {
-            "strategyId": strategy.id,
-            "strategyName": strategy.strategy_name,
-            "version": strategy.version,
-            "selectionMode": strategy.rules.get("selectionMode", "ANY_SIGNAL"),
-            "rules": rule_decisions,
-        },
-    }
-
-    def with_trace(pricing: ResolvedPricing, *, decision: str, include_trace: bool) -> ResolvedPricing:
-        return ResolvedPricing(
-            pricing_basis=pricing.pricing_basis,
-            rates_by_type=pricing.rates_by_type,
-            surcharge_line_items=pricing.surcharge_line_items,
-            contract=pricing.contract,
-            market_source=pricing.market_source,
-            market_signals=pricing.market_signals,
-            optimization_trace={}
-            if not include_trace
-            else {**trace, "decision": decision, "selectedPricingBasis": pricing.pricing_basis.value},
-        )
-
-    if hint == PricingModeHint.PUBLIC_TARIFF:
-        return with_trace(public_pricing, decision="CLIENT_HINT_PUBLIC_TARIFF", include_trace=True)
-
-    if hint == PricingModeHint.CONTRACT:
-        if contract_pricing is not None:
-            return with_trace(contract_pricing, decision="CLIENT_HINT_CONTRACT", include_trace=True)
-        return with_trace(public_pricing, decision="CLIENT_HINT_CONTRACT_FALLBACK_PUBLIC_TARIFF", include_trace=True)
-
-    if not has_full_market_coverage:
-        return with_trace(default_fallback, decision="MARKET_UNAVAILABLE_FALLBACK", include_trace=hint == PricingModeHint.MARKET)
-
-    market_pricing = ResolvedPricing(
-        pricing_basis=PricingBasis.MARKET,
-        rates_by_type=market_rates_by_type,
-        surcharge_line_items=public_surcharge_line_items,
-        market_source=next(iter(market_rates_by_type.values())).source_name,
-        market_signals=metrics,
-    )
-
-    if hint == PricingModeHint.MARKET:
-        return with_trace(market_pricing, decision="CLIENT_HINT_MARKET", include_trace=True)
-
-    if strategy_selected_market:
-        return with_trace(market_pricing, decision="STRATEGY_SELECTED_MARKET", include_trace=True)
-
-    return with_trace(default_fallback, decision="STRATEGY_FALLBACK", include_trace=False)
+    return _select_pricing(db=db, payload=payload, pricing_candidates=pricing_candidates)
 
 
 def _validity_policy_market_specificity(policy: QuoteValidityPolicy) -> int:
@@ -1687,6 +1738,105 @@ def _build_quote_payload_from_stored_quote(quote: Quote) -> CreateQuoteRequest:
     )
 
 
+def _build_quote_payload_from_stored_quote(quote: Quote) -> CreateQuoteRequest:
+    return CreateQuoteRequest.model_validate(
+        {
+            "scheduleId": quote.schedule_id,
+            "equipment": quote.equipment,
+            "cargoWeightKg": quote.cargo_weight_kg,
+            "customerId": quote.customer_id,
+            "accountId": quote.account_id,
+            "currency": quote.currency,
+            "pricingModeHint": quote.pricing_mode_hint,
+        }
+    )
+
+
+def _serialize_quote_option(
+    *,
+    payload: CreateQuoteRequest,
+    pricing: ResolvedPricing,
+    fx_rate: ResolvedFxRate,
+    quote_validity: ResolvedQuoteValidity,
+    valid_until: datetime,
+) -> tuple[dict[str, object], Decimal]:
+    source_line_items, surcharge_line_items, source_total_amount = _build_source_quote_line_items(
+        payload=payload,
+        pricing=pricing,
+    )
+    line_items, total_amount = _convert_quote_line_items(source_line_items, fx_rate=fx_rate)
+    option = {
+        "pricingBasis": pricing.pricing_basis.value,
+        "currency": payload.currency,
+        "sourceCurrency": _SOURCE_CURRENCY,
+        "responseCurrency": payload.currency,
+        "fx": _serialize_fx_snapshot(fx_rate),
+        "roundingPolicy": _ROUNDING_POLICY,
+        "pricingProvenance": _build_pricing_provenance(
+            payload=payload,
+            pricing=pricing,
+            surcharge_line_items=surcharge_line_items,
+            source_total_amount=source_total_amount,
+            fx_rate=fx_rate,
+            quote_validity=quote_validity,
+        ),
+        "lineItems": line_items,
+        "sourceTotalAmount": _serialize_decimal(source_total_amount),
+        "totalAmount": _serialize_decimal(total_amount),
+        "bookability": _build_bookability_snapshot(valid_until),
+    }
+    if pricing.contract is not None:
+        option["contractId"] = pricing.contract.id
+    if pricing.market_source is not None:
+        option["marketSource"] = pricing.market_source
+    return option, source_total_amount
+
+
+def _serialize_quote_options(
+    *,
+    payload: CreateQuoteRequest,
+    pricing_candidates: dict[PricingBasis, ResolvedPricing],
+    primary_pricing: ResolvedPricing,
+    fx_rate: ResolvedFxRate,
+    quote_validity: ResolvedQuoteValidity,
+    valid_until: datetime,
+) -> dict[str, object]:
+    primary_option, _ = _serialize_quote_option(
+        payload=payload,
+        pricing=primary_pricing,
+        fx_rate=fx_rate,
+        quote_validity=quote_validity,
+        valid_until=valid_until,
+    )
+    alternatives: list[tuple[dict[str, object], Decimal]] = []
+    for pricing_basis, pricing in pricing_candidates.items():
+        if pricing_basis == primary_pricing.pricing_basis:
+            continue
+
+        alternatives.append(
+            _serialize_quote_option(
+                payload=payload,
+                pricing=pricing,
+                fx_rate=fx_rate,
+                quote_validity=quote_validity,
+                valid_until=valid_until,
+            )
+        )
+
+    ordered_alternatives = [
+        option
+        for option, _ in sorted(
+            alternatives,
+            key=lambda item: (
+                item[1],
+                _ALTERNATIVE_PRICING_ORDER[PricingBasis(item[0]["pricingBasis"])],
+            ),
+        )
+    ]
+    return {
+        "primary": primary_option,
+        "alternatives": ordered_alternatives,
+    }
 def _create_quote_record(
     *,
     payload: CreateQuoteRequest,
@@ -1703,13 +1853,14 @@ def _create_quote_record(
         equipment_types={item.type for item in payload.equipment},
     )
     surcharge_rules = _load_active_surcharge_rules(db)
-    pricing = _resolve_pricing(
+    pricing_candidates = _build_pricing_candidates(
         db=db,
         payload=payload,
         schedule=schedule,
         public_rates_by_type=rates_by_type,
         surcharge_rules=surcharge_rules,
     )
+    pricing = _select_pricing(db=db, payload=payload, pricing_candidates=pricing_candidates)
     created_at = _normalize_utc(datetime.now(timezone.utc))
     quote_validity = _resolve_quote_validity(
         db=db,
@@ -1784,7 +1935,34 @@ def create_quote(
     schedule_provider: ScheduleProvider = Depends(get_schedule_provider),
 ) -> dict[str, object]:
     quote = _create_quote_record(payload=payload, db=db, schedule_provider=schedule_provider)
-    return _serialize_created_quote(quote)
+    response = _serialize_created_quote(quote)
+    if payload.include_alternative_options:
+        schedule = _get_schedule(payload.schedule_id, schedule_provider)
+        rates_by_type = _load_rate_table(
+            db=db,
+            schedule=schedule,
+            equipment_types={item.type for item in payload.equipment},
+        )
+        surcharge_rules = _load_active_surcharge_rules(db)
+        pricing_candidates = _build_pricing_candidates(
+            db=db,
+            payload=payload,
+            schedule=schedule,
+            public_rates_by_type=rates_by_type,
+            surcharge_rules=surcharge_rules,
+        )
+        primary_pricing = pricing_candidates[quote.pricing_basis]
+        quote_validity = ResolvedQuoteValidity(valid_until=quote.valid_until, snapshot=quote.pricing_provenance["validityPolicy"])
+        response["options"] = _serialize_quote_options(
+            payload=payload,
+            pricing_candidates=pricing_candidates,
+            primary_pricing=primary_pricing,
+            fx_rate=_resolve_fx_rate(db=db, currency=payload.currency),
+            quote_validity=quote_validity,
+            valid_until=quote.valid_until,
+        )
+
+    return response
 
 
 @app.post("/quotes/{quote_id}/approval-decisions")

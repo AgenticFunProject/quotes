@@ -1,0 +1,42 @@
+meta {
+  name: Create Quote - Alternative Options
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/quotes
+  body: json
+}
+
+headers {
+  content-type: application/json
+}
+
+body {
+  {
+    "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+    "customerId": "cust-acme",
+    "equipment": [
+      {
+        "type": "20FT",
+        "quantity": 1
+      }
+    ],
+    "cargoWeightKg": 18000,
+    "includeAlternativeOptions": true
+  }
+}
+
+tests {
+  test("status is 201", function() {
+    expect(res.status).to.equal(201);
+  });
+
+  test("returns primary and alternative options", function() {
+    expect(res.body.options.primary.pricingBasis).to.equal("PUBLIC_TARIFF");
+    expect(res.body.options.alternatives).to.have.lengthOf(2);
+    expect(res.body.options.alternatives[0].pricingBasis).to.equal("CONTRACT");
+    expect(res.body.options.alternatives[1].pricingBasis).to.equal("MARKET");
+  });
+}
