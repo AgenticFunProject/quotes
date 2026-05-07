@@ -820,6 +820,16 @@ should be paired with executable Gherkin scenarios when implemented.
 - Allow a client or downstream operator to reprice an existing quote request
   against newer commercial data while preserving the original quote snapshot.
 
+#### Domain behavior
+- Repricing is a derived commercial action over a previously issued or expired
+  quote; it does not mutate the original record in place.
+- The repriced quote should inherit the original shipment inputs unless an
+  explicit future feature introduces controlled input edits.
+- A repriced quote should keep a durable backward link to the source quote so
+  support, booking, and analytics can traverse the quote lineage.
+- Repricing should be allowed for both customer-visible quote refreshes and
+  internal operator workflows such as schedule-change impact review.
+
 #### Required inputs
 - A stored quote identifier.
 - A repricing trigger such as customer request, schedule change, validity
@@ -836,6 +846,44 @@ should be paired with executable Gherkin scenarios when implemented.
 5. Expose whether the repriced result is higher, lower, or unchanged relative
    to the original quote.
 
+#### Lifecycle and state expectations
+- The original quote keeps its existing lifecycle state and provenance snapshot.
+- The repriced quote is stored as a new quote record with its own identifier,
+  validity window, and explainability payload.
+- The link between the original and repriced quote should be first-class data,
+  not inferred later from event history.
+- If the source quote is no longer bookable, the repriced quote can still be
+  issued as a fresh bookable offer when the new commercial basis is valid.
+
+#### API implications
+- `POST /quotes/{id}/reprice` should remain idempotent only when the same
+  idempotency key and trigger context are reused; otherwise repeated repricing
+  requests may intentionally create separate repriced records.
+- The response should expose the original and repriced identifiers, the
+  repricing trigger, the selected pricing basis, and a machine-readable
+  variance summary.
+- `GET /quotes/{id}` and `GET /quotes/{id}/explain` should let internal clients
+  discover whether a quote was repriced from an earlier quote and, if so, which
+  quote it supersedes.
+
+#### Provenance and audit expectations
+- Both the original and repriced quote must persist their own complete
+  commercial provenance snapshots.
+- The repriced quote should capture which trigger initiated repricing and which
+  commercial reference-data versions were used.
+- Variance summaries should be reproducible from stored snapshots rather than
+  recalculated from mutable current rules.
+- Quote lifecycle and repricing events should distinguish between quote
+  creation, repricing request, repriced result creation, and any later expiry.
+
+#### Operational constraints
+- Repricing should be safe to run asynchronously for large backfills while
+  still returning deterministic results per selected snapshot.
+- The service should protect against repricing loops, such as repeatedly
+  repricing the same quote lineage without operator intent.
+- Support tooling should be able to filter repriced quotes separately from
+  first-issue quotes when investigating customer disputes.
+
 #### Expected outcomes
 - Support and Booking should be able to explain why a quote changed.
 - The service should preserve both the original and repriced commercial basis.
@@ -847,6 +895,15 @@ should be paired with executable Gherkin scenarios when implemented.
 - Allow a single quote request to return multiple commercial options such as
   cheapest, fastest, or contract-preferred choices without requiring multiple
   API round trips.
+
+#### Domain behavior
+- Each returned option represents a commercially distinct shipment choice with
+  its own schedule or service attributes, price, and bookability basis.
+- The service should declare one option as the canonical primary response while
+  still retaining the ordering rationale for alternatives.
+- Options should be comparable within one response, but a client must still be
+  able to book a specific option without ambiguity about which priced offer was
+  selected.
 
 #### Required inputs
 - A quote request that may permit more than one eligible schedule or service
@@ -863,6 +920,40 @@ should be paired with executable Gherkin scenarios when implemented.
 5. Persist enough provenance so later booking can confirm which option was
    chosen.
 
+#### Lifecycle and state expectations
+- A multi-option quote request may persist either one aggregate quote record
+  with child options or a set of linked quote records; whichever model is used,
+  the chosen booking path must be explicit and durable.
+- Unselected alternatives should remain referenceable until quote expiry so
+  support can explain which option the customer accepted or declined.
+- If one option becomes unavailable before booking, the service should be able
+  to mark only that option unavailable without corrupting sibling options.
+
+#### API implications
+- `POST /quotes` would need an explicit request flag or mode to opt into
+  alternative options and to bound the maximum option count.
+- The response should expose ranking metadata such as `rank`, `selectionReason`,
+  or `primary=true` so clients do not reverse-engineer business ordering from
+  array position alone.
+- Booking-facing consumers should receive a stable option identifier that can be
+  passed later instead of resubmitting the full pricing search.
+
+#### Provenance and audit expectations
+- Every option should persist its own pricing provenance, explainability data,
+  and schedule snapshot.
+- The aggregate response should capture which ranking policy and version were
+  used to order the options.
+- Audit trails should show whether the customer booked the primary option or an
+  alternative, because that choice affects later analytics and dispute review.
+
+#### Operational constraints
+- Option expansion must be bounded so a broad search does not fan out into an
+  unmanageable number of priced combinations.
+- Ranking must remain deterministic even if underlying schedule search returns
+  candidates in unstable order.
+- Downstream consumers should be able to request only the primary option when
+  low-latency quoting is more important than alternative discovery.
+
 #### Expected outcomes
 - The client can present alternatives without re-querying the pricing service.
 - Every option should remain fully explainable and bookable on its own terms.
@@ -873,6 +964,14 @@ should be paired with executable Gherkin scenarios when implemented.
 #### Business goal
 - Support quotes that are commercially valid but require human approval before
   they can be treated as firm customer offers.
+
+#### Domain behavior
+- Guardrail failures should not be modeled as pricing errors when the shipment
+  is priceable but operationally sensitive.
+- A held quote should preserve the exact priced commercial snapshot that was
+  reviewed so approvers are deciding on a concrete offer, not a moving target.
+- Approval holds should support both synchronous operator review and delayed
+  workflow completion without losing customer context.
 
 #### Required inputs
 - Approval guardrails such as minimum margin, exceptional surcharge waiver, or
@@ -889,6 +988,42 @@ should be paired with executable Gherkin scenarios when implemented.
 5. Allow downstream consumers to distinguish between issued, pending, approved,
    and rejected commercial outcomes.
 
+#### Lifecycle and state expectations
+- The lifecycle should distinguish at least `PENDING_APPROVAL`, `APPROVED`,
+  `ISSUED`, and `REJECTED` outcomes for held quotes.
+- Approval should advance the held quote without recalculating price unless a
+  separate explicit reprice or refresh action is requested.
+- Rejection should make the quote non-bookable while retaining the full review
+  record for audit and customer-service follow-up.
+- Expiry policy for held quotes should be explicit: a quote may expire while
+  waiting for approval, or approval may be disallowed after the original review
+  window closes.
+
+#### API implications
+- Future API design likely needs an internal approval action endpoint such as
+  `POST /quotes/{id}/approval-decisions` or a similar workflow-specific route.
+- Quote lookup and bookability responses should expose hold status and approval
+  reasons clearly enough for downstream systems to avoid treating the quote as a
+  firm offer.
+- Approval APIs should require actor identity and an optional decision note so
+  the audit trail is attributable and support-readable.
+
+#### Provenance and audit expectations
+- The held quote should persist the exact guardrail rules, policy versions, and
+  computed threshold breaches that caused the hold.
+- Approval or rejection should capture approver identity, timestamp, decision
+  rationale, and whether any exception authority was used.
+- Outbox events should let dependent systems react differently to pending,
+  approved, rejected, and expired-held quotes.
+
+#### Operational constraints
+- Approval workflows must tolerate asynchronous human response without losing
+  correlation to the original customer request.
+- Approval queues should be searchable by age, lane, customer, and guardrail
+  type so commercial teams can manage backlog.
+- The service should prevent concurrent conflicting approval decisions on the
+  same held quote.
+
 #### Expected outcomes
 - Risky quotes should not silently flow through as immediately bookable offers.
 - The approval trail should be durable and audit-friendly.
@@ -900,6 +1035,15 @@ should be paired with executable Gherkin scenarios when implemented.
 - Allow quote validity windows to vary by customer, contract, pricing mode, or
   market volatility instead of using one generic validity rule for all quotes.
 
+#### Domain behavior
+- Validity policy resolution should be part of quote creation, not a later
+  post-processing step, because `validUntil` affects customer behavior and
+  booking guarantees.
+- Policies may be derived from layered inputs such as account contract first,
+  then customer default, then pricing-mode fallback.
+- Highly volatile pricing modes may intentionally receive shorter validity even
+  when the commercial amount calculation is otherwise identical to a stable mode.
+
 #### Required inputs
 - A validity policy catalog tied to customer/account context and pricing mode.
 - Optional volatility or market-freshness signals for shorter-lived quotes.
@@ -909,6 +1053,39 @@ should be paired with executable Gherkin scenarios when implemented.
 2. Derive `validUntil` from policy rules instead of a single default duration.
 3. Persist the policy identifier and inputs that determined the validity window.
 4. Reuse the stored policy snapshot when Booking validates bookability.
+
+#### Lifecycle and state expectations
+- Quote validity must be immutable once the quote is issued; later policy
+  catalog changes should not silently rewrite stored `validUntil` timestamps.
+- Bookability checks should evaluate against the stored policy-derived validity
+  window, not recompute from current rules.
+- Repricing a quote may resolve a different validity policy if the new pricing
+  mode or customer context differs from the original quote.
+
+#### API implications
+- Future quote responses should expose the matched validity policy identifier or
+  policy class when support needs explainability beyond the raw timestamp.
+- `GET /quotes/{id}/bookability` should expose whether the result was driven by
+  normal expiry, customer-specific policy, or market-volatility constraints.
+- Admin or reference-data APIs will likely need a managed validity-policy
+  surface with draft, activation, and audit behavior comparable to other
+  commercial rules.
+
+#### Provenance and audit expectations
+- Stored quote provenance should include the matched policy version and the
+  inputs used to resolve it, such as pricing mode or contract reference.
+- Changes to validity policies should be auditable because they directly affect
+  quote promise windows seen by customers.
+- Support should be able to reconstruct why two otherwise similar quotes
+  received different validity windows.
+
+#### Operational constraints
+- Policy evaluation must remain fast because it sits on the hot path of quote
+  creation and bookability checks.
+- Policy configuration should guard against overlapping or contradictory rules
+  that would produce non-deterministic validity outcomes.
+- Monitoring should highlight lanes or customer segments where very short
+  validity windows produce unusable quote churn.
 
 #### Expected outcomes
 - High-volatility quotes can expire sooner without changing stable tariff-based

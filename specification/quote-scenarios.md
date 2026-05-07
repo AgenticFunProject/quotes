@@ -149,16 +149,24 @@ And the explainability payload matches the stored pricing provenance used at quo
 ## Scenario: Reprice an existing quote and explain the commercial variance
 
 Given a quote has been stored from an earlier commercial snapshot
+And the stored quote records its original pricing basis, FX snapshot, and optimization trace
+And newer approved commercial data is now active for the same shipment request
 When an operator requests a reprice for the same shipment inputs
 Then the service preserves the original quote unchanged and stores a distinct repriced result
+And the repriced quote keeps a durable link back to the original quote identifier and quote reference
 And the repriced response reports the structured variance across base rate, surcharges, FX, and optimization inputs
+And the response classifies the overall variance direction as higher, lower, or unchanged
+And support can later read both the original and repriced provenance snapshots without recomputing current rules
 
 ## Scenario: Return multiple commercial options for one quote request
 
 Given more than one eligible service option can satisfy the same shipment request
-When a client requests a quote with alternative options enabled
+And the service has a configured ranking policy for primary and alternative options
+When a client requests a quote with alternative options enabled and a bounded option count
 Then the API returns a primary priced option and an ordered set of alternative quote options
 And each option includes its own bookable commercial provenance snapshot
+And each option exposes stable ranking metadata so the client can explain why it is primary, cheapest, fastest, or otherwise preferred
+And the response includes a stable option identifier that Booking can use to select one option later without repricing the full request
 
 ## Scenario: Hold a quote for manual approval when commercial guardrails are exceeded
 
@@ -166,17 +174,38 @@ Given a priced quote violates an approval guardrail such as margin or waiver pol
 When the client requests the quote
 Then the service stores the quote in a pending approval state instead of issuing it directly
 And the stored quote records the exact approval reasons that must be reviewed
+And the quote is not bookable while it remains pending approval
+And a durable audit record captures the breached guardrail inputs and policy version that caused the hold
 
 ## Scenario: Approve a previously held quote without changing the reviewed commercial snapshot
 
 Given a quote is waiting in a pending approval state
-When an authorized approver approves it
+And the held quote has a stored commercial snapshot and explicit approval reasons
+When an authorized approver approves it with actor identity recorded
 Then the quote becomes issuable and bookable using the same commercial snapshot that was reviewed
 And the approval action is persisted with approver identity and timestamp
+And downstream consumers can distinguish the approval event from normal quote creation in the outbox stream
+
+## Scenario: Reject a previously held quote and preserve the review trail
+
+Given a quote is waiting in a pending approval state
+When an authorized approver rejects it with a decision reason
+Then the quote becomes non-bookable without recalculating the commercial amount
+And the service preserves the full rejection trail with approver identity, timestamp, and decision note
+And support can still retrieve the held quote and its original approval reasons for audit purposes
 
 ## Scenario: Derive quote validity from a customer-specific policy
 
 Given the service stores multiple quote validity policies by customer, contract, or pricing mode
+And the matching policy resolves from the customer's contract or pricing mode instead of the default validity rule
 When a client requests a quote that matches a non-default validity policy
 Then the API derives `validUntil` from the matched policy instead of the generic default window
 And the stored quote records the policy provenance used by later bookability checks
+And later bookability validation uses the stored policy-derived validity window even if the current policy catalog has changed
+
+## Scenario: Explain why similar quotes received different validity windows
+
+Given two otherwise similar quote requests match different validity policies
+When support compares the stored quotes after creation
+Then the service can explain which policy version each quote matched
+And support can see which customer, contract, pricing-mode, or volatility inputs produced the different `validUntil` timestamps
