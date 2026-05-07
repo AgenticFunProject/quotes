@@ -1,0 +1,32 @@
+meta {
+  name: Reprice Quote
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/quotes/{{quoteId}}/reprice
+  body: json
+}
+
+headers {
+  content-type: application/json
+}
+
+body {
+  {
+    "trigger": "COMMERCIAL_REFRESH"
+  }
+}
+
+tests {
+  test("status is 201", function() {
+    expect(res.status).to.equal(201);
+  });
+
+  test("returns repricing metadata", function() {
+    expect(res.body.id).to.be.a("string");
+    expect(res.body.repricedFromQuoteId).to.be.a("string");
+    expect(res.body.varianceSummary.direction).to.be.a("string");
+  });
+}

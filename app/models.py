@@ -122,6 +122,7 @@ class Quote(Base):
     source_currency: Mapped[str] = mapped_column(String(3), default="USD")
     customer_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     account_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    pricing_mode_hint: Mapped[str | None] = mapped_column(String(32), nullable=True)
     pricing_basis: Mapped[PricingBasis] = mapped_column(
         SqlEnum(
             PricingBasis,
@@ -139,6 +140,9 @@ class Quote(Base):
     fx_snapshot: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     rounding_policy: Mapped[str] = mapped_column(String(64), default="LINE_ITEM_HALF_UP_2DP")
     idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True, unique=True, index=True)
+    repriced_from_quote_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    repricing_trigger: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    variance_summary: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     line_items: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
     total_amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=Decimal("0.00"))
     valid_until: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_default_valid_until)
