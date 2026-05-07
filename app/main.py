@@ -596,6 +596,16 @@ def _build_bookability_snapshot(valid_until: datetime) -> dict[str, object]:
     }
 
 
+def _build_bookability_snapshot(valid_until: datetime) -> dict[str, object]:
+    return {
+        "bookable": True,
+        "status": _QUOTE_STATUS_ACTIVE,
+        "reason": _BOOKABILITY_REASON_OPEN,
+        "expired": False,
+        "validUntil": valid_until.isoformat(),
+    }
+
+
 def _quote_fx_snapshot(quote: Quote) -> dict[str, object]:
     if quote.fx_snapshot:
         return quote.fx_snapshot
@@ -1740,27 +1750,12 @@ def _build_quote_payload_from_stored_quote(quote: Quote) -> CreateQuoteRequest:
     )
 
 
-def _build_quote_payload_from_stored_quote(quote: Quote) -> CreateQuoteRequest:
-    return CreateQuoteRequest.model_validate(
-        {
-            "scheduleId": quote.schedule_id,
-            "equipment": quote.equipment,
-            "cargoWeightKg": quote.cargo_weight_kg,
-            "customerId": quote.customer_id,
-            "accountId": quote.account_id,
-            "currency": quote.currency,
-            "pricingModeHint": quote.pricing_mode_hint,
-        }
-    )
-
-
 def _serialize_quote_option(
     *,
     payload: CreateQuoteRequest,
     pricing: ResolvedPricing,
     fx_rate: ResolvedFxRate,
     quote_validity: ResolvedQuoteValidity,
-    valid_until: datetime,
 ) -> tuple[dict[str, object], Decimal]:
     source_line_items, surcharge_line_items, source_total_amount = _build_source_quote_line_items(
         payload=payload,
@@ -1785,7 +1780,7 @@ def _serialize_quote_option(
         "lineItems": line_items,
         "sourceTotalAmount": _serialize_decimal(source_total_amount),
         "totalAmount": _serialize_decimal(total_amount),
-        "bookability": _build_bookability_snapshot(valid_until),
+        "bookability": _build_bookability_snapshot(quote_validity.valid_until),
     }
     if pricing.contract is not None:
         option["contractId"] = pricing.contract.id
@@ -1800,15 +1795,13 @@ def _serialize_quote_options(
     pricing_candidates: dict[PricingBasis, ResolvedPricing],
     primary_pricing: ResolvedPricing,
     fx_rate: ResolvedFxRate,
-    quote_validity: ResolvedQuoteValidity,
-    valid_until: datetime,
+    quote_validities: dict[PricingBasis, ResolvedQuoteValidity],
 ) -> dict[str, object]:
     primary_option, _ = _serialize_quote_option(
         payload=payload,
         pricing=primary_pricing,
         fx_rate=fx_rate,
-        quote_validity=quote_validity,
-        valid_until=valid_until,
+        quote_validity=quote_validities[primary_pricing.pricing_basis],
     )
     alternatives: list[tuple[dict[str, object], Decimal]] = []
     for pricing_basis, pricing in pricing_candidates.items():
@@ -1820,8 +1813,7 @@ def _serialize_quote_options(
                 payload=payload,
                 pricing=pricing,
                 fx_rate=fx_rate,
-                quote_validity=quote_validity,
-                valid_until=valid_until,
+                quote_validity=quote_validities[pricing_basis],
             )
         )
 
@@ -1839,6 +1831,8 @@ def _serialize_quote_options(
         "primary": primary_option,
         "alternatives": ordered_alternatives,
     }
+
+
 def _create_quote_record(
     *,
     payload: CreateQuoteRequest,
@@ -1954,14 +1948,25 @@ def create_quote(
             surcharge_rules=surcharge_rules,
         )
         primary_pricing = pricing_candidates[quote.pricing_basis]
-        quote_validity = ResolvedQuoteValidity(valid_until=quote.valid_until, snapshot=quote.pricing_provenance["validityPolicy"])
+        quote_validities = {
+            pricing_basis: _resolve_quote_validity(
+                db=db,
+                payload=payload,
+                pricing=pricing,
+                created_at=quote.created_at,
+            )
+            for pricing_basis, pricing in pricing_candidates.items()
+        }
+        quote_validities[quote.pricing_basis] = ResolvedQuoteValidity(
+            valid_until=quote.valid_until,
+            snapshot=quote.pricing_provenance["validityPolicy"],
+        )
         response["options"] = _serialize_quote_options(
             payload=payload,
             pricing_candidates=pricing_candidates,
             primary_pricing=primary_pricing,
             fx_rate=_resolve_fx_rate(db=db, currency=payload.currency),
-            quote_validity=quote_validity,
-            valid_until=quote.valid_until,
+            quote_validities=quote_validities,
         )
 
     return response
