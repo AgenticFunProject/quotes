@@ -44,6 +44,9 @@ and seeds reference rates and surcharge rules used by `POST /quotes`.
   freight plus surcharge rules, persists the quote, and returns a commercial
   response with line items and a validity window derived from the matched quote
   validity policy.
+- `POST /quotes/{quote_id}/reprice` reruns pricing for a stored quote against
+  the current approved commercial data, preserves the original quote unchanged,
+  and persists a structured variance summary on the repriced result.
 - `GET /quotes/{quote_id}` returns the stored quote by either the internal UUID
   or the public `quoteReference` returned from `POST /quotes`, including the
   stored schedule snapshot, pricing basis, and pricing provenance used to
@@ -163,7 +166,21 @@ curl http://localhost:8000/quotes/reference/<quote-reference>
 All lookup paths return the stored schedule snapshot, line items, pricing basis,
 and pricing provenance used to explain how the quote was calculated.
 
-### 4. Check bookability before handing the quote to Booking
+### 4. Reprice a stored quote against current approved data
+
+```bash
+curl -X POST http://localhost:8000/quotes/<quote-uuid>/reprice \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "trigger": "COMMERCIAL_REFRESH"
+  }'
+```
+
+The repriced response keeps the new quote distinct from the original and
+returns `varianceSummary` details for total amount, base rate, surcharges, FX,
+market inputs, and optimization inputs.
+
+### 5. Check bookability before handing the quote to Booking
 
 ```bash
 curl http://localhost:8000/quotes/<quote-reference>/bookability
@@ -176,7 +193,7 @@ The bookability response is the Booking-oriented validity check. It returns:
 - `reason`: machine-readable explanation such as `VALIDITY_WINDOW_OPEN`
 - `validUntil`: expiry timestamp from the stored quote
 
-### 5. Exercise the unsupported-lane validation path
+### 6. Exercise the unsupported-lane validation path
 
 The seeded `BRSSZ -> USLAX` schedule is known to the service but intentionally
 has no matching rate row. That makes it the easiest way to verify the commercial

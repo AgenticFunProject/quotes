@@ -38,6 +38,8 @@ def _apply_sqlite_schema_fixes() -> None:
             connection.execute(text("ALTER TABLE quotes ADD COLUMN customer_id VARCHAR(64)"))
         if "account_id" not in quote_columns:
             connection.execute(text("ALTER TABLE quotes ADD COLUMN account_id VARCHAR(64)"))
+        if "pricing_mode_hint" not in quote_columns:
+            connection.execute(text("ALTER TABLE quotes ADD COLUMN pricing_mode_hint VARCHAR(32)"))
         if "contract_id" not in quote_columns:
             connection.execute(text("ALTER TABLE quotes ADD COLUMN contract_id VARCHAR(36)"))
         if "market_source" not in quote_columns:
@@ -58,6 +60,12 @@ def _apply_sqlite_schema_fixes() -> None:
             connection.execute(
                 text("ALTER TABLE quotes ADD COLUMN rounding_policy VARCHAR(64) NOT NULL DEFAULT 'LINE_ITEM_HALF_UP_2DP'")
             )
+        if "repriced_from_quote_id" not in quote_columns:
+            connection.execute(text("ALTER TABLE quotes ADD COLUMN repriced_from_quote_id VARCHAR(36)"))
+        if "repricing_trigger" not in quote_columns:
+            connection.execute(text("ALTER TABLE quotes ADD COLUMN repricing_trigger VARCHAR(64)"))
+        if "variance_summary" not in quote_columns:
+            connection.execute(text("ALTER TABLE quotes ADD COLUMN variance_summary JSON NOT NULL DEFAULT '{}'"))
 
     _backfill_managed_commercial_columns("rate_tables")
     _backfill_managed_commercial_columns("surcharge_rules")

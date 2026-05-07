@@ -17,6 +17,7 @@ Provides a quoted price that can be referenced when placing a booking.
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | /quotes | Request a new quote |
+| POST | /quotes/{id}/reprice | Reprice a stored quote and persist variance against the original |
 | POST | /quotes/coverage/validate | Validate rate coverage for a route, departure date, and equipment selection |
 | GET | /quotes/{id} | Retrieve a quote by internal ID or public quote reference |
 | GET | /quotes/{id}/explain | Return stored pricing explainability for a quote |
@@ -82,6 +83,72 @@ Provides a quoted price that can be referenced when placing a booking.
   ],
   "sourceTotalAmount": 4350.00,
   "totalAmount": 4002.00
+}
+```
+
+### POST /quotes/{id}/reprice - Request Body
+```json
+{
+  "trigger": "COMMERCIAL_REFRESH"
+}
+```
+
+### POST /quotes/{id}/reprice - Response
+```json
+{
+  "id": "6f8b08fe-57cf-4c6d-b29c-5b0e2e10fd8a",
+  "quoteReference": "QTE-2026-00109",
+  "repricedFromQuoteId": "53c362b2-1229-4ea5-a24a-9891fb1f509d",
+  "repricedFromQuoteReference": "QTE-2026-00108",
+  "repricingTrigger": "COMMERCIAL_REFRESH",
+  "pricingBasis": "PUBLIC_TARIFF",
+  "currency": "EUR",
+  "sourceCurrency": "USD",
+  "responseCurrency": "EUR",
+  "varianceSummary": {
+    "direction": "HIGHER",
+    "totalAmount": {
+      "original": 1196.00,
+      "repriced": 1444.00,
+      "delta": 248.00,
+      "changed": true
+    },
+    "baseRate": {
+      "original": 950.00,
+      "repriced": 1110.00,
+      "delta": 160.00,
+      "changed": true
+    },
+    "surcharges": {
+      "original": 350.00,
+      "repriced": 410.00,
+      "delta": 60.00,
+      "changed": true
+    },
+    "fx": {
+      "changed": true,
+      "original": { "rate": 0.92 },
+      "repriced": { "rate": 0.95 }
+    },
+    "marketInputs": {
+      "changed": false,
+      "original": {
+        "pricingBasis": "PUBLIC_TARIFF",
+        "marketSource": null,
+        "marketRateSnapshotIds": []
+      },
+      "repriced": {
+        "pricingBasis": "PUBLIC_TARIFF",
+        "marketSource": null,
+        "marketRateSnapshotIds": []
+      }
+    },
+    "optimizationInputs": {
+      "changed": false,
+      "original": { "pricingModeHint": "AUTO" },
+      "repriced": { "pricingModeHint": "AUTO" }
+    }
+  }
 }
 ```
 
