@@ -145,3 +145,38 @@ Given a quote has been stored with market-pricing explainability data
 When support reads `GET /quotes/{id}/explain`
 Then the API returns the stored pricing basis, market source when present, and persisted optimization trace
 And the explainability payload matches the stored pricing provenance used at quote creation time
+
+## Scenario: Reprice an existing quote and explain the commercial variance
+
+Given a quote has been stored from an earlier commercial snapshot
+When an operator requests a reprice for the same shipment inputs
+Then the service preserves the original quote unchanged and stores a distinct repriced result
+And the repriced response reports the structured variance across base rate, surcharges, FX, and optimization inputs
+
+## Scenario: Return multiple commercial options for one quote request
+
+Given more than one eligible service option can satisfy the same shipment request
+When a client requests a quote with alternative options enabled
+Then the API returns a primary priced option and an ordered set of alternative quote options
+And each option includes its own bookable commercial provenance snapshot
+
+## Scenario: Hold a quote for manual approval when commercial guardrails are exceeded
+
+Given a priced quote violates an approval guardrail such as margin or waiver policy
+When the client requests the quote
+Then the service stores the quote in a pending approval state instead of issuing it directly
+And the stored quote records the exact approval reasons that must be reviewed
+
+## Scenario: Approve a previously held quote without changing the reviewed commercial snapshot
+
+Given a quote is waiting in a pending approval state
+When an authorized approver approves it
+Then the quote becomes issuable and bookable using the same commercial snapshot that was reviewed
+And the approval action is persisted with approver identity and timestamp
+
+## Scenario: Derive quote validity from a customer-specific policy
+
+Given the service stores multiple quote validity policies by customer, contract, or pricing mode
+When a client requests a quote that matches a non-default validity policy
+Then the API derives `validUntil` from the matched policy instead of the generic default window
+And the stored quote records the policy provenance used by later bookability checks

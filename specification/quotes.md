@@ -704,3 +704,147 @@ This section defines how currently excluded capabilities should behave when they
 - The optimization path must be reproducible from stored inputs and rule versions.
 - Two identical requests evaluated under the same strategy snapshot should produce the same result.
 - The service should be able to explain which pricing mode produced the quote even if the customer-facing response remains simplified.
+
+## Operational Follow-Ups
+
+The product roadmap work through Phase 6 is complete. Remaining follow-up work
+is operational and should not change the existing quote contract unless a new
+feature bead explicitly requires it.
+
+- `qu-bqa` tracks stabilization of quotes verification runtime prerequisites.
+- The main remaining gap is environment consistency across local rig and
+  refinery execution: `python3-venv`, `ensurepip`, `pip`, and `pytest` must be
+  available without ad hoc repair.
+- Follow-up implementation should preserve the existing API/spec behavior and
+  focus on making verification reproducible for merge gates and local debug
+  sessions.
+
+### Verification Prerequisites
+
+The quotes service currently expects a Python environment capable of running the
+repo test suite from a virtual environment.
+
+- `python3 -m venv .venv` must succeed.
+- The resulting environment must provide `pip`.
+- The environment must be able to install the project's dev dependencies.
+- Refinery and local rig verification should run the same pytest command set
+  without environment-specific branching.
+
+Intended verification flow:
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python3 -m pip install -e ".[dev]"
+.venv/bin/pytest tests/test_db.py tests/test_seed.py tests/test_quotes_api.py -q
+```
+
+## Next Feature Candidates
+
+These are intentionally phrased as future implementation slices. They are not
+part of the completed roadmap above, but they extend the same quote domain and
+should be paired with executable Gherkin scenarios when implemented.
+
+### Quote repricing and variance explanation
+
+#### Business goal
+- Allow a client or downstream operator to reprice an existing quote request
+  against newer commercial data while preserving the original quote snapshot.
+
+#### Required inputs
+- A stored quote identifier.
+- A repricing trigger such as customer request, schedule change, validity
+  expiry, or commercial refresh.
+- The currently active pricing data and rule snapshots.
+
+#### Decision logic
+1. Load the original stored quote request and provenance snapshot.
+2. Re-run pricing against the latest approved commercial data.
+3. Preserve the original quote unchanged and persist a distinct repriced quote
+   result.
+4. Compute a structured variance summary across base rate, surcharges, FX,
+   market inputs, and optimization adjustments.
+5. Expose whether the repriced result is higher, lower, or unchanged relative
+   to the original quote.
+
+#### Expected outcomes
+- Support and Booking should be able to explain why a quote changed.
+- The service should preserve both the original and repriced commercial basis.
+- Repricing should remain deterministic for the selected reference snapshots.
+
+### Multi-option quote responses
+
+#### Business goal
+- Allow a single quote request to return multiple commercial options such as
+  cheapest, fastest, or contract-preferred choices without requiring multiple
+  API round trips.
+
+#### Required inputs
+- A quote request that may permit more than one eligible schedule or service
+  option.
+- A documented option ranking policy.
+- Limits on how many options the service returns.
+
+#### Decision logic
+1. Resolve all commercially eligible service options for the request.
+2. Price each option independently using the same provenance rules used for a
+   single quote.
+3. Rank options using stable selection criteria.
+4. Return a canonical primary option plus an ordered list of alternatives.
+5. Persist enough provenance so later booking can confirm which option was
+   chosen.
+
+#### Expected outcomes
+- The client can present alternatives without re-querying the pricing service.
+- Every option should remain fully explainable and bookable on its own terms.
+- The ranking should be reproducible from stored inputs and policy versions.
+
+### Approval-held quotes
+
+#### Business goal
+- Support quotes that are commercially valid but require human approval before
+  they can be treated as firm customer offers.
+
+#### Required inputs
+- Approval guardrails such as minimum margin, exceptional surcharge waiver, or
+  oversized market deviation thresholds.
+- An approval decision model with approver identity and timestamps.
+
+#### Decision logic
+1. Price the request normally.
+2. Evaluate the result against approval guardrails.
+3. If guardrails are exceeded, store the quote in a pending-approval lifecycle
+   state instead of issuing it directly.
+4. Persist the exact approval reasons and the approver action once a decision is
+   made.
+5. Allow downstream consumers to distinguish between issued, pending, approved,
+   and rejected commercial outcomes.
+
+#### Expected outcomes
+- Risky quotes should not silently flow through as immediately bookable offers.
+- The approval trail should be durable and audit-friendly.
+- Approved quotes should keep the same commercial snapshot that was reviewed.
+
+### Customer-specific quote validity policies
+
+#### Business goal
+- Allow quote validity windows to vary by customer, contract, pricing mode, or
+  market volatility instead of using one generic validity rule for all quotes.
+
+#### Required inputs
+- A validity policy catalog tied to customer/account context and pricing mode.
+- Optional volatility or market-freshness signals for shorter-lived quotes.
+
+#### Decision logic
+1. Resolve the applicable validity policy during quote creation.
+2. Derive `validUntil` from policy rules instead of a single default duration.
+3. Persist the policy identifier and inputs that determined the validity window.
+4. Reuse the stored policy snapshot when Booking validates bookability.
+
+#### Expected outcomes
+- High-volatility quotes can expire sooner without changing stable tariff-based
+  quote behavior.
+- Support can explain why one customer received a shorter or longer validity
+  window than another.
+- Bookability checks remain deterministic because they use stored validity
+  policy data rather than recomputing from mutable current rules.
