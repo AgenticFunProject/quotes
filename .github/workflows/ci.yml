@@ -26,13 +26,11 @@ jobs:
       - name: Show runner Python version
         run: python3 --version
 
-      - name: Install dependencies
-        run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install -e ".[dev]" build
+      - name: Bootstrap verification environment
+        run: ./scripts/bootstrap-venv.sh
 
       - name: Validate package build
-        run: python3 -m build
+        run: .venv/bin/python -m build
 
       - name: Run tests
-        run: python3 -m pytest
+        run: ./scripts/verify.sh

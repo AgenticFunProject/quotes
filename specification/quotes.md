@@ -785,6 +785,8 @@ feature bead explicitly requires it.
 - Follow-up implementation should preserve the existing API/spec behavior and
   focus on making verification reproducible for merge gates and local debug
   sessions.
+- The canonical bootstrap path should live in-repo so local verification and
+  merge gates exercise the same setup logic.
 
 ### Verification Prerequisites
 
@@ -796,14 +798,14 @@ repo test suite from a virtual environment.
 - The environment must be able to install the project's dev dependencies.
 - Refinery and local rig verification should run the same pytest command set
   without environment-specific branching.
+- Bootstrap should fail fast with an actionable message when `venv` or
+  `ensurepip` support is missing from the runtime.
 
 Intended verification flow:
 
 ```bash
-python3 -m venv .venv
-. .venv/bin/activate
-python3 -m pip install -e ".[dev]"
-.venv/bin/pytest tests/test_db.py tests/test_seed.py tests/test_quotes_api.py -q
+./scripts/bootstrap-venv.sh
+./scripts/verify.sh
 ```
 
 ## Next Feature Candidates

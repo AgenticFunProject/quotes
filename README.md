@@ -8,19 +8,19 @@ Requirements:
 
 - Python 3.11+
 - `venv` support for your Python install
-- `pip`
+- `ensurepip` support so the repo can recover `pip` inside `.venv`
 
 From the repository root:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+./scripts/bootstrap-venv.sh
+. .venv/bin/activate
 uvicorn app.main:app --reload
 ```
 
-If your Linux distribution does not expose `python`, use `python3` in the
-commands above instead.
+`./scripts/bootstrap-venv.sh` uses `python3` by default, creates `.venv`,
+repairs `pip` with `ensurepip` when the runtime allows it, and installs the
+project's development dependencies.
 
 Set `DATABASE_URL` before starting the app if you want to persist data anywhere
 other than the default local SQLite file at `db.sqlite`.
@@ -229,15 +229,22 @@ See `bruno/quotes-service/README.md` for request details.
 ## Test
 
 ```bash
-pytest
+./scripts/verify.sh
+```
+
+That command is the canonical verification entry point for both local runs and
+merge-gate automation. It bootstraps `.venv` if needed and then runs:
+
+```bash
+.venv/bin/python -m pytest tests -q
 ```
 
 ## CI Workflow
 
 `.github/workflows/ci.yml` runs on pushes to `main`, pull requests targeting
-`main`, and manual dispatch. It installs the package with development
-dependencies, validates that the project builds as a Python package, and then
-executes `pytest`.
+`main`, and manual dispatch. It bootstraps the same repo-local `.venv` used by
+local operators, validates that the project builds as a Python package, and
+then executes `./scripts/verify.sh`.
 
 ## Azure Deployment
 
