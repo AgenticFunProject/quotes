@@ -84,6 +84,12 @@ class CreateQuoteRequest(BaseModel):
         return value.upper()
 
 
+class RepriceQuoteRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    trigger: str = Field(min_length=1, max_length=64)
+
+
 class ValidateRateCoverageRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -242,7 +248,7 @@ def _require_actor(actor: str | None = Header(default=None, alias="X-Actor")) ->
 
 def _serialize_quote(quote: Quote) -> dict[str, object]:
     source_total_amount = _quote_source_total_amount(quote)
-    return {
+    payload = {
         "id": quote.id,
         "quoteReference": quote.quote_reference,
         "lifecycleState": quote.lifecycle_state.value,
@@ -274,6 +280,13 @@ def _serialize_quote(quote: Quote) -> dict[str, object]:
         "createdAt": quote.created_at.isoformat(),
     }
 
+    if quote.repriced_from_quote_id is not None:
+        payload["repricedFromQuoteId"] = quote.repriced_from_quote_id
+        payload["repricingTrigger"] = quote.repricing_trigger
+        payload["varianceSummary"] = quote.variance_summary
+
+    return payload
+
 
 def _serialize_created_quote(quote: Quote) -> dict[str, object]:
     source_total_amount = _quote_source_total_amount(quote)
@@ -300,7 +313,7 @@ def _serialize_created_quote(quote: Quote) -> dict[str, object]:
 
 def _build_quote_event_payload(quote: Quote) -> dict[str, object]:
     source_total_amount = _quote_source_total_amount(quote)
-    return {
+    payload = {
         "quoteId": quote.id,
         "quoteReference": quote.quote_reference,
         "lifecycleState": quote.lifecycle_state.value,
@@ -324,6 +337,13 @@ def _build_quote_event_payload(quote: Quote) -> dict[str, object]:
         "validUntil": quote.valid_until.isoformat(),
         "createdAt": quote.created_at.isoformat(),
     }
+
+    if quote.repriced_from_quote_id is not None:
+        payload["repricedFromQuoteId"] = quote.repriced_from_quote_id
+        payload["repricingTrigger"] = quote.repricing_trigger
+        payload["varianceSummary"] = quote.variance_summary
+
+    return payload
 
 
 def _serialize_outbox_event(event: OutboxEvent) -> dict[str, object]:
@@ -466,7 +486,7 @@ def _serialize_bookability(quote: Quote) -> dict[str, object]:
 
 
 def _serialize_quote_explainability(quote: Quote) -> dict[str, object]:
-    return {
+    payload = {
         "quoteId": quote.id,
         "quoteReference": quote.quote_reference,
         "pricingBasis": quote.pricing_basis.value,
@@ -477,6 +497,13 @@ def _serialize_quote_explainability(quote: Quote) -> dict[str, object]:
         "optimizationTrace": quote.optimization_trace,
         "pricingProvenance": quote.pricing_provenance,
     }
+
+    if quote.repriced_from_quote_id is not None:
+        payload["repricedFromQuoteId"] = quote.repriced_from_quote_id
+        payload["repricingTrigger"] = quote.repricing_trigger
+        payload["varianceSummary"] = quote.variance_summary
+
+    return payload
 
 
 def _quote_fx_snapshot(quote: Quote) -> dict[str, object]:
@@ -503,6 +530,104 @@ def _quote_source_total_amount(quote: Quote) -> float:
         return float(source_total_amount)
 
     return _serialize_decimal(quote.total_amount)
+
+
+def _sum_pricing_rule_amounts(rules: list[dict[str, object]]) -> Decimal:
+    total = Decimal("0.00")
+    for rule in rules:
+        total += Decimal(str(rule.get("totalAmount", 0)))
+    return total.quantize(_MONEY_PRECISION)
+
+
+def _serialize_variance_amount(*, original: Decimal, repriced: Decimal) -> dict[str, object]:
+    delta = (repriced - original).quantize(_MONEY_PRECISION)
+    return {
+        "original": _serialize_decimal(original),
+        "repriced": _serialize_decimal(repriced),
+        "delta": _serialize_decimal(delta),
+        "changed": delta != Decimal("0.00"),
+    }
+
+
+def _extract_market_inputs(quote: Quote) -> dict[str, object]:
+    base_rate_rules = quote.pricing_provenance.get("baseRateRules") or []
+    market_rules = [rule for rule in base_rate_rules if isinstance(rule, dict) and rule.get("marketRateSnapshotId") is not None]
+
+    def average(metric: str) -> float | None:
+        values = [Decimal(str(rule[metric])) for rule in market_rules if rule.get(metric) is not None]
+        if not values:
+            return None
+        return _serialize_decimal((sum(values, Decimal("0.00")) / Decimal(len(values))).quantize(_MONEY_PRECISION))
+
+    return {
+        "pricingBasis": quote.pricing_basis.value,
+        "marketSource": quote.market_source or quote.pricing_provenance.get("marketSource"),
+        "marketRateSnapshotIds": [rule["marketRateSnapshotId"] for rule in market_rules],
+        "capacityPressureIndex": average("capacityPressureIndex"),
+        "utilizationIndex": average("utilizationIndex"),
+        "seasonalityIndex": average("seasonalityIndex"),
+    }
+
+
+def _extract_optimization_inputs(quote: Quote) -> dict[str, object]:
+    trace = quote.optimization_trace or {}
+    strategy = trace.get("strategy") if isinstance(trace.get("strategy"), dict) else None
+    return {
+        "pricingModeHint": quote.pricing_mode_hint or trace.get("pricingModeHint") or PricingModeHint.AUTO.value,
+        "decision": trace.get("decision"),
+        "selectedPricingBasis": trace.get("selectedPricingBasis"),
+        "fallbackPricingBasis": trace.get("fallbackPricingBasis"),
+        "strategyId": None if strategy is None else strategy.get("strategyId"),
+        "strategyName": None if strategy is None else strategy.get("strategyName"),
+        "strategyVersion": None if strategy is None else strategy.get("version"),
+    }
+
+
+def _build_quote_variance_summary(*, original_quote: Quote, repriced_quote: Quote) -> dict[str, object]:
+    original_source_total = Decimal(str(_quote_source_total_amount(original_quote)))
+    repriced_source_total = Decimal(str(_quote_source_total_amount(repriced_quote)))
+    original_base_total = _sum_pricing_rule_amounts(original_quote.pricing_provenance.get("baseRateRules") or [])
+    repriced_base_total = _sum_pricing_rule_amounts(repriced_quote.pricing_provenance.get("baseRateRules") or [])
+    original_surcharge_total = _sum_pricing_rule_amounts(original_quote.pricing_provenance.get("appliedSurchargeRules") or [])
+    repriced_surcharge_total = _sum_pricing_rule_amounts(repriced_quote.pricing_provenance.get("appliedSurchargeRules") or [])
+    original_market_inputs = _extract_market_inputs(original_quote)
+    repriced_market_inputs = _extract_market_inputs(repriced_quote)
+    original_optimization_inputs = _extract_optimization_inputs(original_quote)
+    repriced_optimization_inputs = _extract_optimization_inputs(repriced_quote)
+
+    total_delta = (repriced_quote.total_amount - original_quote.total_amount).quantize(_MONEY_PRECISION)
+    if total_delta > Decimal("0.00"):
+        direction = "HIGHER"
+    elif total_delta < Decimal("0.00"):
+        direction = "LOWER"
+    else:
+        direction = "UNCHANGED"
+
+    original_fx = _quote_fx_snapshot(original_quote)
+    repriced_fx = _quote_fx_snapshot(repriced_quote)
+
+    return {
+        "direction": direction,
+        "totalAmount": _serialize_variance_amount(original=original_quote.total_amount, repriced=repriced_quote.total_amount),
+        "sourceTotalAmount": _serialize_variance_amount(original=original_source_total, repriced=repriced_source_total),
+        "baseRate": _serialize_variance_amount(original=original_base_total, repriced=repriced_base_total),
+        "surcharges": _serialize_variance_amount(original=original_surcharge_total, repriced=repriced_surcharge_total),
+        "fx": {
+            "changed": original_fx != repriced_fx,
+            "original": original_fx,
+            "repriced": repriced_fx,
+        },
+        "marketInputs": {
+            "changed": original_market_inputs != repriced_market_inputs,
+            "original": original_market_inputs,
+            "repriced": repriced_market_inputs,
+        },
+        "optimizationInputs": {
+            "changed": original_optimization_inputs != repriced_optimization_inputs,
+            "original": original_optimization_inputs,
+            "repriced": repriced_optimization_inputs,
+        },
+    }
 
 
 def _resolve_fx_rate(*, db: Session, currency: str) -> ResolvedFxRate:
@@ -1325,12 +1450,28 @@ def _convert_quote_line_items(
     return converted_line_items, converted_total.quantize(_MONEY_PRECISION)
 
 
-@app.post("/quotes", status_code=201)
-def create_quote(
+def _build_quote_payload_from_stored_quote(quote: Quote) -> CreateQuoteRequest:
+    return CreateQuoteRequest.model_validate(
+        {
+            "scheduleId": quote.schedule_id,
+            "equipment": quote.equipment,
+            "cargoWeightKg": quote.cargo_weight_kg,
+            "customerId": quote.customer_id,
+            "accountId": quote.account_id,
+            "currency": quote.currency,
+            "pricingModeHint": quote.pricing_mode_hint,
+        }
+    )
+
+
+def _create_quote_record(
+    *,
     payload: CreateQuoteRequest,
-    db: Session = Depends(get_db),
-    schedule_provider: ScheduleProvider = Depends(get_schedule_provider),
-) -> dict[str, object]:
+    db: Session,
+    schedule_provider: ScheduleProvider,
+    repriced_from_quote: Quote | None = None,
+    repricing_trigger: str | None = None,
+) -> Quote:
     schedule = _get_schedule(payload.schedule_id, schedule_provider)
     fx_rate = _resolve_fx_rate(db=db, currency=payload.currency)
     rates_by_type = _load_rate_table(
@@ -1370,6 +1511,7 @@ def create_quote(
         source_currency=_SOURCE_CURRENCY,
         customer_id=payload.customer_id,
         account_id=payload.account_id,
+        pricing_mode_hint=None if payload.pricing_mode_hint is None else payload.pricing_mode_hint.value,
         pricing_basis=pricing.pricing_basis,
         contract_id=None if pricing.contract is None else pricing.contract.id,
         market_source=pricing.market_source,
@@ -1383,16 +1525,50 @@ def create_quote(
         optimization_trace=pricing.optimization_trace,
         fx_snapshot=_serialize_fx_snapshot(fx_rate),
         rounding_policy=_ROUNDING_POLICY,
+        repriced_from_quote_id=None if repriced_from_quote is None else repriced_from_quote.id,
+        repricing_trigger=repricing_trigger,
         line_items=line_items,
         total_amount=total_amount,
     )
+    if repriced_from_quote is not None:
+        quote.variance_summary = _build_quote_variance_summary(original_quote=repriced_from_quote, repriced_quote=quote)
+
     db.add(quote)
     db.flush()
     _enqueue_quote_event(db, quote=quote, event_type=_QUOTE_CREATED_EVENT, occurred_at=quote.created_at)
     db.commit()
     db.refresh(quote)
+    return quote
 
+
+@app.post("/quotes", status_code=201)
+def create_quote(
+    payload: CreateQuoteRequest,
+    db: Session = Depends(get_db),
+    schedule_provider: ScheduleProvider = Depends(get_schedule_provider),
+) -> dict[str, object]:
+    quote = _create_quote_record(payload=payload, db=db, schedule_provider=schedule_provider)
     return _serialize_created_quote(quote)
+
+
+@app.post("/quotes/{quote_id}/reprice", status_code=201)
+def reprice_quote(
+    quote_id: str,
+    payload: RepriceQuoteRequest,
+    db: Session = Depends(get_db),
+    schedule_provider: ScheduleProvider = Depends(get_schedule_provider),
+) -> dict[str, object]:
+    original_quote = _sync_quote_lifecycle(_get_quote_or_404(quote_id, db), db)
+    repriced_quote = _create_quote_record(
+        payload=_build_quote_payload_from_stored_quote(original_quote),
+        db=db,
+        schedule_provider=schedule_provider,
+        repriced_from_quote=original_quote,
+        repricing_trigger=payload.trigger,
+    )
+    response = _serialize_quote(repriced_quote)
+    response["repricedFromQuoteReference"] = original_quote.quote_reference
+    return response
 
 
 @app.post("/admin/rate-tables", status_code=201)

@@ -13,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 from app import db
 from app.db import Base, get_db
 from app.main import app
-from app.models import CommercialChangeAction, CommercialChangeEvent, CommercialChangeResourceType, EquipmentType, ImpactAnalysisRun, MarketRateSnapshot, OutboxConsumerCheckpoint, OutboxEvent, PricingBasis, PricingStrategyVersion, Quote, QuoteLifecycleState, RateTable, SurchargeRule
+from app.models import CommercialChangeAction, CommercialChangeEvent, CommercialChangeResourceType, EquipmentType, ExchangeRate, ImpactAnalysisRun, MarketRateSnapshot, OutboxConsumerCheckpoint, OutboxEvent, PricingBasis, PricingStrategyVersion, Quote, QuoteLifecycleState, RateTable, SurchargeRule
 from app.seed import FX_PROVIDER, FX_REFERENCE_DATA_VERSION, REFERENCE_DATA_VERSION, seed_reference_data
 from app.schedules import Schedule, get_schedule_provider
 
@@ -686,6 +686,182 @@ def test_create_quote_auto_strategy_can_select_market(client) -> None:
     assert stored_quote.pricing_basis == PricingBasis.MARKET
     assert stored_quote.optimization_trace["decision"] == "STRATEGY_SELECTED_MARKET"
     assert stored_quote.optimization_trace["strategy"]["rules"][0]["matched"] is True
+
+
+def test_reprice_existing_quote_preserves_original_and_reports_structured_variance(client) -> None:
+    test_client, session_factory = client
+
+    original_response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+            "currency": "EUR",
+        },
+    )
+    assert original_response.status_code == 201
+
+    rate_response = test_client.post(
+        "/admin/rate-tables",
+        headers={"X-Actor": "pricing.ops@quotes"},
+        json={
+            "originPort": "NLRTM",
+            "destinationPort": "USNYC",
+            "equipmentType": "20FT",
+            "baseRateUsd": 1110,
+            "validFrom": "2026-04-01",
+            "validTo": "2026-12-31",
+        },
+    )
+    assert rate_response.status_code == 201
+    activate_rate_response = test_client.post(
+        f"/admin/rate-tables/{rate_response.json()['id']}/activate",
+        headers={"X-Actor": "pricing.manager@quotes"},
+    )
+    assert activate_rate_response.status_code == 200
+
+    surcharge_response = test_client.post(
+        "/admin/surcharge-rules",
+        headers={"X-Actor": "pricing.ops@quotes"},
+        json={
+            "surchargeType": "PORT_CONGESTION",
+            "description": "Port Congestion Surcharge - Destination USNYC",
+            "amountUsd": 210,
+            "currency": "USD",
+            "portCode": "USNYC",
+            "portScope": "DESTINATION",
+        },
+    )
+    assert surcharge_response.status_code == 201
+    activate_surcharge_response = test_client.post(
+        f"/admin/surcharge-rules/{surcharge_response.json()['id']}/activate",
+        headers={"X-Actor": "pricing.manager@quotes"},
+    )
+    assert activate_surcharge_response.status_code == 200
+
+    with session_factory() as session:
+        eur_rate = session.scalar(
+            select(ExchangeRate).where(
+                ExchangeRate.base_currency == "USD",
+                ExchangeRate.quote_currency == "EUR",
+            )
+        )
+        assert eur_rate is not None
+        eur_rate.rate = Decimal("0.95")
+        eur_rate.observed_at = datetime(2026, 5, 7, 10, 0, tzinfo=timezone.utc)
+        eur_rate.reference_data_version = "seed-fx-2026-05-07"
+        session.commit()
+
+    reprice_response = test_client.post(
+        f"/quotes/{original_response.json()['id']}/reprice",
+        json={"trigger": "COMMERCIAL_REFRESH"},
+    )
+
+    assert reprice_response.status_code == 201
+    assert reprice_response.json()["id"] != original_response.json()["id"]
+    assert reprice_response.json()["quoteReference"] != original_response.json()["quoteReference"]
+    assert reprice_response.json()["repricedFromQuoteId"] == original_response.json()["id"]
+    assert reprice_response.json()["repricedFromQuoteReference"] == original_response.json()["quoteReference"]
+    assert reprice_response.json()["repricingTrigger"] == "COMMERCIAL_REFRESH"
+    assert reprice_response.json()["totalAmount"] == 1444.0
+    assert reprice_response.json()["varianceSummary"] == {
+        "direction": "HIGHER",
+        "totalAmount": {
+            "original": 1196.0,
+            "repriced": 1444.0,
+            "delta": 248.0,
+            "changed": True,
+        },
+        "sourceTotalAmount": {
+            "original": 1300.0,
+            "repriced": 1520.0,
+            "delta": 220.0,
+            "changed": True,
+        },
+        "baseRate": {
+            "original": 950.0,
+            "repriced": 1110.0,
+            "delta": 160.0,
+            "changed": True,
+        },
+        "surcharges": {
+            "original": 350.0,
+            "repriced": 410.0,
+            "delta": 60.0,
+            "changed": True,
+        },
+        "fx": {
+            "changed": True,
+            "original": _fx_snapshot(currency="EUR", rate=0.92),
+            "repriced": {
+                **_fx_snapshot(currency="EUR", rate=0.95),
+                "observedAt": "2026-05-07T10:00:00+00:00",
+                "referenceDataVersion": "seed-fx-2026-05-07",
+            },
+        },
+        "marketInputs": {
+            "changed": False,
+            "original": {
+                "pricingBasis": "PUBLIC_TARIFF",
+                "marketSource": None,
+                "marketRateSnapshotIds": [],
+                "capacityPressureIndex": None,
+                "utilizationIndex": None,
+                "seasonalityIndex": None,
+            },
+            "repriced": {
+                "pricingBasis": "PUBLIC_TARIFF",
+                "marketSource": None,
+                "marketRateSnapshotIds": [],
+                "capacityPressureIndex": None,
+                "utilizationIndex": None,
+                "seasonalityIndex": None,
+            },
+        },
+        "optimizationInputs": {
+            "changed": False,
+            "original": {
+                "pricingModeHint": "AUTO",
+                "decision": None,
+                "selectedPricingBasis": None,
+                "fallbackPricingBasis": None,
+                "strategyId": None,
+                "strategyName": None,
+                "strategyVersion": None,
+            },
+            "repriced": {
+                "pricingModeHint": "AUTO",
+                "decision": None,
+                "selectedPricingBasis": None,
+                "fallbackPricingBasis": None,
+                "strategyId": None,
+                "strategyName": None,
+                "strategyVersion": None,
+            },
+        },
+    }
+
+    original_quote_response = test_client.get(f"/quotes/{original_response.json()['id']}")
+    assert original_quote_response.status_code == 200
+    assert original_quote_response.json()["totalAmount"] == 1196.0
+    assert "varianceSummary" not in original_quote_response.json()
+
+    explain_response = test_client.get(f"/quotes/{reprice_response.json()['id']}/explain")
+    assert explain_response.status_code == 200
+    assert explain_response.json()["repricedFromQuoteId"] == original_response.json()["id"]
+    assert explain_response.json()["varianceSummary"]["baseRate"]["delta"] == 160.0
+
+    with session_factory() as session:
+        original_quote = session.scalar(select(Quote).where(Quote.id == original_response.json()["id"]))
+        repriced_quote = session.scalar(select(Quote).where(Quote.id == reprice_response.json()["id"]))
+
+    assert original_quote is not None
+    assert repriced_quote is not None
+    assert float(original_quote.total_amount) == 1196.0
+    assert repriced_quote.repriced_from_quote_id == original_quote.id
+    assert repriced_quote.repricing_trigger == "COMMERCIAL_REFRESH"
+    assert repriced_quote.variance_summary["direction"] == "HIGHER"
 
 
 def test_admin_rate_table_draft_can_be_updated_and_activated(client) -> None:
