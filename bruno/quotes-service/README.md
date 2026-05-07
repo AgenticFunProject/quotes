@@ -18,14 +18,18 @@ only the verified dev deployment is included.
 - `Get Quote by ID`
 - `Get Quote by Reference`
 - `Get Quote Bookability`
+- `Approve Pending Quote`
 
 ## Notes
 
 - The create-quote requests use schedule IDs and payloads that match the seeded
   sample data in this repository.
 - `POST /quotes` returns both the stored quote UUID (`id`) and the human-facing
-  `quoteReference`.
+  `quoteReference`, plus the initial `lifecycleState` and any persisted
+  approval metadata.
 - Update the `quoteId` and `quoteReference` environment variables with an
   existing quote before running the lookup and bookability requests.
+- `POST /quotes/{quoteId}/approval-decisions` requires an `X-Actor` header and
+  is intended for quotes currently in `PENDING_APPROVAL`.
 - The service does not currently require authentication, so no secrets are
   stored in the collection.

@@ -133,6 +133,9 @@ def test_create_quote_returns_itemized_quote_and_persists_it(client) -> None:
         "currency": "USD",
         "sourceCurrency": "USD",
         "responseCurrency": "USD",
+        "lifecycleState": "ISSUED",
+        "approvalReasons": [],
+        "approvalDecision": None,
         "fx": _fx_snapshot(),
         "roundingPolicy": "LINE_ITEM_HALF_UP_2DP",
         "lineItems": [
@@ -287,6 +290,9 @@ def test_create_quote_can_return_a_requested_currency_with_fx_provenance(client)
         "currency": "EUR",
         "sourceCurrency": "USD",
         "responseCurrency": "EUR",
+        "lifecycleState": "ISSUED",
+        "approvalReasons": [],
+        "approvalDecision": None,
         "fx": _fx_snapshot(currency="EUR", rate=0.92),
         "roundingPolicy": "LINE_ITEM_HALF_UP_2DP",
         "lineItems": [
@@ -652,6 +658,197 @@ def test_create_quote_market_hint_falls_back_to_contract_when_market_is_unavaila
     assert stored_quote.pricing_basis == PricingBasis.CONTRACT
     assert stored_quote.optimization_trace["decision"] == "MARKET_UNAVAILABLE_FALLBACK"
     assert stored_quote.optimization_trace["fallbackPricingBasis"] == PricingBasis.CONTRACT.value
+
+
+def test_create_quote_holds_market_quote_for_approval_when_market_risk_guardrails_are_exceeded(client) -> None:
+    test_client, session_factory = client
+
+    with session_factory() as session:
+        snapshot = session.scalar(select(MarketRateSnapshot).where(MarketRateSnapshot.id == "market-nlrtm-usnyc-20ft"))
+        assert snapshot is not None
+        snapshot.utilization_index = Decimal("0.94")
+        snapshot.capacity_pressure_index = Decimal("0.88")
+        session.commit()
+
+    response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "pricingModeHint": "MARKET",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["lifecycleState"] == "PENDING_APPROVAL"
+    assert [reason["code"] for reason in response.json()["approvalReasons"]] == [
+        "MARKET_CAPACITY_PRESSURE_THRESHOLD_EXCEEDED",
+        "MARKET_UTILIZATION_THRESHOLD_EXCEEDED",
+    ]
+    assert response.json()["approvalDecision"] is None
+
+    with session_factory() as session:
+        stored_quote = session.scalar(select(Quote).where(Quote.id == response.json()["id"]))
+        created_event = session.scalar(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == response.json()["id"],
+                OutboxEvent.event_type == "quote.created",
+            )
+        )
+
+    assert stored_quote is not None
+    assert stored_quote.lifecycle_state == QuoteLifecycleState.PENDING_APPROVAL
+    assert [reason["code"] for reason in stored_quote.approval_reasons] == [
+        "MARKET_CAPACITY_PRESSURE_THRESHOLD_EXCEEDED",
+        "MARKET_UTILIZATION_THRESHOLD_EXCEEDED",
+    ]
+    assert created_event is not None
+    assert created_event.payload["lifecycleState"] == "PENDING_APPROVAL"
+    assert created_event.payload["approvalDecision"] is None
+
+
+def test_quote_approval_decision_approves_pending_quote_without_repricing(client) -> None:
+    test_client, session_factory = client
+
+    with session_factory() as session:
+        snapshot = session.scalar(select(MarketRateSnapshot).where(MarketRateSnapshot.id == "market-nlrtm-usnyc-20ft"))
+        assert snapshot is not None
+        snapshot.utilization_index = Decimal("0.94")
+        session.commit()
+
+    create_response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "pricingModeHint": "MARKET",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+    quote_id = create_response.json()["id"]
+
+    approval_response = test_client.post(
+        f"/quotes/{quote_id}/approval-decisions",
+        headers={"X-Actor": "pricing.manager@quotes"},
+        json={"decision": "APPROVE", "note": "Market conditions reviewed and accepted."},
+    )
+
+    assert approval_response.status_code == 200
+    assert approval_response.json()["lifecycleState"] == "APPROVED"
+    assert approval_response.json()["approvalDecision"]["decision"] == "APPROVE"
+    assert approval_response.json()["approvalDecision"]["actor"] == "pricing.manager@quotes"
+    assert approval_response.json()["approvalDecision"]["note"] == "Market conditions reviewed and accepted."
+
+    bookability_response = test_client.get(f"/quotes/{quote_id}/bookability")
+
+    assert bookability_response.status_code == 200
+    assert bookability_response.json()["bookable"] is True
+    assert bookability_response.json()["status"] == "ACTIVE"
+
+    with session_factory() as session:
+        stored_quote = session.scalar(select(Quote).where(Quote.id == quote_id))
+        approved_event = session.scalar(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == quote_id,
+                OutboxEvent.event_type == "quote.approved",
+            )
+        )
+
+    assert stored_quote is not None
+    assert stored_quote.lifecycle_state == QuoteLifecycleState.APPROVED
+    assert stored_quote.pricing_provenance["baseRateRules"][0]["marketRateSnapshotId"] == "market-nlrtm-usnyc-20ft"
+    assert approved_event is not None
+    assert approved_event.payload["lifecycleState"] == "APPROVED"
+    assert approved_event.payload["approvalDecision"]["decision"] == "APPROVE"
+
+
+def test_quote_approval_decision_can_reject_pending_quote(client) -> None:
+    test_client, session_factory = client
+
+    with session_factory() as session:
+        snapshot = session.scalar(select(MarketRateSnapshot).where(MarketRateSnapshot.id == "market-nlrtm-usnyc-20ft"))
+        assert snapshot is not None
+        snapshot.utilization_index = Decimal("0.94")
+        session.commit()
+
+    create_response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "pricingModeHint": "MARKET",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+    quote_id = create_response.json()["id"]
+
+    rejection_response = test_client.post(
+        f"/quotes/{quote_id}/approval-decisions",
+        headers={"X-Actor": "pricing.manager@quotes"},
+        json={"decision": "REJECT", "note": "Margin does not support this offer."},
+    )
+
+    assert rejection_response.status_code == 200
+    assert rejection_response.json()["lifecycleState"] == "REJECTED"
+    assert rejection_response.json()["approvalDecision"]["decision"] == "REJECT"
+
+    bookability_response = test_client.get(f"/quotes/{quote_id}/bookability")
+
+    assert bookability_response.status_code == 200
+    assert bookability_response.json() == {
+        "quoteId": create_response.json()["quoteReference"],
+        "bookable": False,
+        "status": "REJECTED",
+        "reason": "APPROVAL_REJECTED",
+        "expired": False,
+        "validUntil": create_response.json()["validUntil"],
+    }
+
+
+def test_quote_approval_decision_requires_actor_header(client) -> None:
+    test_client, session_factory = client
+
+    with session_factory() as session:
+        quote = Quote(
+            quote_reference="QTE-2026-00990",
+            lifecycle_state=QuoteLifecycleState.PENDING_APPROVAL,
+            schedule_id="df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            schedule_snapshot={"scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274"},
+            equipment=[{"type": "20FT", "quantity": 1}],
+            cargo_weight_kg=Decimal("18000.00"),
+            currency="USD",
+            source_currency="USD",
+            pricing_basis=PricingBasis.MARKET,
+            pricing_provenance={"pricingBasis": PricingBasis.MARKET.value, "sourceTotalAmount": 1085.0},
+            approval_reasons=[{"code": "MARKET_UTILIZATION_THRESHOLD_EXCEEDED"}],
+            fx_snapshot=_fx_snapshot(),
+            rounding_policy="LINE_ITEM_HALF_UP_2DP",
+            line_items=[{"description": "Ocean Freight - 20FT x 1", "amount": 1085.0}],
+            total_amount=Decimal("1085.00"),
+        )
+        session.add(quote)
+        session.commit()
+        session.refresh(quote)
+
+    response = test_client.post(f"/quotes/{quote.id}/approval-decisions", json={"decision": "APPROVE"})
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "X-Actor header is required for quote approval decisions"}
+
+
+def test_quote_approval_decision_rejects_non_pending_quotes(client) -> None:
+    test_client, session_factory = client
+    quote = _seed_quote(session_factory)
+
+    response = test_client.post(
+        f"/quotes/{quote.id}/approval-decisions",
+        headers={"X-Actor": "pricing.manager@quotes"},
+        json={"decision": "APPROVE"},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Only pending approval quotes can be decided"}
 
 
 def test_create_quote_auto_strategy_can_select_market(client) -> None:
@@ -1288,6 +1485,8 @@ def _seed_quote(session_factory: sessionmaker[Session]) -> Quote:
             source_currency="USD",
             pricing_basis=PricingBasis.PUBLIC_TARIFF,
             pricing_provenance=_public_tariff_pricing_provenance(),
+            approval_reasons=[],
+            approval_decision={},
             fx_snapshot=_fx_snapshot(),
             rounding_policy="LINE_ITEM_HALF_UP_2DP",
             idempotency_key="booking-request-42",
@@ -1347,6 +1546,8 @@ def _seed_expired_quote(session_factory: sessionmaker[Session]) -> Quote:
                 ],
                 "appliedSurchargeRules": [],
             },
+            approval_reasons=[],
+            approval_decision={},
             fx_snapshot=_fx_snapshot(),
             rounding_policy="LINE_ITEM_HALF_UP_2DP",
             line_items=[{"description": "Ocean Freight - 40FT x 1", "amount": 1400.0}],
@@ -1386,6 +1587,8 @@ def test_get_quote_by_uuid_returns_full_quote(client) -> None:
         "roundingPolicy": "LINE_ITEM_HALF_UP_2DP",
         "pricingBasis": "PUBLIC_TARIFF",
         "pricingProvenance": _public_tariff_pricing_provenance(),
+        "approvalReasons": [],
+        "approvalDecision": None,
         "customerId": None,
         "accountId": None,
         "contractId": None,
@@ -1428,6 +1631,8 @@ def test_get_quote_by_reference_returns_full_quote(client) -> None:
         "roundingPolicy": "LINE_ITEM_HALF_UP_2DP",
         "pricingBasis": "PUBLIC_TARIFF",
         "pricingProvenance": _public_tariff_pricing_provenance(),
+        "approvalReasons": [],
+        "approvalDecision": None,
         "customerId": None,
         "accountId": None,
         "contractId": None,
@@ -1470,6 +1675,8 @@ def test_get_quote_by_quote_reference_returns_full_quote(client) -> None:
         "roundingPolicy": "LINE_ITEM_HALF_UP_2DP",
         "pricingBasis": "PUBLIC_TARIFF",
         "pricingProvenance": _public_tariff_pricing_provenance(),
+        "approvalReasons": [],
+        "approvalDecision": None,
         "customerId": None,
         "accountId": None,
         "contractId": None,
@@ -1716,6 +1923,9 @@ def test_scenario_peak_season_quote_returns_the_documented_commercial_payload(cl
         "currency",
         "sourceCurrency",
         "responseCurrency",
+        "lifecycleState",
+        "approvalReasons",
+        "approvalDecision",
         "fx",
         "roundingPolicy",
         "lineItems",

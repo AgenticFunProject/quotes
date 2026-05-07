@@ -31,6 +31,9 @@ class PortScope(str, Enum):
 
 class QuoteLifecycleState(str, Enum):
     ISSUED = "ISSUED"
+    PENDING_APPROVAL = "PENDING_APPROVAL"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
     BOOKED = "BOOKED"
     EXPIRED = "EXPIRED"
     VOID = "VOID"
@@ -106,6 +109,8 @@ class Quote(Base):
     market_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
     pricing_provenance: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     optimization_trace: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    approval_reasons: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
+    approval_decision: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     fx_snapshot: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     rounding_policy: Mapped[str] = mapped_column(String(64), default="LINE_ITEM_HALF_UP_2DP")
     idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True, unique=True, index=True)

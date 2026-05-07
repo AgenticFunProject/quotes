@@ -125,6 +125,8 @@ def test_models_persist_records() -> None:
                 "appliedSurchargeRules": [],
             },
             optimization_trace={"decision": "STRATEGY_FALLBACK"},
+            approval_reasons=[{"code": "MARKET_UTILIZATION_THRESHOLD_EXCEEDED"}],
+            approval_decision={"decision": "APPROVE", "actor": "pricing.manager@quotes"},
             idempotency_key="request-123",
             line_items=[{"description": "Ocean Freight", "amount": 1800.0}],
             total_amount=Decimal("1800.00"),
@@ -219,6 +221,8 @@ def test_models_persist_records() -> None:
     assert stored_quote.customer_id == "cust-acme"
     assert stored_quote.pricing_provenance["referenceDataVersion"] == REFERENCE_DATA_VERSION
     assert stored_quote.optimization_trace["decision"] == "STRATEGY_FALLBACK"
+    assert stored_quote.approval_reasons == [{"code": "MARKET_UTILIZATION_THRESHOLD_EXCEEDED"}]
+    assert stored_quote.approval_decision["decision"] == "APPROVE"
     assert stored_quote.idempotency_key == "request-123"
     assert session.query(CommercialChangeEvent).one().action == CommercialChangeAction.CREATED
     assert stored_event.event_type == "quote.created"
@@ -275,6 +279,8 @@ def test_init_db_backfills_pricing_provenance_column_for_existing_sqlite_quotes_
     assert "market_source" in quote_columns
     assert "pricing_provenance" in quote_columns
     assert "optimization_trace" in quote_columns
+    assert "approval_reasons" in quote_columns
+    assert "approval_decision" in quote_columns
     assert "source_currency" in quote_columns
     assert "fx_snapshot" in quote_columns
     assert "rounding_policy" in quote_columns

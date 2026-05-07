@@ -21,18 +21,27 @@ from app.surcharges import EquipmentSelection, SurchargeLineItem, calculate_surc
 _MONEY_PRECISION = Decimal("0.01")
 _QUOTE_STATUS_ACTIVE = "ACTIVE"
 _QUOTE_STATUS_EXPIRED = "EXPIRED"
+_QUOTE_STATUS_PENDING_APPROVAL = "PENDING_APPROVAL"
+_QUOTE_STATUS_REJECTED = "REJECTED"
 _BOOKABILITY_REASON_OPEN = "VALIDITY_WINDOW_OPEN"
 _BOOKABILITY_REASON_EXPIRED = "VALIDITY_WINDOW_EXPIRED"
+_BOOKABILITY_REASON_APPROVAL_PENDING = "APPROVAL_PENDING"
+_BOOKABILITY_REASON_APPROVAL_REJECTED = "APPROVAL_REJECTED"
 _OUTBOX_AGGREGATE_QUOTE = "quote"
 _OUTBOX_AGGREGATE_RATE_TABLE = "rate_table"
 _OUTBOX_AGGREGATE_SURCHARGE_RULE = "surcharge_rule"
 _QUOTE_CREATED_EVENT = "quote.created"
 _QUOTE_EXPIRED_EVENT = "quote.expired"
+_QUOTE_APPROVED_EVENT = "quote.approved"
+_QUOTE_REJECTED_EVENT = "quote.rejected"
 _RATE_UPDATED_EVENT = "rate.updated"
 _SURCHARGE_UPDATED_EVENT = "surcharge.updated"
 _OUTBOX_EVENT_VERSION = 1
 _SOURCE_CURRENCY = "USD"
 _ROUNDING_POLICY = "LINE_ITEM_HALF_UP_2DP"
+_MARKET_APPROVAL_CAPACITY_PRESSURE_THRESHOLD = 0.85
+_MARKET_APPROVAL_UTILIZATION_THRESHOLD = 0.9
+_MARKET_APPROVAL_SEASONALITY_THRESHOLD = 0.75
 
 
 @dataclass(frozen=True)
@@ -50,6 +59,11 @@ class PricingModeHint(str, Enum):
     PUBLIC_TARIFF = "PUBLIC_TARIFF"
     CONTRACT = "CONTRACT"
     MARKET = "MARKET"
+
+
+class ApprovalDecision(str, Enum):
+    APPROVE = "APPROVE"
+    REJECT = "REJECT"
 
 
 @dataclass(frozen=True)
@@ -193,6 +207,13 @@ class ImpactAnalysisRequest(BaseModel):
         return self
 
 
+class QuoteApprovalDecisionRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    decision: ApprovalDecision
+    note: str | None = Field(default=None, min_length=1)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
@@ -240,6 +261,20 @@ def _require_actor(actor: str | None = Header(default=None, alias="X-Actor")) ->
     return actor.strip()
 
 
+def _require_quote_approval_actor(actor: str | None = Header(default=None, alias="X-Actor")) -> str:
+    if actor is None or not actor.strip():
+        raise HTTPException(status_code=400, detail="X-Actor header is required for quote approval decisions")
+
+    return actor.strip()
+
+
+def _quote_approval_decision(quote: Quote) -> dict[str, object] | None:
+    if not quote.approval_decision:
+        return None
+
+    return quote.approval_decision
+
+
 def _serialize_quote(quote: Quote) -> dict[str, object]:
     source_total_amount = _quote_source_total_amount(quote)
     return {
@@ -257,6 +292,8 @@ def _serialize_quote(quote: Quote) -> dict[str, object]:
         "roundingPolicy": _quote_rounding_policy(quote),
         "pricingBasis": quote.pricing_basis.value,
         "pricingProvenance": quote.pricing_provenance,
+        "approvalReasons": quote.approval_reasons,
+        "approvalDecision": _quote_approval_decision(quote),
         "customerId": quote.customer_id,
         "accountId": quote.account_id,
         "contractId": quote.contract_id,
@@ -284,6 +321,9 @@ def _serialize_created_quote(quote: Quote) -> dict[str, object]:
         "currency": quote.currency,
         "sourceCurrency": quote.source_currency,
         "responseCurrency": quote.currency,
+        "lifecycleState": quote.lifecycle_state.value,
+        "approvalReasons": quote.approval_reasons,
+        "approvalDecision": _quote_approval_decision(quote),
         "fx": _quote_fx_snapshot(quote),
         "roundingPolicy": _quote_rounding_policy(quote),
         "lineItems": [
@@ -318,6 +358,8 @@ def _build_quote_event_payload(quote: Quote) -> dict[str, object]:
         "contractId": quote.contract_id,
         "pricingBasis": quote.pricing_basis.value,
         "pricingProvenance": quote.pricing_provenance,
+        "approvalReasons": quote.approval_reasons,
+        "approvalDecision": _quote_approval_decision(quote),
         "lineItems": quote.line_items,
         "sourceTotalAmount": source_total_amount,
         "totalAmount": _serialize_decimal(quote.total_amount),
@@ -439,7 +481,12 @@ def _quote_is_expired(quote: Quote, *, now: datetime | None = None) -> bool:
 
 
 def _sync_quote_lifecycle(quote: Quote, db: Session) -> Quote:
-    if quote.lifecycle_state != QuoteLifecycleState.ISSUED:
+    if quote.lifecycle_state in {
+        QuoteLifecycleState.BOOKED,
+        QuoteLifecycleState.EXPIRED,
+        QuoteLifecycleState.REJECTED,
+        QuoteLifecycleState.VOID,
+    }:
         return quote
 
     if not _quote_is_expired(quote):
@@ -454,6 +501,26 @@ def _sync_quote_lifecycle(quote: Quote, db: Session) -> Quote:
 
 
 def _serialize_bookability(quote: Quote) -> dict[str, object]:
+    if quote.lifecycle_state == QuoteLifecycleState.PENDING_APPROVAL:
+        return {
+            "quoteId": quote.quote_reference,
+            "bookable": False,
+            "status": _QUOTE_STATUS_PENDING_APPROVAL,
+            "reason": _BOOKABILITY_REASON_APPROVAL_PENDING,
+            "expired": False,
+            "validUntil": quote.valid_until.isoformat(),
+        }
+
+    if quote.lifecycle_state == QuoteLifecycleState.REJECTED:
+        return {
+            "quoteId": quote.quote_reference,
+            "bookable": False,
+            "status": _QUOTE_STATUS_REJECTED,
+            "reason": _BOOKABILITY_REASON_APPROVAL_REJECTED,
+            "expired": False,
+            "validUntil": quote.valid_until.isoformat(),
+        }
+
     expired = quote.lifecycle_state == QuoteLifecycleState.EXPIRED or _quote_is_expired(quote)
     return {
         "quoteId": quote.quote_reference,
@@ -831,7 +898,11 @@ def _record_commercial_change(
 
 
 def _quote_lifecycle_state_for_reporting(quote: Quote) -> QuoteLifecycleState:
-    if quote.lifecycle_state == QuoteLifecycleState.ISSUED and _quote_is_expired(quote):
+    if quote.lifecycle_state in {
+        QuoteLifecycleState.ISSUED,
+        QuoteLifecycleState.PENDING_APPROVAL,
+        QuoteLifecycleState.APPROVED,
+    } and _quote_is_expired(quote):
         return QuoteLifecycleState.EXPIRED
 
     return quote.lifecycle_state
@@ -839,7 +910,7 @@ def _quote_lifecycle_state_for_reporting(quote: Quote) -> QuoteLifecycleState:
 
 def _serialize_impacted_quote(quote: Quote) -> dict[str, object]:
     lifecycle_state = _quote_lifecycle_state_for_reporting(quote)
-    bookable = lifecycle_state == QuoteLifecycleState.ISSUED and not _quote_is_expired(quote)
+    bookable = lifecycle_state in {QuoteLifecycleState.ISSUED, QuoteLifecycleState.APPROVED} and not _quote_is_expired(quote)
     return {
         "quoteId": quote.id,
         "quoteReference": quote.quote_reference,
@@ -862,6 +933,50 @@ def _build_impact_summary(payload: ImpactAnalysisRequest, quotes: list[Quote]) -
         "affectedCount": len(affected_quotes),
         "affectedQuotes": affected_quotes,
     }
+
+
+def _build_market_approval_reasons(pricing: ResolvedPricing) -> list[dict[str, object]]:
+    if pricing.pricing_basis != PricingBasis.MARKET:
+        return []
+
+    reasons: list[dict[str, object]] = []
+    for equipment_type, snapshot in pricing.rates_by_type.items():
+        metrics = [
+            (
+                "MARKET_CAPACITY_PRESSURE_THRESHOLD_EXCEEDED",
+                float(snapshot.capacity_pressure_index),
+                _MARKET_APPROVAL_CAPACITY_PRESSURE_THRESHOLD,
+                "capacityPressureIndex",
+            ),
+            (
+                "MARKET_UTILIZATION_THRESHOLD_EXCEEDED",
+                float(snapshot.utilization_index),
+                _MARKET_APPROVAL_UTILIZATION_THRESHOLD,
+                "utilizationIndex",
+            ),
+            (
+                "MARKET_SEASONALITY_THRESHOLD_EXCEEDED",
+                float(snapshot.seasonality_index),
+                _MARKET_APPROVAL_SEASONALITY_THRESHOLD,
+                "seasonalityIndex",
+            ),
+        ]
+        for code, observed_value, threshold, metric in metrics:
+            if observed_value < threshold:
+                continue
+            reasons.append(
+                {
+                    "code": code,
+                    "message": f"{metric} exceeded the approval threshold for {equipment_type.value}",
+                    "equipmentType": equipment_type.value,
+                    "marketRateSnapshotId": snapshot.id,
+                    "metric": metric,
+                    "observedValue": observed_value,
+                    "threshold": threshold,
+                }
+            )
+
+    return reasons
 
 
 def _deactivate_superseded_rate_tables(rate_table: RateTable, *, actor: str, changed_at: datetime, db: Session) -> None:
@@ -1346,6 +1461,7 @@ def create_quote(
         public_rates_by_type=rates_by_type,
         surcharge_rules=surcharge_rules,
     )
+    approval_reasons = _build_market_approval_reasons(pricing)
 
     equipment_payload = [{"type": item.type.value, "quantity": item.quantity} for item in payload.equipment]
     source_line_items, surcharge_line_items, source_total_amount = _build_source_quote_line_items(
@@ -1362,6 +1478,7 @@ def create_quote(
 
     quote = Quote(
         quote_reference=_generate_quote_reference(db),
+        lifecycle_state=QuoteLifecycleState.PENDING_APPROVAL if approval_reasons else QuoteLifecycleState.ISSUED,
         schedule_id=payload.schedule_id,
         schedule_snapshot=schedule_snapshot,
         equipment=equipment_payload,
@@ -1381,6 +1498,7 @@ def create_quote(
             fx_rate=fx_rate,
         ),
         optimization_trace=pricing.optimization_trace,
+        approval_reasons=approval_reasons,
         fx_snapshot=_serialize_fx_snapshot(fx_rate),
         rounding_policy=_ROUNDING_POLICY,
         line_items=line_items,
@@ -1393,6 +1511,39 @@ def create_quote(
     db.refresh(quote)
 
     return _serialize_created_quote(quote)
+
+
+@app.post("/quotes/{quote_id}/approval-decisions")
+def create_quote_approval_decision(
+    quote_id: str,
+    payload: QuoteApprovalDecisionRequest,
+    actor: str = Depends(_require_quote_approval_actor),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    quote = _sync_quote_lifecycle(_get_quote_or_404(quote_id, db), db)
+    if quote.lifecycle_state != QuoteLifecycleState.PENDING_APPROVAL:
+        raise HTTPException(status_code=409, detail="Only pending approval quotes can be decided")
+
+    decided_at = _normalize_utc(datetime.now(timezone.utc))
+    quote.lifecycle_state = (
+        QuoteLifecycleState.APPROVED if payload.decision == ApprovalDecision.APPROVE else QuoteLifecycleState.REJECTED
+    )
+    quote.approval_decision = {
+        "decision": payload.decision.value,
+        "actor": actor,
+        "decidedAt": decided_at.isoformat(),
+        "note": payload.note,
+    }
+    db.add(quote)
+    _enqueue_quote_event(
+        db,
+        quote=quote,
+        event_type=_QUOTE_APPROVED_EVENT if payload.decision == ApprovalDecision.APPROVE else _QUOTE_REJECTED_EVENT,
+        occurred_at=decided_at,
+    )
+    db.commit()
+    db.refresh(quote)
+    return _serialize_quote(quote)
 
 
 @app.post("/admin/rate-tables", status_code=201)

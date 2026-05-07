@@ -1,0 +1,33 @@
+meta {
+  name: Approve Pending Quote
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/quotes/{{quoteId}}/approval-decisions
+  body: json
+}
+
+headers {
+  content-type: application/json
+  X-Actor: pricing.manager@quotes
+}
+
+body {
+  {
+    "decision": "APPROVE",
+    "note": "Commercial review complete."
+  }
+}
+
+tests {
+  test("status is 200", function() {
+    expect(res.status).to.equal(200);
+  });
+
+  test("returns approval state", function() {
+    expect(res.body.lifecycleState).to.equal("APPROVED");
+    expect(res.body.approvalDecision.actor).to.equal("pricing.manager@quotes");
+  });
+}
