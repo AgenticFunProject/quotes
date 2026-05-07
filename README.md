@@ -42,7 +42,8 @@ and seeds reference rates and surcharge rules used by `POST /quotes`.
 - `GET /health` returns a simple readiness payload.
 - `POST /quotes` validates the request, resolves a seeded schedule, applies base
   freight plus surcharge rules, persists the quote, and returns a commercial
-  response with line items and a 7-day validity window.
+  response with line items and a validity window derived from the matched quote
+  validity policy.
 - `GET /quotes/{quote_id}` returns the stored quote by either the internal UUID
   or the public `quoteReference` returned from `POST /quotes`, including the
   stored schedule snapshot, pricing basis, and pricing provenance used to
@@ -74,6 +75,9 @@ and seeds reference rates and surcharge rules used by `POST /quotes`.
 - `pricingProvenance.appliedSurchargeRules` captures the exact surcharge rules
   that contributed to the quote total, including each rule identifier,
   surcharge type, and effective qualifiers.
+- `pricingProvenance.validityPolicy` captures the stored validity-policy
+  snapshot used to derive `validUntil`, including the matched policy identifier,
+  selection context, and any market-signal inputs.
 - A known schedule can still return `400` from `POST /quotes` when the seeded
   rate table does not contain an effective row for the selected route,
   departure date, and equipment combination.

@@ -6,7 +6,7 @@ from decimal import Decimal
 from sqlalchemy import select
 
 from app.db import SessionLocal
-from app.models import Contract, ContractMatchType, ContractRateRule, EquipmentType, ExchangeRate, MarketRateSnapshot, PortScope, PricingStrategyVersion, RateTable, SurchargeRule, SurchargeType
+from app.models import Contract, ContractMatchType, ContractRateRule, EquipmentType, ExchangeRate, MarketRateSnapshot, PortScope, PricingBasis, PricingStrategyVersion, QuoteValidityPolicy, RateTable, SurchargeRule, SurchargeType
 
 
 REFERENCE_DATA_VERSION = "seed-2026-04-01"
@@ -332,6 +332,65 @@ PRICING_STRATEGY_VERSION_ROWS = (
     },
 )
 
+QUOTE_VALIDITY_POLICY_ROWS = (
+    {
+        "id": "validity-default-7d",
+        "policy_name": "Default seven-day validity",
+        "customer_id": None,
+        "account_id": None,
+        "contract_id": None,
+        "pricing_basis": None,
+        "min_capacity_pressure_index": None,
+        "min_utilization_index": None,
+        "min_seasonality_index": None,
+        "validity_hours": 168,
+        "priority": 0,
+        "is_active": True,
+    },
+    {
+        "id": "validity-customer-acme-10d",
+        "policy_name": "ACME customer validity",
+        "customer_id": "cust-acme",
+        "account_id": None,
+        "contract_id": None,
+        "pricing_basis": None,
+        "min_capacity_pressure_index": None,
+        "min_utilization_index": None,
+        "min_seasonality_index": None,
+        "validity_hours": 240,
+        "priority": 10,
+        "is_active": True,
+    },
+    {
+        "id": "validity-account-acme-premium-14d",
+        "policy_name": "ACME premium account validity",
+        "customer_id": "cust-acme",
+        "account_id": "acct-acme-premium",
+        "contract_id": None,
+        "pricing_basis": None,
+        "min_capacity_pressure_index": None,
+        "min_utilization_index": None,
+        "min_seasonality_index": None,
+        "validity_hours": 336,
+        "priority": 20,
+        "is_active": True,
+    },
+    {
+        "id": "validity-volatile-market-12h",
+        "policy_name": "High-volatility market validity",
+        "customer_id": None,
+        "account_id": None,
+        "contract_id": None,
+        "pricing_basis": PricingBasis.MARKET,
+        "min_capacity_pressure_index": Decimal("0.60"),
+        "min_utilization_index": None,
+        "min_seasonality_index": None,
+        "validity_hours": 12,
+        "priority": 30,
+        "is_active": True,
+    },
+)
+
 
 def seed_reference_data() -> None:
     with SessionLocal() as session:
@@ -342,8 +401,9 @@ def seed_reference_data() -> None:
         has_exchange_rate_rows = session.scalar(select(ExchangeRate.id).limit(1)) is not None
         has_market_rate_rows = session.scalar(select(MarketRateSnapshot.id).limit(1)) is not None
         has_pricing_strategy_rows = session.scalar(select(PricingStrategyVersion.id).limit(1)) is not None
+        has_validity_policy_rows = session.scalar(select(QuoteValidityPolicy.id).limit(1)) is not None
 
-        if has_rate_rows and has_surcharge_rows and has_contract_rows and has_contract_rate_rows and has_exchange_rate_rows and has_market_rate_rows and has_pricing_strategy_rows:
+        if has_rate_rows and has_surcharge_rows and has_contract_rows and has_contract_rate_rows and has_exchange_rate_rows and has_market_rate_rows and has_pricing_strategy_rows and has_validity_policy_rows:
             return
 
         if not has_rate_rows:
@@ -366,5 +426,8 @@ def seed_reference_data() -> None:
 
         if not has_pricing_strategy_rows:
             session.add_all(PricingStrategyVersion(**row) for row in PRICING_STRATEGY_VERSION_ROWS)
+
+        if not has_validity_policy_rows:
+            session.add_all(QuoteValidityPolicy(**row) for row in QUOTE_VALIDITY_POLICY_ROWS)
 
         session.commit()

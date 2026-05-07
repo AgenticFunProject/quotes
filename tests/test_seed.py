@@ -6,8 +6,8 @@ import pytest
 
 from app import db
 from app.db import Base
-from app.models import Contract, ContractRateRule, EquipmentType, ExchangeRate, MarketRateSnapshot, PricingStrategyVersion, RateTable, SurchargeRule, SurchargeType
-from app.seed import CONTRACT_RATE_RULE_ROWS, CONTRACT_ROWS, EXCHANGE_RATE_ROWS, MARKET_RATE_SNAPSHOT_ROWS, PRICING_STRATEGY_VERSION_ROWS, RATE_TABLE_ROWS, SURCHARGE_RULE_ROWS, seed_reference_data
+from app.models import Contract, ContractRateRule, EquipmentType, ExchangeRate, MarketRateSnapshot, PricingStrategyVersion, QuoteValidityPolicy, RateTable, SurchargeRule, SurchargeType
+from app.seed import CONTRACT_RATE_RULE_ROWS, CONTRACT_ROWS, EXCHANGE_RATE_ROWS, MARKET_RATE_SNAPSHOT_ROWS, PRICING_STRATEGY_VERSION_ROWS, QUOTE_VALIDITY_POLICY_ROWS, RATE_TABLE_ROWS, SURCHARGE_RULE_ROWS, seed_reference_data
 
 
 @pytest.fixture()
@@ -40,6 +40,7 @@ def test_seed_reference_data_populates_rate_tables_and_surcharges(sqlite_databas
         exchange_rate_rows = session.query(ExchangeRate).order_by(ExchangeRate.quote_currency).all()
         market_rate_rows = session.query(MarketRateSnapshot).order_by(MarketRateSnapshot.id).all()
         strategy_rows = session.query(PricingStrategyVersion).order_by(PricingStrategyVersion.id).all()
+        validity_policy_rows = session.query(QuoteValidityPolicy).order_by(QuoteValidityPolicy.id).all()
 
     assert len(rate_rows) == len(RATE_TABLE_ROWS)
     assert len(surcharge_rows) == len(SURCHARGE_RULE_ROWS)
@@ -48,6 +49,7 @@ def test_seed_reference_data_populates_rate_tables_and_surcharges(sqlite_databas
     assert len(exchange_rate_rows) == len(EXCHANGE_RATE_ROWS)
     assert len(market_rate_rows) == len(MARKET_RATE_SNAPSHOT_ROWS)
     assert len(strategy_rows) == len(PRICING_STRATEGY_VERSION_ROWS)
+    assert len(validity_policy_rows) == len(QUOTE_VALIDITY_POLICY_ROWS)
     assert {row.equipment_type for row in rate_rows} == set(EquipmentType)
     assert all(row.version == 1 for row in rate_rows)
     assert all(row.is_active for row in rate_rows)
@@ -73,3 +75,4 @@ def test_seed_reference_data_is_idempotent(sqlite_database) -> None:
         assert session.query(ExchangeRate).count() == len(EXCHANGE_RATE_ROWS)
         assert session.query(MarketRateSnapshot).count() == len(MARKET_RATE_SNAPSHOT_ROWS)
         assert session.query(PricingStrategyVersion).count() == len(PRICING_STRATEGY_VERSION_ROWS)
+        assert session.query(QuoteValidityPolicy).count() == len(QUOTE_VALIDITY_POLICY_ROWS)

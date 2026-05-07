@@ -75,6 +75,31 @@ def _default_valid_until() -> datetime:
     return _utc_now() + timedelta(days=7)
 
 
+class QuoteValidityPolicy(Base):
+    __tablename__ = "quote_validity_policies"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    policy_name: Mapped[str] = mapped_column(String(128))
+    customer_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    account_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    contract_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    pricing_basis: Mapped[PricingBasis | None] = mapped_column(
+        SqlEnum(
+            PricingBasis,
+            native_enum=False,
+            values_callable=lambda members: [member.value for member in members],
+        ),
+        nullable=True,
+        index=True,
+    )
+    min_capacity_pressure_index: Mapped[Decimal | None] = mapped_column(Numeric(4, 2), nullable=True)
+    min_utilization_index: Mapped[Decimal | None] = mapped_column(Numeric(4, 2), nullable=True)
+    min_seasonality_index: Mapped[Decimal | None] = mapped_column(Numeric(4, 2), nullable=True)
+    validity_hours: Mapped[int] = mapped_column(Integer)
+    priority: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+
+
 class Quote(Base):
     __tablename__ = "quotes"
 

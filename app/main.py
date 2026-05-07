@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from enum import Enum
 
@@ -12,7 +12,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db import get_db, init_db
-from app.models import CommercialChangeAction, CommercialChangeEvent, CommercialChangeResourceType, Contract, ContractMatchType, ContractRateRule, EquipmentType, ExchangeRate, ImpactAnalysisChangeType, ImpactAnalysisRun, MarketRateSnapshot, OutboxConsumerCheckpoint, OutboxEvent, PortScope, PricingBasis, PricingStrategyVersion, Quote, QuoteLifecycleState, RateTable, SurchargeRule, SurchargeType
+from app.models import CommercialChangeAction, CommercialChangeEvent, CommercialChangeResourceType, Contract, ContractMatchType, ContractRateRule, EquipmentType, ExchangeRate, ImpactAnalysisChangeType, ImpactAnalysisRun, MarketRateSnapshot, OutboxConsumerCheckpoint, OutboxEvent, PortScope, PricingBasis, PricingStrategyVersion, Quote, QuoteLifecycleState, QuoteValidityPolicy, RateTable, SurchargeRule, SurchargeType
 from app.seed import REFERENCE_DATA_VERSION, seed_reference_data
 from app.schedules import Schedule, ScheduleProvider, get_schedule_provider
 from app.surcharges import EquipmentSelection, SurchargeLineItem, calculate_surcharges, total_surcharges
@@ -51,7 +51,14 @@ class ResolvedPricing:
     surcharge_line_items: list[SurchargeLineItem]
     contract: Contract | None = None
     market_source: str | None = None
+    market_signals: dict[str, float] = field(default_factory=dict)
     optimization_trace: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ResolvedQuoteValidity:
+    valid_until: datetime
+    snapshot: dict[str, object]
 
 
 class PricingModeHint(str, Enum):
@@ -1076,6 +1083,7 @@ def _resolve_contract_pricing(
             rates_by_type=contract_rates_by_type,
             surcharge_line_items=_waive_surcharges(public_surcharge_line_items, contract.waived_surcharge_types),
             contract=contract,
+            market_signals={},
         )
 
     return None
@@ -1176,6 +1184,7 @@ def _resolve_pricing(
         pricing_basis=PricingBasis.PUBLIC_TARIFF,
         rates_by_type=public_rates_by_type,
         surcharge_line_items=public_surcharge_line_items,
+        market_signals={},
     )
     contract_pricing = _resolve_contract_pricing(
         db=db,
@@ -1218,6 +1227,7 @@ def _resolve_pricing(
             surcharge_line_items=pricing.surcharge_line_items,
             contract=pricing.contract,
             market_source=pricing.market_source,
+            market_signals=pricing.market_signals,
             optimization_trace={}
             if not include_trace
             else {**trace, "decision": decision, "selectedPricingBasis": pricing.pricing_basis.value},
@@ -1239,6 +1249,7 @@ def _resolve_pricing(
         rates_by_type=market_rates_by_type,
         surcharge_line_items=public_surcharge_line_items,
         market_source=next(iter(market_rates_by_type.values())).source_name,
+        market_signals=metrics,
     )
 
     if hint == PricingModeHint.MARKET:
@@ -1248,6 +1259,101 @@ def _resolve_pricing(
         return with_trace(market_pricing, decision="STRATEGY_SELECTED_MARKET", include_trace=True)
 
     return with_trace(default_fallback, decision="STRATEGY_FALLBACK", include_trace=False)
+
+
+def _validity_policy_market_specificity(policy: QuoteValidityPolicy) -> int:
+    return sum(
+        threshold is not None
+        for threshold in (
+            policy.min_capacity_pressure_index,
+            policy.min_utilization_index,
+            policy.min_seasonality_index,
+        )
+    )
+
+
+def _validity_policy_sort_key(policy: QuoteValidityPolicy) -> tuple[int, int, int, int, int, int, str]:
+    return (
+        1 if policy.contract_id is not None else 0,
+        1 if policy.account_id is not None else 0,
+        1 if policy.customer_id is not None else 0,
+        1 if policy.pricing_basis is not None else 0,
+        _validity_policy_market_specificity(policy),
+        policy.priority,
+        policy.id,
+    )
+
+
+def _validity_policy_matches(
+    policy: QuoteValidityPolicy,
+    *,
+    payload: CreateQuoteRequest,
+    pricing: ResolvedPricing,
+) -> bool:
+    if policy.customer_id is not None and policy.customer_id != payload.customer_id:
+        return False
+    if policy.account_id is not None and policy.account_id != payload.account_id:
+        return False
+    if policy.contract_id is not None and policy.contract_id != (None if pricing.contract is None else pricing.contract.id):
+        return False
+    if policy.pricing_basis is not None and policy.pricing_basis != pricing.pricing_basis:
+        return False
+
+    capacity_pressure_index = pricing.market_signals.get("capacityPressureIndex", 0.0)
+    utilization_index = pricing.market_signals.get("utilizationIndex", 0.0)
+    seasonality_index = pricing.market_signals.get("seasonalityIndex", 0.0)
+
+    if policy.min_capacity_pressure_index is not None and capacity_pressure_index < float(policy.min_capacity_pressure_index):
+        return False
+    if policy.min_utilization_index is not None and utilization_index < float(policy.min_utilization_index):
+        return False
+    if policy.min_seasonality_index is not None and seasonality_index < float(policy.min_seasonality_index):
+        return False
+
+    return True
+
+
+def _resolve_quote_validity(
+    *,
+    db: Session,
+    payload: CreateQuoteRequest,
+    pricing: ResolvedPricing,
+    created_at: datetime,
+) -> ResolvedQuoteValidity:
+    policies = db.scalars(
+        select(QuoteValidityPolicy)
+        .where(QuoteValidityPolicy.is_active.is_(True))
+        .order_by(QuoteValidityPolicy.priority.desc(), QuoteValidityPolicy.id.asc())
+    ).all()
+    matched_policies = [policy for policy in policies if _validity_policy_matches(policy, payload=payload, pricing=pricing)]
+    if not matched_policies:
+        raise HTTPException(status_code=500, detail="No quote validity policy available")
+    selected_policy = max(matched_policies, key=_validity_policy_sort_key)
+
+    return ResolvedQuoteValidity(
+        valid_until=created_at + timedelta(hours=selected_policy.validity_hours),
+        snapshot={
+            "policyId": selected_policy.id,
+            "policyName": selected_policy.policy_name,
+            "validityHours": selected_policy.validity_hours,
+            "matchedOn": {
+                "customerId": payload.customer_id if selected_policy.customer_id is not None else None,
+                "accountId": payload.account_id if selected_policy.account_id is not None else None,
+                "contractId": None if selected_policy.contract_id is None or pricing.contract is None else pricing.contract.id,
+                "pricingBasis": pricing.pricing_basis.value if selected_policy.pricing_basis is not None else None,
+                "marketSignals": None
+                if _validity_policy_market_specificity(selected_policy) == 0
+                else pricing.market_signals,
+            },
+            "selectionContext": {
+                "customerId": payload.customer_id,
+                "accountId": payload.account_id,
+                "contractId": None if pricing.contract is None else pricing.contract.id,
+                "pricingBasis": pricing.pricing_basis.value,
+                "marketSignals": pricing.market_signals,
+            },
+        },
+    )
 
 
 def _serialize_rate_coverage(
@@ -1296,6 +1402,7 @@ def _build_pricing_provenance(
     surcharge_line_items: list[SurchargeLineItem],
     source_total_amount: Decimal,
     fx_rate: ResolvedFxRate,
+    quote_validity: ResolvedQuoteValidity,
 ) -> dict[str, object]:
     base_rate_rules: list[dict[str, object]] = []
     for item in payload.equipment:
@@ -1364,6 +1471,7 @@ def _build_pricing_provenance(
             }
             for item in surcharge_line_items
         ],
+        "validityPolicy": quote_validity.snapshot,
     }
 
     if pricing.optimization_trace:
@@ -1461,6 +1569,13 @@ def create_quote(
         public_rates_by_type=rates_by_type,
         surcharge_rules=surcharge_rules,
     )
+    created_at = _normalize_utc(datetime.now(timezone.utc))
+    quote_validity = _resolve_quote_validity(
+        db=db,
+        payload=payload,
+        pricing=pricing,
+        created_at=created_at,
+    )
     approval_reasons = _build_market_approval_reasons(pricing)
 
     equipment_payload = [{"type": item.type.value, "quantity": item.quantity} for item in payload.equipment]
@@ -1496,6 +1611,7 @@ def create_quote(
             surcharge_line_items=surcharge_line_items,
             source_total_amount=source_total_amount,
             fx_rate=fx_rate,
+            quote_validity=quote_validity,
         ),
         optimization_trace=pricing.optimization_trace,
         approval_reasons=approval_reasons,
@@ -1503,6 +1619,8 @@ def create_quote(
         rounding_policy=_ROUNDING_POLICY,
         line_items=line_items,
         total_amount=total_amount,
+        valid_until=quote_validity.valid_until,
+        created_at=created_at,
     )
     db.add(quote)
     db.flush()
@@ -1947,6 +2065,12 @@ def preview_quote(
         public_rates_by_type=preview_rates_by_type,
         surcharge_rules=surcharge_rules,
     )
+    quote_validity = _resolve_quote_validity(
+        db=db,
+        payload=payload,
+        pricing=pricing,
+        created_at=_normalize_utc(datetime.now(timezone.utc)),
+    )
     source_line_items, surcharge_line_items, source_total_amount = _build_source_quote_line_items(
         payload=payload,
         pricing=pricing,
@@ -1966,6 +2090,7 @@ def preview_quote(
             surcharge_line_items=surcharge_line_items,
             source_total_amount=source_total_amount,
             fx_rate=fx_rate,
+            quote_validity=quote_validity,
         ),
         "lineItems": line_items,
         "sourceTotalAmount": _serialize_decimal(source_total_amount),

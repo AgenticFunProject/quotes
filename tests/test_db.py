@@ -48,6 +48,7 @@ def test_models_create_sqlite_tables() -> None:
         "outbox_events",
         "outbox_consumer_checkpoints",
         "pricing_strategy_versions",
+        "quote_validity_policies",
         "quotes",
         "rate_tables",
         "surcharge_rules",

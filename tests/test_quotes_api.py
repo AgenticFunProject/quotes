@@ -96,6 +96,25 @@ def _public_tariff_pricing_provenance() -> dict[str, object]:
                 "validTo": None,
             }
         ],
+        "validityPolicy": {
+            "policyId": "validity-default-7d",
+            "policyName": "Default seven-day validity",
+            "validityHours": 168,
+            "matchedOn": {
+                "customerId": None,
+                "accountId": None,
+                "contractId": None,
+                "pricingBasis": None,
+                "marketSignals": None,
+            },
+            "selectionContext": {
+                "customerId": None,
+                "accountId": None,
+                "contractId": None,
+                "pricingBasis": PricingBasis.PUBLIC_TARIFF.value,
+                "marketSignals": {},
+            },
+        },
     }
 
 
@@ -107,6 +126,40 @@ def _fx_snapshot(*, currency: str = "USD", rate: float = 1.0) -> dict[str, objec
         "rate": rate,
         "observedAt": "2026-05-06T00:00:00+00:00",
         "referenceDataVersion": FX_REFERENCE_DATA_VERSION,
+    }
+
+
+def _validity_policy_snapshot(
+    *,
+    policy_id: str,
+    policy_name: str,
+    validity_hours: int,
+    customer_id: str | None,
+    account_id: str | None,
+    contract_id: str | None,
+    pricing_basis: PricingBasis,
+    market_signals: dict[str, float],
+    matched_pricing_basis: str | None = None,
+    matched_market_signals: dict[str, float] | None = None,
+) -> dict[str, object]:
+    return {
+        "policyId": policy_id,
+        "policyName": policy_name,
+        "validityHours": validity_hours,
+        "matchedOn": {
+            "customerId": customer_id if customer_id is not None and policy_id != "validity-default-7d" else None,
+            "accountId": account_id if account_id is not None and policy_id == "validity-account-acme-premium-14d" else None,
+            "contractId": contract_id if contract_id is not None and policy_id.startswith("validity-contract-") else None,
+            "pricingBasis": matched_pricing_basis,
+            "marketSignals": matched_market_signals,
+        },
+        "selectionContext": {
+            "customerId": customer_id,
+            "accountId": account_id,
+            "contractId": contract_id,
+            "pricingBasis": pricing_basis.value,
+            "marketSignals": market_signals,
+        },
     }
 
 
@@ -176,6 +229,7 @@ def test_create_quote_returns_itemized_quote_and_persists_it(client) -> None:
         "roundingPolicy": "LINE_ITEM_HALF_UP_2DP",
         "conversionLevel": "LINE_ITEM",
     }
+    assert stored_quote.pricing_provenance["validityPolicy"] == _public_tariff_pricing_provenance()["validityPolicy"]
     assert stored_quote.pricing_provenance["baseRateRules"] == [
         {
             "rateTableId": stored_quote.pricing_provenance["baseRateRules"][0]["rateTableId"],
@@ -1264,6 +1318,7 @@ def test_admin_quote_preview_can_use_draft_rate_and_surcharge_versions(client) -
                     "validTo": "2026-09-30",
                 },
             ],
+            "validityPolicy": _public_tariff_pricing_provenance()["validityPolicy"],
         },
         "sourceTotalAmount": 1520.0,
         "lineItems": [
@@ -1545,6 +1600,7 @@ def _seed_expired_quote(session_factory: sessionmaker[Session]) -> Quote:
                     }
                 ],
                 "appliedSurchargeRules": [],
+                "validityPolicy": _public_tariff_pricing_provenance()["validityPolicy"],
             },
             approval_reasons=[],
             approval_decision={},
@@ -2062,6 +2118,83 @@ def test_scenario_contract_pricing_uses_customer_context_and_deterministic_prece
     assert account_response.status_code == 201
     assert customer_response.json()["totalAmount"] == 930.0
     assert account_response.json()["totalAmount"] == 800.0
+
+
+def test_scenario_derive_quote_validity_from_customer_specific_policy(client) -> None:
+    test_client, session_factory = client
+
+    response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "customerId": "cust-acme",
+            "accountId": "acct-acme-premium",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+
+    assert response.status_code == 201
+
+    with session_factory() as session:
+        stored_quote = session.scalar(select(Quote).where(Quote.id == response.json()["id"]))
+
+    assert stored_quote is not None
+    assert stored_quote.pricing_basis == PricingBasis.CONTRACT
+    assert timedelta(days=13, hours=23) <= stored_quote.valid_until - stored_quote.created_at <= timedelta(days=14, minutes=1)
+    assert stored_quote.pricing_provenance["validityPolicy"] == _validity_policy_snapshot(
+        policy_id="validity-account-acme-premium-14d",
+        policy_name="ACME premium account validity",
+        validity_hours=336,
+        customer_id="cust-acme",
+        account_id="acct-acme-premium",
+        contract_id=stored_quote.contract_id,
+        pricing_basis=PricingBasis.CONTRACT,
+        market_signals={},
+    )
+
+
+def test_market_pricing_can_use_a_shorter_high_volatility_validity_policy(client) -> None:
+    test_client, session_factory = client
+
+    response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "pricingModeHint": "MARKET",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+
+    assert response.status_code == 201
+
+    with session_factory() as session:
+        stored_quote = session.scalar(select(Quote).where(Quote.id == response.json()["id"]))
+
+    assert stored_quote is not None
+    assert stored_quote.pricing_basis == PricingBasis.MARKET
+    assert timedelta(hours=11, minutes=59) <= stored_quote.valid_until - stored_quote.created_at <= timedelta(hours=12, minutes=1)
+    assert stored_quote.pricing_provenance["validityPolicy"] == _validity_policy_snapshot(
+        policy_id="validity-volatile-market-12h",
+        policy_name="High-volatility market validity",
+        validity_hours=12,
+        customer_id=None,
+        account_id=None,
+        contract_id=None,
+        pricing_basis=PricingBasis.MARKET,
+        market_signals={
+            "capacityPressureIndex": 0.62,
+            "utilizationIndex": 0.81,
+            "seasonalityIndex": 0.58,
+        },
+        matched_pricing_basis=PricingBasis.MARKET.value,
+        matched_market_signals={
+            "capacityPressureIndex": 0.62,
+            "utilizationIndex": 0.81,
+            "seasonalityIndex": 0.58,
+        },
+    )
 
 
 def test_scenario_requested_currency_quotes_include_fx_provenance(client) -> None:
