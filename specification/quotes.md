@@ -592,9 +592,11 @@ Expected result:
 - Equipment data is currently modeled inside this service through request payloads, supported equipment types, TEU conversion rules, and seeded rate data.
 - Booking is currently a downstream consumer of quotes rather than an active runtime dependency. The service stores quotes with validity so Booking can reference them later.
 - The frontend is expected to consume the HTTP API exposed by this service. There is no frontend-specific integration layer in this repository yet.
+- System-level repository boundaries, town topology, and architecture-state assumptions are tracked separately in `specification/system-architecture.md` so the service contract and the broader workspace model can evolve without drifting apart.
 
 ## Executable Scenarios
 - Human-readable quote scenarios live in `specification/quote-scenarios.md`.
+- Human-readable architecture-state scenarios for repository boundaries and documentation expectations also live in `specification/quote-scenarios.md`.
 - The matching executable coverage lives in `tests/test_quotes_api.py`.
 
 ## Current Implementation Notes

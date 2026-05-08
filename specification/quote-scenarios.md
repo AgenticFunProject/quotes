@@ -209,3 +209,24 @@ Given two otherwise similar quote requests match different validity policies
 When support compares the stored quotes after creation
 Then the service can explain which policy version each quote matched
 And support can see which customer, contract, pricing-mode, or volatility inputs produced the different `validUntil` timestamps
+
+## Scenario: Document the current repository landscape explicitly
+
+Given the Quotes service now operates inside a larger multi-repository town workspace
+When a maintainer reads `specification/system-architecture.md`
+Then the document distinguishes the Quotes git worktree from the surrounding rig and town paths
+And the document lists the currently confirmed repositories separately from visible but not fully documented system components
+
+## Scenario: Mark unsupported architecture detail as assumptions or gaps
+
+Given not every visible town component has a maintained contract in this repository
+When the architecture-state document describes control-plane components outside the Quotes repo
+Then unverified responsibilities are labeled as assumptions or gaps instead of settled facts
+And the document records which service integrations are explicitly confirmed today
+
+## Scenario: Keep the service specification linked to the broader architecture state
+
+Given `specification/quotes.md` is the main service contract for Quotes behavior
+When a reader reviews the current integration boundaries in that specification
+Then the reader is directed to `specification/system-architecture.md` for repository-level system state
+And the service specification keeps its own boundary focused on quote runtime dependencies and consumers
