@@ -76,11 +76,25 @@ When a commercial operator creates a draft replacement surcharge rule, updates i
 Then later quote requests apply the activated surcharge-rule version instead of the superseded active version
 And the stored quote provenance records the selected `surchargeRuleVersion`
 
-## Scenario: Require actor identity for commercial admin changes
+## Scenario: Require platform bearer authorization for commercial admin changes
 
 Given the service exposes internal managed-commercial-data admin endpoints
-When a client attempts to create a managed rate or surcharge change without `X-Actor`
-Then the API rejects the request because the audit actor is required
+When a client attempts to create a managed rate or surcharge change without a bearer token
+Then the API rejects the request with `401`
+And when the bearer token is valid but lacks `quotes:admin`
+Then the API rejects the request with `403`
+And when the bearer token has `quotes:admin`
+Then the API accepts the change and records `X-Actor` as audit metadata when present
+
+## Scenario: Require platform bearer authorization for quote approval decisions
+
+Given a quote is waiting in a pending approval state
+When a client attempts to approve or reject it without a bearer token
+Then the API rejects the request with `401`
+And when the bearer token is valid but lacks `quotes:approve`
+Then the API rejects the request with `403`
+And when the bearer token has `quotes:approve`
+Then the API records the approval decision using `X-Actor` or the token subject as the approver identity
 
 ## Scenario: Record an audit trail for managed commercial changes
 
@@ -190,7 +204,7 @@ And a durable audit record captures the breached guardrail inputs and policy ver
 
 Given a quote is waiting in a pending approval state
 And the held quote has a stored commercial snapshot and explicit approval reasons
-When an authorized approver approves it with actor identity recorded
+When an authorized approver with `quotes:approve` approves it with actor identity recorded
 Then the quote becomes issuable and bookable using the same commercial snapshot that was reviewed
 And the approval action is persisted with approver identity and timestamp
 And downstream consumers can distinguish the approval event from normal quote creation in the outbox stream
@@ -198,7 +212,7 @@ And downstream consumers can distinguish the approval event from normal quote cr
 ## Scenario: Reject a previously held quote and preserve the review trail
 
 Given a quote is waiting in a pending approval state
-When an authorized approver rejects it with a decision reason
+When an authorized approver with `quotes:approve` rejects it with a decision reason
 Then the quote becomes non-bookable without recalculating the commercial amount
 And the service preserves the full rejection trail with approver identity, timestamp, and decision note
 And support can still retrieve the held quote and its original approval reasons for audit purposes

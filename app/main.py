@@ -11,6 +11,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
+from app.auth import (
+    SCOPE_QUOTES_ADMIN,
+    SCOPE_QUOTES_APPROVE,
+    AuthenticatedCaller,
+    require_bearer_scope,
+)
 from app.db import get_db, init_db
 from app.models import CommercialChangeAction, CommercialChangeEvent, CommercialChangeResourceType, Contract, ContractMatchType, ContractRateRule, EquipmentType, ExchangeRate, ImpactAnalysisChangeType, ImpactAnalysisRun, MarketRateSnapshot, OutboxConsumerCheckpoint, OutboxEvent, PortScope, PricingBasis, PricingStrategyVersion, Quote, QuoteLifecycleState, QuoteValidityPolicy, RateTable, SurchargeRule, SurchargeType
 from app.seed import REFERENCE_DATA_VERSION, seed_reference_data
@@ -280,18 +286,26 @@ def _serialize_optional_datetime(value: datetime | None) -> str | None:
     return value.isoformat()
 
 
-def _require_actor(actor: str | None = Header(default=None, alias="X-Actor")) -> str:
-    if actor is None or not actor.strip():
-        raise HTTPException(status_code=400, detail="X-Actor header is required for admin commercial data changes")
+def _actor_from_auth(caller: AuthenticatedCaller, actor: str | None) -> str:
+    if actor is not None and actor.strip():
+        return actor.strip()
+    return caller.subject
 
-    return actor.strip()
+
+def _require_actor(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    actor: str | None = Header(default=None, alias="X-Actor"),
+) -> str:
+    caller = require_bearer_scope(authorization, SCOPE_QUOTES_ADMIN)
+    return _actor_from_auth(caller, actor)
 
 
-def _require_quote_approval_actor(actor: str | None = Header(default=None, alias="X-Actor")) -> str:
-    if actor is None or not actor.strip():
-        raise HTTPException(status_code=400, detail="X-Actor header is required for quote approval decisions")
-
-    return actor.strip()
+def _require_quote_approval_actor(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    actor: str | None = Header(default=None, alias="X-Actor"),
+) -> str:
+    caller = require_bearer_scope(authorization, SCOPE_QUOTES_APPROVE)
+    return _actor_from_auth(caller, actor)
 
 
 def _quote_approval_decision(quote: Quote) -> dict[str, object] | None:

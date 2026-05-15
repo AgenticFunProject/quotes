@@ -65,28 +65,52 @@ and seeds reference rates and surcharge rules used by `POST /quotes`.
   within its validity window and therefore usable by Booking.
 - `POST /quotes/{quote_id}/approval-decisions` approves or rejects quotes that
   are currently held in the pending-approval lifecycle state and writes the
-  corresponding outbox event.
+  corresponding outbox event. Requires a platform bearer token with
+  `quotes:approve`.
 - `GET /admin/commercial-change-events` returns the managed-commercial audit
   trail for rate-table and surcharge-rule create, update, and activate flows.
 - `POST /admin/rate-tables`, `PATCH /admin/rate-tables/{rate_table_id}`, and
   `POST /admin/rate-tables/{rate_table_id}/activate` manage draft and active
-  rate-table versions.
+  rate-table versions. Write routes require `quotes:admin`.
 - `POST /admin/surcharge-rules`, `PATCH /admin/surcharge-rules/{surcharge_rule_id}`,
   and `POST /admin/surcharge-rules/{surcharge_rule_id}/activate` manage draft
-  and active surcharge-rule versions.
+  and active surcharge-rule versions. Write routes require `quotes:admin`.
 - `GET /admin/outbox-events` lists durable quote and commercial outbox events
   with aggregate, event-type, publication-state, and limit filters.
 - `POST /admin/outbox-consumers/{consumerName}/replay` replays an ordered batch
   of outbox events for a named downstream consumer and advances its checkpoint.
+  Requires `quotes:admin`.
 - `POST /admin/impact-analyses` records schedule- or contract-change impact
   summaries for affected quotes, and `GET /admin/impact-analyses/{run_id}`
-  reads a recorded impact-analysis run.
+  reads a recorded impact-analysis run. Creation requires `quotes:admin`.
 - `POST /admin/quote-preview` lets commercial operators evaluate draft managed
   rate-table and surcharge-rule versions against a shipment before activation.
+  Requires `quotes:admin`.
 - Quote lifecycle writes also create durable rows in `outbox_events`, starting
   with `quote.created` at creation time and `quote.expired` when an issued quote
   is first observed past `validUntil`. Those payloads include the same stored
   pricing provenance snapshot used by quote reads.
+
+### Platform Bearer Auth
+
+Protected operational routes use the same local platform JWT shape as the
+Equipments service:
+
+- `AUTH_JWT_ISSUER`, default `platform-auth`
+- `AUTH_JWT_AUDIENCE`, default `quotes-service`
+- `AUTH_JWT_SECRET`, default `quotes-dev-secret` for local development
+- `scope` claim with space-delimited scopes
+
+Required scopes:
+
+- `quotes:approve` for `POST /quotes/{quote_id}/approval-decisions`
+- `quotes:admin` for managed commercial-data writes, outbox replay, impact
+  analysis creation, and draft quote preview
+
+`X-Actor` remains supported as audit metadata when a valid bearer token is
+present. If `X-Actor` is omitted, the token subject is recorded as the actor.
+Missing or invalid bearer tokens return `401`; valid tokens without the required
+scope return `403`.
 
 ### Stored Pricing Provenance
 

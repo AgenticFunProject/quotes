@@ -64,3 +64,30 @@ def test_specs_document_bounded_alternative_options_as_current_behavior() -> Non
     assert "maxAlternativeOptions" in spec
     assert "accepts values from `1` through `10`" in spec
     assert "Bound alternative options on quote creation" in scenarios
+
+
+def test_specs_document_platform_bearer_auth_for_protected_operations() -> None:
+    readme = (REPO_ROOT / "README.md").read_text()
+    spec = (REPO_ROOT / "specification" / "quotes.md").read_text()
+    scenarios = (REPO_ROOT / "specification" / "quote-scenarios.md").read_text()
+
+    for text in [readme, spec, scenarios]:
+        assert "quotes:admin" in text
+        assert "quotes:approve" in text
+
+    assert "AUTH_JWT_AUDIENCE" in spec
+    assert "quotes-service" in spec
+    assert "Require platform bearer authorization for commercial admin changes" in scenarios
+    assert "Require platform bearer authorization for quote approval decisions" in scenarios
+
+
+def test_system_architecture_documents_current_repositories_and_azure_deployment() -> None:
+    architecture = (REPO_ROOT / "specification" / "system-architecture.md").read_text()
+
+    for repo in ["`quotes`", "`booking`", "`equipments`", "`web-page`", "`users`"]:
+        assert repo in architecture
+
+    assert "app-quotes-dev-371ad1" in architecture
+    assert "rg-quotes-dev-371ad1" in architecture
+    assert "No deployed Azure resources were confirmed" in architecture
+    assert "`web-page`, or `users`" in architecture

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import base64
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+import hashlib
+import hmac
+import json
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,9 +18,32 @@ from sqlalchemy.pool import StaticPool
 from app import db
 from app.db import Base, get_db
 from app.main import app
-from app.models import CommercialChangeAction, CommercialChangeEvent, CommercialChangeResourceType, EquipmentType, ExchangeRate, ImpactAnalysisRun, MarketRateSnapshot, OutboxConsumerCheckpoint, OutboxEvent, PricingBasis, PricingStrategyVersion, Quote, QuoteLifecycleState, RateTable, SurchargeRule
+from app.models import (
+    CommercialChangeAction,
+    CommercialChangeEvent,
+    CommercialChangeResourceType,
+    EquipmentType,
+    ExchangeRate,
+    ImpactAnalysisRun,
+    MarketRateSnapshot,
+    OutboxConsumerCheckpoint,
+    OutboxEvent,
+    PricingBasis,
+    PricingStrategyVersion,
+    Quote,
+    QuoteLifecycleState,
+    RateTable,
+    SurchargeRule,
+)
 from app.seed import FX_PROVIDER, FX_REFERENCE_DATA_VERSION, REFERENCE_DATA_VERSION, seed_reference_data
 from app.schedules import Schedule, get_schedule_provider
+
+
+_AUTH_ISSUER = "platform-auth"
+_AUTH_AUDIENCE = "quotes-service"
+_AUTH_SECRET = "quotes-dev-secret"
+_SCOPE_QUOTES_ADMIN = "quotes:admin"
+_SCOPE_QUOTES_APPROVE = "quotes:approve"
 
 
 @pytest.fixture()
@@ -115,6 +143,40 @@ def _public_tariff_pricing_provenance() -> dict[str, object]:
                 "marketSignals": {},
             },
         },
+    }
+
+
+def _base64url_json(payload: dict[str, object]) -> str:
+    return base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
+
+
+def _bearer_token(
+    subject: str,
+    scopes: list[str],
+    *,
+    audience: str | list[str] = _AUTH_AUDIENCE,
+    issuer: str = _AUTH_ISSUER,
+    expires_in_seconds: int = 3600,
+) -> str:
+    header = _base64url_json({"alg": "HS256", "typ": "JWT"})
+    payload = _base64url_json(
+        {
+            "sub": subject,
+            "iss": issuer,
+            "aud": audience,
+            "exp": int(time.time()) + expires_in_seconds,
+            "scope": " ".join(scopes),
+        }
+    )
+    signature = hmac.new(_AUTH_SECRET.encode(), f"{header}.{payload}".encode(), hashlib.sha256).digest()
+    encoded_signature = base64.urlsafe_b64encode(signature).decode().rstrip("=")
+    return f"{header}.{payload}.{encoded_signature}"
+
+
+def _auth_headers(actor: str, scopes: list[str]) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {_bearer_token(actor, scopes)}",
+        "X-Actor": actor,
     }
 
 
@@ -897,7 +959,7 @@ def test_quote_approval_decision_approves_pending_quote_without_repricing(client
 
     approval_response = test_client.post(
         f"/quotes/{quote_id}/approval-decisions",
-        headers={"X-Actor": "pricing.manager@quotes"},
+        headers=_auth_headers("pricing.manager@quotes", [_SCOPE_QUOTES_APPROVE]),
         json={"decision": "APPROVE", "note": "Market conditions reviewed and accepted."},
     )
 
@@ -952,7 +1014,7 @@ def test_quote_approval_decision_can_reject_pending_quote(client) -> None:
 
     rejection_response = test_client.post(
         f"/quotes/{quote_id}/approval-decisions",
-        headers={"X-Actor": "pricing.manager@quotes"},
+        headers=_auth_headers("pricing.manager@quotes", [_SCOPE_QUOTES_APPROVE]),
         json={"decision": "REJECT", "note": "Margin does not support this offer."},
     )
 
@@ -973,7 +1035,7 @@ def test_quote_approval_decision_can_reject_pending_quote(client) -> None:
     }
 
 
-def test_quote_approval_decision_requires_actor_header(client) -> None:
+def test_quote_approval_decision_requires_platform_bearer_token(client) -> None:
     test_client, session_factory = client
 
     with session_factory() as session:
@@ -1000,8 +1062,43 @@ def test_quote_approval_decision_requires_actor_header(client) -> None:
 
     response = test_client.post(f"/quotes/{quote.id}/approval-decisions", json={"decision": "APPROVE"})
 
-    assert response.status_code == 400
-    assert response.json() == {"detail": "X-Actor header is required for quote approval decisions"}
+    assert response.status_code == 401
+    assert response.json() == {"detail": "missing bearer token"}
+
+
+def test_quote_approval_decision_rejects_token_without_approval_scope(client) -> None:
+    test_client, session_factory = client
+
+    with session_factory() as session:
+        quote = Quote(
+            quote_reference="QTE-2026-00991",
+            lifecycle_state=QuoteLifecycleState.PENDING_APPROVAL,
+            schedule_id="df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            schedule_snapshot={"scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274"},
+            equipment=[{"type": "20FT", "quantity": 1}],
+            cargo_weight_kg=Decimal("18000.00"),
+            currency="USD",
+            source_currency="USD",
+            pricing_basis=PricingBasis.MARKET,
+            pricing_provenance={"pricingBasis": PricingBasis.MARKET.value, "sourceTotalAmount": 1085.0},
+            approval_reasons=[{"code": "MARKET_UTILIZATION_THRESHOLD_EXCEEDED"}],
+            fx_snapshot=_fx_snapshot(),
+            rounding_policy="LINE_ITEM_HALF_UP_2DP",
+            line_items=[{"description": "Ocean Freight - 20FT x 1", "amount": 1085.0}],
+            total_amount=Decimal("1085.00"),
+        )
+        session.add(quote)
+        session.commit()
+        session.refresh(quote)
+
+    response = test_client.post(
+        f"/quotes/{quote.id}/approval-decisions",
+        headers=_auth_headers("pricing.manager@quotes", [_SCOPE_QUOTES_ADMIN]),
+        json={"decision": "APPROVE"},
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": f"missing required scope {_SCOPE_QUOTES_APPROVE}"}
 
 
 def test_quote_approval_decision_rejects_non_pending_quotes(client) -> None:
@@ -1010,7 +1107,7 @@ def test_quote_approval_decision_rejects_non_pending_quotes(client) -> None:
 
     response = test_client.post(
         f"/quotes/{quote.id}/approval-decisions",
-        headers={"X-Actor": "pricing.manager@quotes"},
+        headers=_auth_headers("pricing.manager@quotes", [_SCOPE_QUOTES_APPROVE]),
         json={"decision": "APPROVE"},
     )
 
@@ -1068,7 +1165,7 @@ def test_reprice_existing_quote_preserves_original_and_reports_structured_varian
 
     rate_response = test_client.post(
         "/admin/rate-tables",
-        headers={"X-Actor": "pricing.ops@quotes"},
+        headers=_auth_headers("pricing.ops@quotes", [_SCOPE_QUOTES_ADMIN]),
         json={
             "originPort": "NLRTM",
             "destinationPort": "USNYC",
@@ -1081,13 +1178,13 @@ def test_reprice_existing_quote_preserves_original_and_reports_structured_varian
     assert rate_response.status_code == 201
     activate_rate_response = test_client.post(
         f"/admin/rate-tables/{rate_response.json()['id']}/activate",
-        headers={"X-Actor": "pricing.manager@quotes"},
+        headers=_auth_headers("pricing.manager@quotes", [_SCOPE_QUOTES_ADMIN]),
     )
     assert activate_rate_response.status_code == 200
 
     surcharge_response = test_client.post(
         "/admin/surcharge-rules",
-        headers={"X-Actor": "pricing.ops@quotes"},
+        headers=_auth_headers("pricing.ops@quotes", [_SCOPE_QUOTES_ADMIN]),
         json={
             "surchargeType": "PORT_CONGESTION",
             "description": "Port Congestion Surcharge - Destination USNYC",
@@ -1100,7 +1197,7 @@ def test_reprice_existing_quote_preserves_original_and_reports_structured_varian
     assert surcharge_response.status_code == 201
     activate_surcharge_response = test_client.post(
         f"/admin/surcharge-rules/{surcharge_response.json()['id']}/activate",
-        headers={"X-Actor": "pricing.manager@quotes"},
+        headers=_auth_headers("pricing.manager@quotes", [_SCOPE_QUOTES_ADMIN]),
     )
     assert activate_surcharge_response.status_code == 200
 
@@ -1233,7 +1330,7 @@ def test_admin_rate_table_draft_can_be_updated_and_activated(client) -> None:
 
     create_response = test_client.post(
         "/admin/rate-tables",
-        headers={"X-Actor": "pricing.ops@quotes"},
+        headers=_auth_headers("pricing.ops@quotes", [_SCOPE_QUOTES_ADMIN]),
         json={
             "originPort": "NLRTM",
             "destinationPort": "USNYC",
@@ -1252,7 +1349,7 @@ def test_admin_rate_table_draft_can_be_updated_and_activated(client) -> None:
 
     update_response = test_client.patch(
         f"/admin/rate-tables/{create_response.json()['id']}",
-        headers={"X-Actor": "pricing.ops@quotes"},
+        headers=_auth_headers("pricing.ops@quotes", [_SCOPE_QUOTES_ADMIN]),
         json={"baseRateUsd": 1000},
     )
 
@@ -1261,7 +1358,7 @@ def test_admin_rate_table_draft_can_be_updated_and_activated(client) -> None:
 
     activate_response = test_client.post(
         f"/admin/rate-tables/{create_response.json()['id']}/activate",
-        headers={"X-Actor": "pricing.manager@quotes"},
+        headers=_auth_headers("pricing.manager@quotes", [_SCOPE_QUOTES_ADMIN]),
     )
 
     assert activate_response.status_code == 200
@@ -1303,7 +1400,7 @@ def test_admin_rate_table_changes_are_recorded_in_audit_trail(client) -> None:
 
     create_response = test_client.post(
         "/admin/rate-tables",
-        headers={"X-Actor": "pricing.ops@quotes"},
+        headers=_auth_headers("pricing.ops@quotes", [_SCOPE_QUOTES_ADMIN]),
         json={
             "originPort": "NLRTM",
             "destinationPort": "USNYC",
@@ -1317,12 +1414,12 @@ def test_admin_rate_table_changes_are_recorded_in_audit_trail(client) -> None:
 
     update_response = test_client.patch(
         f"/admin/rate-tables/{rate_table_id}",
-        headers={"X-Actor": "pricing.ops@quotes"},
+        headers=_auth_headers("pricing.ops@quotes", [_SCOPE_QUOTES_ADMIN]),
         json={"baseRateUsd": 1615},
     )
     activate_response = test_client.post(
         f"/admin/rate-tables/{rate_table_id}/activate",
-        headers={"X-Actor": "pricing.manager@quotes"},
+        headers=_auth_headers("pricing.manager@quotes", [_SCOPE_QUOTES_ADMIN]),
     )
 
     assert create_response.status_code == 201
@@ -1359,7 +1456,7 @@ def test_admin_rate_table_changes_are_published_to_outbox(client) -> None:
 
     create_response = test_client.post(
         "/admin/rate-tables",
-        headers={"X-Actor": "pricing.ops@quotes"},
+        headers=_auth_headers("pricing.ops@quotes", [_SCOPE_QUOTES_ADMIN]),
         json={
             "originPort": "NLRTM",
             "destinationPort": "USNYC",
@@ -1373,12 +1470,12 @@ def test_admin_rate_table_changes_are_published_to_outbox(client) -> None:
 
     update_response = test_client.patch(
         f"/admin/rate-tables/{rate_table_id}",
-        headers={"X-Actor": "pricing.ops@quotes"},
+        headers=_auth_headers("pricing.ops@quotes", [_SCOPE_QUOTES_ADMIN]),
         json={"baseRateUsd": 1510},
     )
     activate_response = test_client.post(
         f"/admin/rate-tables/{rate_table_id}/activate",
-        headers={"X-Actor": "pricing.manager@quotes"},
+        headers=_auth_headers("pricing.manager@quotes", [_SCOPE_QUOTES_ADMIN]),
     )
 
     assert create_response.status_code == 201
@@ -1418,7 +1515,7 @@ def test_admin_cannot_patch_an_active_rate_table(client) -> None:
     assert active_rate is not None
     response = test_client.patch(
         f"/admin/rate-tables/{active_rate.id}",
-        headers={"X-Actor": "pricing.ops@quotes"},
+        headers=_auth_headers("pricing.ops@quotes", [_SCOPE_QUOTES_ADMIN]),
         json={"baseRateUsd": 1001},
     )
 
@@ -1431,7 +1528,7 @@ def test_admin_surcharge_rule_draft_can_be_updated_and_activated(client) -> None
 
     create_response = test_client.post(
         "/admin/surcharge-rules",
-        headers={"X-Actor": "pricing.ops@quotes"},
+        headers=_auth_headers("pricing.ops@quotes", [_SCOPE_QUOTES_ADMIN]),
         json={
             "surchargeType": "PORT_CONGESTION",
             "description": "Port Congestion Surcharge - Destination USNYC",
@@ -1448,7 +1545,7 @@ def test_admin_surcharge_rule_draft_can_be_updated_and_activated(client) -> None
 
     update_response = test_client.patch(
         f"/admin/surcharge-rules/{create_response.json()['id']}",
-        headers={"X-Actor": "pricing.ops@quotes"},
+        headers=_auth_headers("pricing.ops@quotes", [_SCOPE_QUOTES_ADMIN]),
         json={"amountUsd": 175},
     )
 
@@ -1457,7 +1554,7 @@ def test_admin_surcharge_rule_draft_can_be_updated_and_activated(client) -> None
 
     activate_response = test_client.post(
         f"/admin/surcharge-rules/{create_response.json()['id']}/activate",
-        headers={"X-Actor": "pricing.manager@quotes"},
+        headers=_auth_headers("pricing.manager@quotes", [_SCOPE_QUOTES_ADMIN]),
     )
 
     assert activate_response.status_code == 200
@@ -1493,7 +1590,7 @@ def test_admin_quote_preview_can_use_draft_rate_and_surcharge_versions(client) -
 
     rate_response = test_client.post(
         "/admin/rate-tables",
-        headers={"X-Actor": "pricing.ops@quotes"},
+        headers=_auth_headers("pricing.ops@quotes", [_SCOPE_QUOTES_ADMIN]),
         json={
             "originPort": "NLRTM",
             "destinationPort": "USNYC",
@@ -1505,7 +1602,7 @@ def test_admin_quote_preview_can_use_draft_rate_and_surcharge_versions(client) -
     )
     surcharge_response = test_client.post(
         "/admin/surcharge-rules",
-        headers={"X-Actor": "pricing.ops@quotes"},
+        headers=_auth_headers("pricing.ops@quotes", [_SCOPE_QUOTES_ADMIN]),
         json={
             "surchargeType": "PORT_CONGESTION",
             "description": "Port Congestion Surcharge - Destination USNYC",
@@ -1518,7 +1615,7 @@ def test_admin_quote_preview_can_use_draft_rate_and_surcharge_versions(client) -
 
     preview_response = test_client.post(
         "/admin/quote-preview",
-        headers={"X-Actor": "pricing.ops@quotes"},
+        headers=_auth_headers("pricing.ops@quotes", [_SCOPE_QUOTES_ADMIN]),
         json={
             "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
             "equipment": [{"type": "20FT", "quantity": 1}],
@@ -1639,12 +1736,12 @@ def test_admin_outbox_replay_advances_named_consumer_checkpoint(client) -> None:
 
     first_replay = test_client.post(
         "/admin/outbox-consumers/booking-cache/replay",
-        headers={"X-Actor": "booking.sync@quotes"},
+        headers=_auth_headers("booking.sync@quotes", [_SCOPE_QUOTES_ADMIN]),
         json={"fromStart": True, "batchSize": 1, "eventTypes": ["quote.created"]},
     )
     second_replay = test_client.post(
         "/admin/outbox-consumers/booking-cache/replay",
-        headers={"X-Actor": "booking.sync@quotes"},
+        headers=_auth_headers("booking.sync@quotes", [_SCOPE_QUOTES_ADMIN]),
         json={"batchSize": 1, "eventTypes": ["quote.created"]},
     )
 
@@ -1688,7 +1785,7 @@ def test_admin_impact_analysis_persists_schedule_and_contract_results(client) ->
 
     schedule_response = test_client.post(
         "/admin/impact-analyses",
-        headers={"X-Actor": "ops@quotes"},
+        headers=_auth_headers("ops@quotes", [_SCOPE_QUOTES_ADMIN]),
         json={
             "changeType": "SCHEDULE",
             "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
@@ -1696,7 +1793,7 @@ def test_admin_impact_analysis_persists_schedule_and_contract_results(client) ->
     )
     contract_response = test_client.post(
         "/admin/impact-analyses",
-        headers={"X-Actor": "ops@quotes"},
+        headers=_auth_headers("ops@quotes", [_SCOPE_QUOTES_ADMIN]),
         json={
             "changeType": "CONTRACT",
             "contractId": "7c9cc0a4-bd6d-4e6f-9c1c-e5c3a1300001",
@@ -1729,7 +1826,7 @@ def test_admin_impact_analysis_persists_schedule_and_contract_results(client) ->
     assert stored_runs[1].summary["affectedCount"] == 1
 
 
-def test_admin_requires_actor_header_for_managed_commercial_changes(client) -> None:
+def test_admin_requires_platform_bearer_token_for_managed_commercial_changes(client) -> None:
     test_client, _ = client
 
     response = test_client.post(
@@ -1744,8 +1841,8 @@ def test_admin_requires_actor_header_for_managed_commercial_changes(client) -> N
         },
     )
 
-    assert response.status_code == 400
-    assert response.json() == {"detail": "X-Actor header is required for admin commercial data changes"}
+    assert response.status_code == 401
+    assert response.json() == {"detail": "missing bearer token"}
 
     preview_response = test_client.post(
         "/admin/quote-preview",
@@ -1756,8 +1853,28 @@ def test_admin_requires_actor_header_for_managed_commercial_changes(client) -> N
         },
     )
 
-    assert preview_response.status_code == 400
-    assert preview_response.json() == {"detail": "X-Actor header is required for admin commercial data changes"}
+    assert preview_response.status_code == 401
+    assert preview_response.json() == {"detail": "missing bearer token"}
+
+
+def test_admin_rejects_token_without_admin_scope(client) -> None:
+    test_client, _ = client
+
+    response = test_client.post(
+        "/admin/rate-tables",
+        headers=_auth_headers("pricing.ops@quotes", [_SCOPE_QUOTES_APPROVE]),
+        json={
+            "originPort": "NLRTM",
+            "destinationPort": "USNYC",
+            "equipmentType": "20FT",
+            "baseRateUsd": 990,
+            "validFrom": "2026-04-01",
+            "validTo": "2026-12-31",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": f"missing required scope {_SCOPE_QUOTES_ADMIN}"}
 
 
 @pytest.mark.parametrize(

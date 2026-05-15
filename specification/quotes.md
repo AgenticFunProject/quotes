@@ -11,6 +11,7 @@ Provides a quoted price that can be referenced when placing a booking.
 - Persist durable quote lifecycle events for downstream consumers through an outbox table
 - Return itemised price breakdown
 - Provide internal admin workflows for managed rate-table and surcharge-rule changes
+- Require platform bearer authorization for protected operational writes while keeping public quote request/read behavior unauthenticated
 
 ## API Endpoints
 
@@ -36,6 +37,35 @@ Provides a quoted price that can be referenced when placing a booking.
 | POST | /admin/impact-analyses | Persist a schedule- or contract-change impact summary |
 | GET | /admin/impact-analyses/{id} | Retrieve a recorded impact-analysis run |
 | POST | /admin/quote-preview | Preview quote pricing with draft managed commercial rows |
+
+## Authentication And Authorization
+
+Quotes follows the platform bearer-token shape already implemented by the
+Equipments service:
+
+- JWT algorithm: `HS256`
+- issuer environment variable: `AUTH_JWT_ISSUER`, default `platform-auth`
+- audience environment variable: `AUTH_JWT_AUDIENCE`, default `quotes-service`
+- signing secret environment variable: `AUTH_JWT_SECRET`, default
+  `quotes-dev-secret` for local development only
+- scopes claim: space-delimited `scope` string
+
+Public quote request and read endpoints remain unauthenticated so the customer
+portal and Booking-facing lookup flows continue to work while the API gateway
+contract evolves.
+
+Protected operational writes require these scopes:
+
+| Scope | Required for |
+|-------|--------------|
+| `quotes:approve` | `POST /quotes/{id}/approval-decisions` |
+| `quotes:admin` | Managed commercial writes, outbox replay, impact analysis creation, and draft quote preview under `/admin` |
+
+When a protected request includes both a valid bearer token and `X-Actor`, the
+service records `X-Actor` as the business actor for audit compatibility. When
+`X-Actor` is omitted, the token subject is recorded as the actor. Missing,
+malformed, expired, wrong-issuer, wrong-audience, or incorrectly signed bearer
+tokens return `401`. Valid tokens without the required scope return `403`.
 
 ### POST /quotes - Request Body
 ```json
