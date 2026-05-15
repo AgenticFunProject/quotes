@@ -18,6 +18,7 @@ Provides a quoted price that can be referenced when placing a booking.
 |--------|------|-------------|
 | POST | /quotes | Request a new quote |
 | POST | /quotes/{id}/reprice | Reprice a stored quote and persist variance against the original |
+| POST | /quotes/{id}/approval-decisions | Approve or reject a quote currently held for manual approval |
 | POST | /quotes/coverage/validate | Validate rate coverage for a route, departure date, and equipment selection |
 | GET | /quotes/{id} | Retrieve a quote by internal ID or public quote reference |
 | GET | /quotes/{id}/explain | Return stored pricing explainability for a quote |
@@ -30,6 +31,10 @@ Provides a quoted price that can be referenced when placing a booking.
 | PATCH | /admin/surcharge-rules/{id} | Update a draft managed surcharge-rule version |
 | POST | /admin/surcharge-rules/{id}/activate | Activate a managed surcharge-rule version |
 | GET | /admin/commercial-change-events | List managed commercial data audit events |
+| GET | /admin/outbox-events | List durable quote and managed-commercial outbox events |
+| POST | /admin/outbox-consumers/{consumerName}/replay | Replay ordered outbox events for a named consumer checkpoint |
+| POST | /admin/impact-analyses | Persist a schedule- or contract-change impact summary |
+| GET | /admin/impact-analyses/{id} | Retrieve a recorded impact-analysis run |
 | POST | /admin/quote-preview | Preview quote pricing with draft managed commercial rows |
 
 ### POST /quotes - Request Body
@@ -372,6 +377,11 @@ Provides a quoted price that can be referenced when placing a booking.
 ### GET /quotes/{id}/explain
 - The `{id}` path parameter accepts either the stored quote UUID or the public `quoteReference`.
 - This endpoint returns the stored pricing basis, selected market source when present, persisted optimization trace, and the full stored pricing provenance used to create the quote.
+
+### POST /quotes/{id}/approval-decisions
+- The `{id}` path parameter accepts either the stored quote UUID or the public `quoteReference`.
+- This endpoint accepts an approval decision for quotes currently in `PENDING_APPROVAL` and returns `409` for quotes in any other lifecycle state.
+- Decisions require an actor header, persist the approver decision snapshot on the quote, and append either a quote-approved or quote-rejected outbox event.
 
 ### POST /quotes/coverage/validate
 - This endpoint accepts direct route attributes instead of a `scheduleId` so clients can validate commercial data coverage before attempting a quote request.
@@ -1010,13 +1020,15 @@ should be paired with executable Gherkin scenarios when implemented.
   window closes.
 
 #### API implications
-- Future API design likely needs an internal approval action endpoint such as
-  `POST /quotes/{id}/approval-decisions` or a similar workflow-specific route.
+- `POST /quotes/{id}/approval-decisions` is implemented for approving or
+  rejecting quotes already held in `PENDING_APPROVAL`.
 - Quote lookup and bookability responses should expose hold status and approval
   reasons clearly enough for downstream systems to avoid treating the quote as a
   firm offer.
-- Approval APIs should require actor identity and an optional decision note so
-  the audit trail is attributable and support-readable.
+- Approval decisions require actor identity and accept an optional decision note
+  so the audit trail is attributable and support-readable.
+- Broader workflow orchestration around who reviews held quotes and when to
+  notify them remains future design.
 
 #### Provenance and audit expectations
 - The held quote should persist the exact guardrail rules, policy versions, and

@@ -49,17 +49,38 @@ and seeds reference rates and surcharge rules used by `POST /quotes`.
 - `POST /quotes/{quote_id}/reprice` reruns pricing for a stored quote against
   the current approved commercial data, preserves the original quote unchanged,
   and persists a structured variance summary on the repriced result.
+- `POST /quotes/coverage/validate` checks whether active public tariff data
+  covers a route, departure date, and equipment selection before quote creation.
 - `GET /quotes/{quote_id}` returns the stored quote by either the internal UUID
   or the public `quoteReference` returned from `POST /quotes`, including the
   stored schedule snapshot, pricing basis, and pricing provenance used to
   explain the amount later.
+- `GET /quotes/{quote_id}/explain` returns the persisted pricing basis,
+  optimization trace, market-source details when present, and provenance used
+  when the quote was created.
 - `GET /quotes/reference/{quoteReference}` remains available as an explicit
   business-facing lookup path for the human-readable quote reference and
   returns the same payload as `GET /quotes/{quote_id}`.
 - `GET /quotes/{quote_id}/bookability` returns whether a stored quote is still
   within its validity window and therefore usable by Booking.
+- `POST /quotes/{quote_id}/approval-decisions` approves or rejects quotes that
+  are currently held in the pending-approval lifecycle state and writes the
+  corresponding outbox event.
 - `GET /admin/commercial-change-events` returns the managed-commercial audit
   trail for rate-table and surcharge-rule create, update, and activate flows.
+- `POST /admin/rate-tables`, `PATCH /admin/rate-tables/{rate_table_id}`, and
+  `POST /admin/rate-tables/{rate_table_id}/activate` manage draft and active
+  rate-table versions.
+- `POST /admin/surcharge-rules`, `PATCH /admin/surcharge-rules/{surcharge_rule_id}`,
+  and `POST /admin/surcharge-rules/{surcharge_rule_id}/activate` manage draft
+  and active surcharge-rule versions.
+- `GET /admin/outbox-events` lists durable quote and commercial outbox events
+  with aggregate, event-type, publication-state, and limit filters.
+- `POST /admin/outbox-consumers/{consumerName}/replay` replays an ordered batch
+  of outbox events for a named downstream consumer and advances its checkpoint.
+- `POST /admin/impact-analyses` records schedule- or contract-change impact
+  summaries for affected quotes, and `GET /admin/impact-analyses/{run_id}`
+  reads a recorded impact-analysis run.
 - `POST /admin/quote-preview` lets commercial operators evaluate draft managed
   rate-table and surcharge-rule versions against a shipment before activation.
 - Quote lifecycle writes also create durable rows in `outbox_events`, starting
@@ -345,16 +366,28 @@ quotes/
 ├── app/
 │   ├── __init__.py      # FastAPI app instance + startup hooks
 │   ├── db.py            # SQLAlchemy engine and session helpers
-│   ├── main.py          # ASGI entry point
+│   ├── main.py          # app/main.py: ASGI entry point, routes, pricing flow
 │   ├── models.py        # Quote, rate, and surcharge models
 │   ├── seed.py          # Reference rate and surcharge seed data
+│   ├── schedules.py     # app/schedules.py: seeded schedule provider
 │   └── surcharges.py    # Surcharge matching and calculation logic
+├── scripts/
+│   ├── bootstrap-venv.sh # Local virtualenv bootstrap
+│   └── verify.sh        # scripts/verify.sh: pytest verification wrapper
+├── specification/
+│   ├── quotes.md        # specification/quotes.md: API and behavior spec
+│   ├── quote-scenarios.md # specification/quote-scenarios.md: scenario catalog
+│   ├── roadmap.md       # Delivery roadmap
+│   └── system-architecture.md # Current service architecture notes
 ├── tests/
 │   ├── __init__.py
 │   ├── test_db.py       # SQLite model coverage
+│   ├── test_documentation.py # Documentation/API-surface checks
 │   ├── test_health.py   # Health endpoint smoke tests
 │   ├── test_quotes_api.py # Quote creation and retrieval coverage
+│   ├── test_seed.py     # tests/test_seed.py: seed-data coverage
 │   └── test_surcharges.py # Surcharge rule behavior coverage
+├── bruno/quotes-service/ # Bruno API collection for manual checks
 ├── pyproject.toml     # Project metadata and dependencies
 └── README.md
 ```
