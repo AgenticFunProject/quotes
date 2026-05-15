@@ -18,6 +18,16 @@ param containerPort int = 8000
 @description('SQLite database location on the App Service persistent filesystem.')
 param databaseUrl string = 'sqlite:////home/site/data/quotes.db'
 
+@description('Issuer expected in platform bearer JWTs for protected operations.')
+param authJwtIssuer string = 'platform-auth'
+
+@description('Audience expected in platform bearer JWTs for protected operations.')
+param authJwtAudience string = 'quotes-service'
+
+@secure()
+@description('Signing secret expected for platform bearer JWTs. Supply from secret material, never source control.')
+param authJwtSecret string
+
 var appServicePlanName = 'asp-${namePrefix}'
 var webAppName = 'app-${namePrefix}'
 var appInsightsName = 'appi-${namePrefix}'
@@ -102,6 +112,18 @@ resource webApp 'Microsoft.Web/sites@2023-12-01' = {
         {
           name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
           value: appInsights.properties.ConnectionString
+        }
+        {
+          name: 'AUTH_JWT_ISSUER'
+          value: authJwtIssuer
+        }
+        {
+          name: 'AUTH_JWT_AUDIENCE'
+          value: authJwtAudience
+        }
+        {
+          name: 'AUTH_JWT_SECRET'
+          value: authJwtSecret
         }
       ]
     }

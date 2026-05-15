@@ -10,6 +10,8 @@ permissions:
 env:
   AZURE_ENV_NAME: ${{ vars.AZURE_ENV_NAME || 'prod' }}
   AZURE_LOCATION: ${{ vars.AZURE_LOCATION || 'eastus' }}
+  AUTH_JWT_ISSUER: ${{ vars.AUTH_JWT_ISSUER || 'platform-auth' }}
+  AUTH_JWT_AUDIENCE: quotes-service
 
 jobs:
   provision:
@@ -80,9 +82,21 @@ jobs:
       - name: Create resource group
         run: az group create --name "$AZURE_RESOURCE_GROUP" --location "$AZURE_LOCATION"
 
+      - name: Validate platform auth secret
+        shell: bash
+        env:
+          AUTH_JWT_SECRET: ${{ secrets.AUTH_JWT_SECRET }}
+        run: |
+          if [ -z "$AUTH_JWT_SECRET" ]; then
+            echo "AUTH_JWT_SECRET GitHub Actions secret is required for Azure provisioning." >&2
+            exit 1
+          fi
+
       - name: Deploy infrastructure
         id: deploy
         shell: bash
+        env:
+          AUTH_JWT_SECRET: ${{ secrets.AUTH_JWT_SECRET }}
         run: |
           outputs="$(az deployment group create \
             --resource-group "$AZURE_RESOURCE_GROUP" \
@@ -91,6 +105,9 @@ jobs:
               location="$AZURE_LOCATION" \
               envName="$AZURE_ENV_NAME" \
               namePrefix="$NAME_PREFIX" \
+              authJwtIssuer="$AUTH_JWT_ISSUER" \
+              authJwtAudience="$AUTH_JWT_AUDIENCE" \
+              authJwtSecret="$AUTH_JWT_SECRET" \
             --query properties.outputs \
             --output json)"
 

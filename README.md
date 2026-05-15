@@ -101,6 +101,11 @@ Equipments service:
 - `AUTH_JWT_SECRET`, default `quotes-dev-secret` for local development
 - `scope` claim with space-delimited scopes
 
+The local development default remains `quotes-dev-secret` so tests and local
+walkthroughs can mint deterministic demo tokens. Azure deployments must supply
+`AUTH_JWT_SECRET` from GitHub Actions secret material and must not fall back to
+the local development default.
+
 Required scopes:
 
 - `quotes:approve` for `POST /quotes/{quote_id}/approval-decisions`
@@ -342,24 +347,41 @@ Create these GitHub Actions secrets before running the provisioning workflow:
 - `AZURE_CLIENT_ID`
 - `AZURE_TENANT_ID`
 - `AZURE_SUBSCRIPTION_ID`
+- `AUTH_JWT_SECRET`
 
 These are used with GitHub Actions OIDC via `azure/login`. The backing Azure
 service principal needs permission to create and update the target resource
 group and resources.
 
+`AUTH_JWT_SECRET` is the HS256 signing secret accepted by the deployed Quotes
+App Service for protected operational routes. Store it only in GitHub Actions
+secrets or an equivalent secret manager; never commit the secret value.
+
 Optional GitHub Actions variables:
 
 - `AZURE_ENV_NAME`: defaults to `prod`
 - `AZURE_LOCATION`: defaults to `eastus`
+- `AUTH_JWT_ISSUER`: defaults to `platform-auth`
 - `RUNNER_LABELS_JSON`: defaults to `["ubuntu-latest"]`; set to a JSON array
   such as `["self-hosted", "linux", "x64"]` to run the workflows on a
   self-hosted runner
+
+`AUTH_JWT_AUDIENCE` is fixed to `quotes-service` by the Azure workflows so the
+deployed service matches the documented Quotes audience contract.
 
 Resource names are derived automatically from the repository name, environment
 name, and subscription ID, so no extra naming variables are required.
 
 Both Azure workflows try to use an existing `az` installation first and only
 fall back to installing the Azure CLI on the runner when it is missing.
+
+### Platform Auth Secret Rotation
+
+Rotate the platform auth secret by updating the `AUTH_JWT_SECRET` GitHub
+Actions secret, then rerun `Deploy to Azure`. The deploy workflow reapplies
+`AUTH_JWT_ISSUER`, `AUTH_JWT_AUDIENCE=quotes-service`, and `AUTH_JWT_SECRET` to
+the existing App Service before restarting it. Rerun `Provision Azure
+Infrastructure` only when rebuilding or recreating the Azure resources.
 
 ### Provisioning Flow
 

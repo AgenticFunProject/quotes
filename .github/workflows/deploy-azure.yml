@@ -14,6 +14,8 @@ env:
   AZURE_ENV_NAME: ${{ vars.AZURE_ENV_NAME || 'prod' }}
   AZURE_LOCATION: ${{ vars.AZURE_LOCATION || 'eastus' }}
   AZURE_CONTAINER_IMAGE_NAME: quotes-api
+  AUTH_JWT_ISSUER: ${{ vars.AUTH_JWT_ISSUER || 'platform-auth' }}
+  AUTH_JWT_AUDIENCE: quotes-service
 
 jobs:
   deploy:
@@ -75,6 +77,17 @@ jobs:
             echo "Azure infrastructure has not been provisioned yet; skipping deployment." >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      - name: Validate platform auth secret
+        if: steps.preflight.outputs.ready == 'true'
+        shell: bash
+        env:
+          AUTH_JWT_SECRET: ${{ secrets.AUTH_JWT_SECRET }}
+        run: |
+          if [ -z "$AUTH_JWT_SECRET" ]; then
+            echo "AUTH_JWT_SECRET GitHub Actions secret is required for Azure deployment." >&2
+            exit 1
+          fi
+
       - name: Build container image in ACR
         if: steps.preflight.outputs.ready == 'true'
         run: |
@@ -100,6 +113,20 @@ jobs:
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --name "$AZURE_WEBAPP_NAME" \
             --generic-configurations '{"acrUseManagedIdentityCreds": true}'
+
+      - name: Apply platform auth app settings
+        if: steps.preflight.outputs.ready == 'true'
+        env:
+          AUTH_JWT_SECRET: ${{ secrets.AUTH_JWT_SECRET }}
+        run: |
+          az webapp config appsettings set \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --settings \
+              AUTH_JWT_ISSUER="$AUTH_JWT_ISSUER" \
+              AUTH_JWT_AUDIENCE="$AUTH_JWT_AUDIENCE" \
+              AUTH_JWT_SECRET="$AUTH_JWT_SECRET" \
+            --output none
 
       - name: Restart web app
         if: steps.preflight.outputs.ready == 'true'

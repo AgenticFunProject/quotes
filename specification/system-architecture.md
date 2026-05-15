@@ -67,11 +67,14 @@ No deployed Azure resources were confirmed for `booking`, `equipments`,
 Container Apps manifest examples, but no matching live Container App was found
 during discovery.
 
-The current Quotes App Service settings include `DATABASE_URL`,
-`APPLICATIONINSIGHTS_CONNECTION_STRING`, `WEBSITES_PORT`, container registry
-settings, and no platform auth settings yet. A production deployment should set
-`AUTH_JWT_ISSUER`, `AUTH_JWT_AUDIENCE`, and `AUTH_JWT_SECRET` or replace the
-current HS256 development contract with managed identity or an OIDC verifier.
+The live Quotes App Service was discovered before platform auth app settings
+were reconciled. The current Bicep template and GitHub Actions deployment path
+now supply `AUTH_JWT_ISSUER`, `AUTH_JWT_AUDIENCE=quotes-service`, and
+`AUTH_JWT_SECRET` from GitHub secret material; rerunning the deploy workflow
+with `AUTH_JWT_SECRET` configured brings the App Service into that state. A
+production identity architecture should eventually replace the current HS256
+development contract with managed identity, OIDC/JWKS validation, or an API
+gateway policy.
 
 ## Quotes Repository Responsibilities
 
@@ -139,7 +142,9 @@ This boundary is important because it prevents service documentation from drifti
 - Booking currently provides detailed Spring Boot specifications but no application source in the current checkout.
 - Users has local password verification and stable user metadata, but bearer-token enforcement is explicitly deferred.
 - Web-page can mint local demo tokens for Equipments but does not yet mint Quotes-audience tokens.
-- Quotes Azure App Service is deployed, but its current app settings do not yet include platform auth secret/issuer/audience settings.
+- Quotes Azure App Service discovery predated the platform-auth deployment
+  wiring; rerun the Azure deploy workflow with `AUTH_JWT_SECRET` configured to
+  reconcile app settings.
 - No deployed Azure resources were confirmed for Booking, Equipments, Web-page, or Users in the current subscription.
 
 ### Explicit assumptions

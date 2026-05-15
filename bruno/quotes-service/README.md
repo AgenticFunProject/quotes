@@ -29,7 +29,9 @@ only the verified dev deployment is included.
   approval metadata.
 - Update the `quoteId` and `quoteReference` environment variables with an
   existing quote before running the lookup and bookability requests.
-- `POST /quotes/{quoteId}/approval-decisions` requires an `X-Actor` header and
-  is intended for quotes currently in `PENDING_APPROVAL`.
-- The service does not currently require authentication, so no secrets are
-  stored in the collection.
+- `POST /quotes/{quoteId}/approval-decisions` requires platform bearer
+  authorization with `quotes:approve` and is intended for quotes currently in
+  `PENDING_APPROVAL`.
+- The collection does not store bearer secrets. Use a local demo token signed
+  with the local `AUTH_JWT_SECRET` default only for local development, and use
+  deployment secret material for Azure checks.
