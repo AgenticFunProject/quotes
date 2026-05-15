@@ -765,6 +765,68 @@ def test_create_quote_can_return_ordered_alternative_pricing_options(client) -> 
     assert market_option["bookability"]["bookable"] is True
 
 
+def test_create_quote_can_limit_ordered_alternative_pricing_options(client) -> None:
+    test_client, _ = client
+
+    response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "customerId": "cust-acme",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+            "includeAlternativeOptions": True,
+            "maxAlternativeOptions": 1,
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["options"]["primary"]["pricingBasis"] == PricingBasis.CONTRACT.value
+    assert [option["pricingBasis"] for option in payload["options"]["alternatives"]] == [
+        PricingBasis.PUBLIC_TARIFF.value
+    ]
+    assert [option["totalAmount"] for option in payload["options"]["alternatives"]] == [1300.0]
+
+
+def test_create_quote_max_alternative_options_does_not_enable_options(client) -> None:
+    test_client, _ = client
+
+    response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "customerId": "cust-acme",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+            "maxAlternativeOptions": 1,
+        },
+    )
+
+    assert response.status_code == 201
+    assert "options" not in response.json()
+
+
+@pytest.mark.parametrize("max_alternative_options", [0, 11])
+def test_create_quote_rejects_invalid_max_alternative_options(client, max_alternative_options: int) -> None:
+    test_client, _ = client
+
+    response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "customerId": "cust-acme",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+            "includeAlternativeOptions": True,
+            "maxAlternativeOptions": max_alternative_options,
+        },
+    )
+
+    assert response.status_code == 422
+    assert any(error["loc"] == ["body", "maxAlternativeOptions"] for error in response.json()["detail"])
+
+
 def test_create_quote_holds_market_quote_for_approval_when_market_risk_guardrails_are_exceeded(client) -> None:
     test_client, session_factory = client
 

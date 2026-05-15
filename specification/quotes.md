@@ -40,6 +40,8 @@ Provides a quoted price that can be referenced when placing a booking.
   "accountId": "string",
   "currency": "EUR",
   "pricingModeHint": "MARKET",
+  "includeAlternativeOptions": true,
+  "maxAlternativeOptions": 1,
   "equipment": [
     { "type": "20FT", "quantity": 2 },
     { "type": "40FT", "quantity": 1 }
@@ -51,6 +53,8 @@ Provides a quoted price that can be referenced when placing a booking.
 - `customerId` and `accountId` are optional request context fields.
 - `currency` is optional and defaults to `USD`.
 - `pricingModeHint` is optional and can be `AUTO`, `PUBLIC_TARIFF`, `CONTRACT`, or `MARKET`.
+- `includeAlternativeOptions` is optional and defaults to `false`; when `true`, the response includes a primary option plus ordered alternatives.
+- `maxAlternativeOptions` is optional, accepts values from `1` through `10`, and only bounds the ordered alternatives returned when `includeAlternativeOptions=true`.
 - When both are present, account-specific contracts take precedence over customer-level contracts.
 - If no matching contract covers the request, the service falls back to `PUBLIC_TARIFF` pricing.
 - `pricingModeHint=MARKET` asks the service to use approved market-rate snapshots when they fully cover the request; otherwise the service falls back to contract or public tariff pricing and persists that fallback decision.
@@ -932,13 +936,17 @@ should be paired with executable Gherkin scenarios when implemented.
   to mark only that option unavailable without corrupting sibling options.
 
 #### API implications
-- `POST /quotes` would need an explicit request flag or mode to opt into
-  alternative options and to bound the maximum option count.
+- `POST /quotes` accepts `includeAlternativeOptions=true` to opt into
+  alternative options and optional `maxAlternativeOptions` from `1` through
+  `10` to bound the number of ordered alternatives.
+- Omitting `maxAlternativeOptions` preserves the full current alternative list,
+  and sending it without `includeAlternativeOptions=true` does not add an
+  `options` object to the normal quote response.
 - The response should expose ranking metadata such as `rank`, `selectionReason`,
   or `primary=true` so clients do not reverse-engineer business ordering from
   array position alone.
-- Booking-facing consumers should receive a stable option identifier that can be
-  passed later instead of resubmitting the full pricing search.
+- Stable Booking-facing option identifiers remain future work; current returned
+  options are response-local priced alternatives.
 
 #### Provenance and audit expectations
 - Every option should persist its own pricing provenance, explainability data,

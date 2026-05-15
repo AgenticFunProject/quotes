@@ -39,6 +39,7 @@ _SURCHARGE_UPDATED_EVENT = "surcharge.updated"
 _OUTBOX_EVENT_VERSION = 1
 _SOURCE_CURRENCY = "USD"
 _ROUNDING_POLICY = "LINE_ITEM_HALF_UP_2DP"
+_MAX_ALTERNATIVE_OPTIONS = 10
 _MARKET_APPROVAL_CAPACITY_PRESSURE_THRESHOLD = 0.85
 _MARKET_APPROVAL_UTILIZATION_THRESHOLD = 0.9
 _MARKET_APPROVAL_SEASONALITY_THRESHOLD = 0.75
@@ -104,6 +105,12 @@ class CreateQuoteRequest(BaseModel):
     currency: str = Field(default=_SOURCE_CURRENCY, min_length=3, max_length=3)
     pricing_mode_hint: PricingModeHint | None = Field(default=None, alias="pricingModeHint")
     include_alternative_options: bool = Field(default=False, alias="includeAlternativeOptions")
+    max_alternative_options: int | None = Field(
+        default=None,
+        alias="maxAlternativeOptions",
+        ge=1,
+        le=_MAX_ALTERNATIVE_OPTIONS,
+    )
 
     @field_validator("currency")
     @classmethod
@@ -1796,6 +1803,7 @@ def _serialize_quote_options(
     primary_pricing: ResolvedPricing,
     fx_rate: ResolvedFxRate,
     quote_validities: dict[PricingBasis, ResolvedQuoteValidity],
+    max_alternative_options: int | None,
 ) -> dict[str, object]:
     primary_option, _ = _serialize_quote_option(
         payload=payload,
@@ -1827,6 +1835,9 @@ def _serialize_quote_options(
             ),
         )
     ]
+    if max_alternative_options is not None:
+        ordered_alternatives = ordered_alternatives[:max_alternative_options]
+
     return {
         "primary": primary_option,
         "alternatives": ordered_alternatives,
@@ -1967,6 +1978,7 @@ def create_quote(
             primary_pricing=primary_pricing,
             fx_rate=_resolve_fx_rate(db=db, currency=payload.currency),
             quote_validities=quote_validities,
+            max_alternative_options=payload.max_alternative_options,
         )
 
     return response

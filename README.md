@@ -43,7 +43,9 @@ and seeds reference rates and surcharge rules used by `POST /quotes`.
 - `POST /quotes` validates the request, resolves a seeded schedule, applies base
   freight plus surcharge rules, persists the quote, and returns a commercial
   response with line items and a validity window derived from the matched quote
-  validity policy.
+  validity policy. Set `includeAlternativeOptions=true` to include alternative
+  priced options, and use optional `maxAlternativeOptions` from `1` through `10`
+  to bound the number of returned alternatives.
 - `POST /quotes/{quote_id}/reprice` reruns pricing for a stored quote against
   the current approved commercial data, preserves the original quote unchanged,
   and persists a structured variance summary on the repriced result.
@@ -141,7 +143,29 @@ data, so the response should include both quote identifiers:
 
 Keep both values from the response for the next steps.
 
-### 3. Look up the stored quote
+### 3. Request bounded alternative options
+
+```bash
+curl -X POST http://localhost:8000/quotes \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+    "customerId": "cust-acme",
+    "equipment": [
+      {"type": "20FT", "quantity": 1}
+    ],
+    "cargoWeightKg": 18000,
+    "includeAlternativeOptions": true,
+    "maxAlternativeOptions": 1
+  }'
+```
+
+The response includes the primary option and at most one ordered alternative.
+Omitting `maxAlternativeOptions` preserves the full alternative list, while
+sending it without `includeAlternativeOptions=true` keeps the normal quote
+response shape.
+
+### 4. Look up the stored quote
 
 Internal lookup by UUID:
 
@@ -166,7 +190,7 @@ curl http://localhost:8000/quotes/reference/<quote-reference>
 All lookup paths return the stored schedule snapshot, line items, pricing basis,
 and pricing provenance used to explain how the quote was calculated.
 
-### 4. Reprice a stored quote against current approved data
+### 5. Reprice a stored quote against current approved data
 
 ```bash
 curl -X POST http://localhost:8000/quotes/<quote-uuid>/reprice \
@@ -180,7 +204,7 @@ The repriced response keeps the new quote distinct from the original and
 returns `varianceSummary` details for total amount, base rate, surcharges, FX,
 market inputs, and optimization inputs.
 
-### 5. Check bookability before handing the quote to Booking
+### 6. Check bookability before handing the quote to Booking
 
 ```bash
 curl http://localhost:8000/quotes/<quote-reference>/bookability
@@ -193,7 +217,7 @@ The bookability response is the Booking-oriented validity check. It returns:
 - `reason`: machine-readable explanation such as `VALIDITY_WINDOW_OPEN`
 - `validUntil`: expiry timestamp from the stored quote
 
-### 6. Exercise the unsupported-lane validation path
+### 7. Exercise the unsupported-lane validation path
 
 The seeded `BRSSZ -> USLAX` schedule is known to the service but intentionally
 has no matching rate row. That makes it the easiest way to verify the commercial

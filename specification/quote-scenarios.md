@@ -168,6 +168,15 @@ And each option includes its own bookable commercial provenance snapshot
 And each option exposes stable ranking metadata so the client can explain why it is primary, cheapest, fastest, or otherwise preferred
 And the response includes a stable option identifier that Booking can use to select one option later without repricing the full request
 
+## Scenario: Bound alternative options on quote creation
+
+Given the service has multiple eligible pricing bases for a quote request
+When a client posts to `/quotes` with `includeAlternativeOptions=true` and `maxAlternativeOptions=1`
+Then the response keeps the selected primary option
+And the response returns only the best ordered alternative option
+And `maxAlternativeOptions` values below 1 or above 10 are rejected as request validation errors
+And `maxAlternativeOptions` without `includeAlternativeOptions=true` does not add an `options` object
+
 ## Scenario: Hold a quote for manual approval when commercial guardrails are exceeded
 
 Given a priced quote violates an approval guardrail such as margin or waiver policy
