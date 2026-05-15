@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import json
 import time
+from urllib.error import HTTPError
 
 import pytest
 from fastapi.testclient import TestClient
@@ -177,6 +178,116 @@ def _auth_headers(actor: str, scopes: list[str]) -> dict[str, str]:
     return {
         "Authorization": f"Bearer {_bearer_token(actor, scopes)}",
         "X-Actor": actor,
+    }
+
+
+class _FakeServiceResponse:
+    def __init__(self, status_code: int, body: bytes = b'{"status":"ok"}') -> None:
+        self.status_code = status_code
+        self._body = body
+
+    def __enter__(self) -> "_FakeServiceResponse":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def getcode(self) -> int:
+        return self.status_code
+
+    def read(self) -> bytes:
+        return self._body
+
+
+def test_admin_equipments_connection_requires_platform_bearer_token(client) -> None:
+    test_client, _ = client
+
+    response = test_client.get("/admin/service-connections/equipments")
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "missing bearer token"}
+
+
+def test_admin_equipments_connection_reports_missing_configuration(client, monkeypatch) -> None:
+    test_client, _ = client
+    monkeypatch.delenv("EQUIPMENTS_SERVICE_URL", raising=False)
+
+    response = test_client.get(
+        "/admin/service-connections/equipments",
+        headers=_auth_headers("ops@quotes", [_SCOPE_QUOTES_ADMIN]),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "service": "equipments",
+        "configured": False,
+        "ok": False,
+        "status": "not_configured",
+        "detail": "EQUIPMENTS_SERVICE_URL is not configured",
+    }
+
+
+def test_admin_equipments_connection_reports_successful_health_response(client, monkeypatch) -> None:
+    test_client, _ = client
+    monkeypatch.setenv("EQUIPMENTS_SERVICE_URL", "https://equipments.example.test/")
+    monkeypatch.setenv("EQUIPMENTS_HEALTH_PATH", "/health")
+
+    captured = {}
+
+    def fake_urlopen(request, timeout: float):
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        captured["accept"] = request.headers["Accept"]
+        return _FakeServiceResponse(200)
+
+    monkeypatch.setattr("app.service_connections.urlopen", fake_urlopen)
+
+    response = test_client.get(
+        "/admin/service-connections/equipments",
+        headers=_auth_headers("ops@quotes", [_SCOPE_QUOTES_ADMIN]),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "service": "equipments",
+        "configured": True,
+        "ok": True,
+        "status": "ok",
+        "baseUrl": "https://equipments.example.test",
+        "healthPath": "/health",
+        "httpStatus": 200,
+    }
+    assert captured == {
+        "url": "https://equipments.example.test/health",
+        "timeout": 3.0,
+        "accept": "application/json",
+    }
+
+
+def test_admin_equipments_connection_reports_failed_health_response(client, monkeypatch) -> None:
+    test_client, _ = client
+    monkeypatch.setenv("EQUIPMENTS_SERVICE_URL", "https://equipments.example.test")
+
+    def fake_urlopen(request, timeout: float):
+        raise HTTPError(request.full_url, 503, "Service Unavailable", {}, None)
+
+    monkeypatch.setattr("app.service_connections.urlopen", fake_urlopen)
+
+    response = test_client.get(
+        "/admin/service-connections/equipments",
+        headers=_auth_headers("ops@quotes", [_SCOPE_QUOTES_ADMIN]),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "service": "equipments",
+        "configured": True,
+        "ok": False,
+        "status": "unhealthy",
+        "baseUrl": "https://equipments.example.test",
+        "healthPath": "/health",
+        "httpStatus": 503,
+        "errorType": "HTTPError",
     }
 
 

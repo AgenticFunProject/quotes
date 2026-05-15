@@ -96,6 +96,17 @@ Then the API rejects the request with `403`
 And when the bearer token has `quotes:approve`
 Then the API records the approval decision using `X-Actor` or the token subject as the approver identity
 
+## Scenario: Check Equipments service connectivity
+
+Given `EQUIPMENTS_SERVICE_URL` points at the Equipments service
+And an operator has a platform bearer token with `quotes:admin`
+When the operator calls `GET /admin/service-connections/equipments`
+Then Quotes calls the configured Equipments `/health` endpoint
+And the response reports `status` as `ok` when Equipments returns a healthy 2xx response
+And the response reports `status` as `unhealthy` when the configured health call fails
+And the response reports `status` as `not_configured` when `EQUIPMENTS_SERVICE_URL` is not configured
+And the API never accepts a caller-supplied target URL for this diagnostic check
+
 ## Scenario: Record an audit trail for managed commercial changes
 
 Given a commercial operator creates, edits, and activates a managed rate-table version

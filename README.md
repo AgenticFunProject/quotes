@@ -86,6 +86,9 @@ and seeds reference rates and surcharge rules used by `POST /quotes`.
 - `POST /admin/quote-preview` lets commercial operators evaluate draft managed
   rate-table and surcharge-rule versions against a shipment before activation.
   Requires `quotes:admin`.
+- `GET /admin/service-connections/equipments` checks the configured Equipments
+  service `/health` endpoint and returns `ok`, `unhealthy`, or
+  `not_configured` diagnostic status. Requires `quotes:admin`.
 - Quote lifecycle writes also create durable rows in `outbox_events`, starting
   with `quote.created` at creation time and `quote.expired` when an issued quote
   is first observed past `validUntil`. Those payloads include the same stored
@@ -116,6 +119,26 @@ Required scopes:
 present. If `X-Actor` is omitted, the token subject is recorded as the actor.
 Missing or invalid bearer tokens return `401`; valid tokens without the required
 scope return `403`.
+
+### Service Connectivity Diagnostics
+
+`GET /admin/service-connections/equipments` is an operator diagnostic endpoint
+for checking whether Quotes can reach the configured Equipments service. It is
+not a business integration path and it does not accept caller-supplied target
+URLs.
+
+Configuration:
+
+- `EQUIPMENTS_SERVICE_URL`: Equipments service base URL. If omitted or blank,
+  the endpoint returns `status: "not_configured"`.
+- `EQUIPMENTS_HEALTH_PATH`: health path to call, default `/health`.
+- `EQUIPMENTS_CONNECTIVITY_TIMEOUT_SECONDS`: request timeout, default `3`, max
+  `30`.
+
+The endpoint calls the configured health URL and returns a structured payload
+with the service name, configuration state, redacted base URL, health path,
+HTTP status when available, and `ok: true` only for 2xx responses. Missing
+bearer auth returns `401`; a valid token without `quotes:admin` returns `403`.
 
 ### Stored Pricing Provenance
 
@@ -362,6 +385,11 @@ Optional GitHub Actions variables:
 - `AZURE_ENV_NAME`: defaults to `prod`
 - `AZURE_LOCATION`: defaults to `eastus`
 - `AUTH_JWT_ISSUER`: defaults to `platform-auth`
+- `EQUIPMENTS_SERVICE_URL`: optional Equipments service base URL for
+  `GET /admin/service-connections/equipments`; leave unset until the live
+  Equipments URL is known.
+- `EQUIPMENTS_HEALTH_PATH`: defaults to `/health`
+- `EQUIPMENTS_CONNECTIVITY_TIMEOUT_SECONDS`: defaults to `3`
 - `RUNNER_LABELS_JSON`: defaults to `["ubuntu-latest"]`; set to a JSON array
   such as `["self-hosted", "linux", "x64"]` to run the workflows on a
   self-hosted runner

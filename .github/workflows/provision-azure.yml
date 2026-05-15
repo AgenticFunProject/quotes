@@ -12,6 +12,9 @@ env:
   AZURE_LOCATION: ${{ vars.AZURE_LOCATION || 'eastus' }}
   AUTH_JWT_ISSUER: ${{ vars.AUTH_JWT_ISSUER || 'platform-auth' }}
   AUTH_JWT_AUDIENCE: quotes-service
+  EQUIPMENTS_SERVICE_URL: ${{ vars.EQUIPMENTS_SERVICE_URL || '' }}
+  EQUIPMENTS_HEALTH_PATH: ${{ vars.EQUIPMENTS_HEALTH_PATH || '/health' }}
+  EQUIPMENTS_CONNECTIVITY_TIMEOUT_SECONDS: ${{ vars.EQUIPMENTS_CONNECTIVITY_TIMEOUT_SECONDS || '3' }}
 
 jobs:
   provision:
@@ -108,6 +111,9 @@ jobs:
               authJwtIssuer="$AUTH_JWT_ISSUER" \
               authJwtAudience="$AUTH_JWT_AUDIENCE" \
               authJwtSecret="$AUTH_JWT_SECRET" \
+              equipmentsServiceUrl="$EQUIPMENTS_SERVICE_URL" \
+              equipmentsHealthPath="$EQUIPMENTS_HEALTH_PATH" \
+              equipmentsConnectivityTimeoutSeconds="$EQUIPMENTS_CONNECTIVITY_TIMEOUT_SECONDS" \
             --query properties.outputs \
             --output json)"
 

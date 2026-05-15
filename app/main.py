@@ -21,6 +21,7 @@ from app.db import get_db, init_db
 from app.models import CommercialChangeAction, CommercialChangeEvent, CommercialChangeResourceType, Contract, ContractMatchType, ContractRateRule, EquipmentType, ExchangeRate, ImpactAnalysisChangeType, ImpactAnalysisRun, MarketRateSnapshot, OutboxConsumerCheckpoint, OutboxEvent, PortScope, PricingBasis, PricingStrategyVersion, Quote, QuoteLifecycleState, QuoteValidityPolicy, RateTable, SurchargeRule, SurchargeType
 from app.seed import REFERENCE_DATA_VERSION, seed_reference_data
 from app.schedules import Schedule, ScheduleProvider, get_schedule_provider
+from app.service_connections import check_configured_service_health
 from app.surcharges import EquipmentSelection, SurchargeLineItem, calculate_surcharges, total_surcharges
 
 
@@ -306,6 +307,16 @@ def _require_quote_approval_actor(
 ) -> str:
     caller = require_bearer_scope(authorization, SCOPE_QUOTES_APPROVE)
     return _actor_from_auth(caller, actor)
+
+
+@app.get("/admin/service-connections/equipments")
+def check_equipments_service_connection(_: str = Depends(_require_actor)) -> dict[str, object]:
+    return check_configured_service_health(
+        service="equipments",
+        base_url_env="EQUIPMENTS_SERVICE_URL",
+        health_path_env="EQUIPMENTS_HEALTH_PATH",
+        timeout_env="EQUIPMENTS_CONNECTIVITY_TIMEOUT_SECONDS",
+    )
 
 
 def _quote_approval_decision(quote: Quote) -> dict[str, object] | None:

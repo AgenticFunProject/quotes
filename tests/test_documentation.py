@@ -48,6 +48,7 @@ def test_spec_endpoint_table_includes_current_workflow_routes() -> None:
 
     for path in [
         "/quotes/{id}/approval-decisions",
+        "/admin/service-connections/equipments",
         "/admin/outbox-events",
         "/admin/outbox-consumers/{consumerName}/replay",
         "/admin/impact-analyses",
@@ -79,6 +80,21 @@ def test_specs_document_platform_bearer_auth_for_protected_operations() -> None:
     assert "quotes-service" in spec
     assert "Require platform bearer authorization for commercial admin changes" in scenarios
     assert "Require platform bearer authorization for quote approval decisions" in scenarios
+
+
+def test_specs_document_equipments_connectivity_diagnostic() -> None:
+    readme = (REPO_ROOT / "README.md").read_text()
+    spec = (REPO_ROOT / "specification" / "quotes.md").read_text()
+    scenarios = (REPO_ROOT / "specification" / "quote-scenarios.md").read_text()
+
+    for text in [readme, spec, scenarios]:
+        assert "/admin/service-connections/equipments" in text
+        assert "EQUIPMENTS_SERVICE_URL" in text
+        assert "quotes:admin" in text
+
+    assert "not_configured" in spec
+    assert "unhealthy" in spec
+    assert "Check Equipments service connectivity" in scenarios
 
 
 def test_system_architecture_documents_current_repositories_and_azure_deployment() -> None:

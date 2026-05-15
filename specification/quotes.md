@@ -37,6 +37,7 @@ Provides a quoted price that can be referenced when placing a booking.
 | POST | /admin/impact-analyses | Persist a schedule- or contract-change impact summary |
 | GET | /admin/impact-analyses/{id} | Retrieve a recorded impact-analysis run |
 | POST | /admin/quote-preview | Preview quote pricing with draft managed commercial rows |
+| GET | /admin/service-connections/equipments | Check configured Equipments service health connectivity |
 
 ## Authentication And Authorization
 
@@ -59,13 +60,49 @@ Protected operational writes require these scopes:
 | Scope | Required for |
 |-------|--------------|
 | `quotes:approve` | `POST /quotes/{id}/approval-decisions` |
-| `quotes:admin` | Managed commercial writes, outbox replay, impact analysis creation, and draft quote preview under `/admin` |
+| `quotes:admin` | Managed commercial writes, outbox replay, impact analysis creation, draft quote preview, and service connectivity diagnostics under `/admin` |
 
 When a protected request includes both a valid bearer token and `X-Actor`, the
 service records `X-Actor` as the business actor for audit compatibility. When
 `X-Actor` is omitted, the token subject is recorded as the actor. Missing,
 malformed, expired, wrong-issuer, wrong-audience, or incorrectly signed bearer
 tokens return `401`. Valid tokens without the required scope return `403`.
+
+## Service Connectivity Diagnostics
+
+`GET /admin/service-connections/equipments` lets operators test whether the
+Quotes runtime can reach the configured Equipments service health endpoint. The
+endpoint requires `quotes:admin`, uses only configured target URLs, and does not
+accept arbitrary URLs in request parameters.
+
+Configuration:
+
+- `EQUIPMENTS_SERVICE_URL`: Equipments service base URL.
+- `EQUIPMENTS_HEALTH_PATH`: health path, default `/health`.
+- `EQUIPMENTS_CONNECTIVITY_TIMEOUT_SECONDS`: request timeout, default `3`, max
+  `30`.
+
+Response statuses:
+
+| Status | Meaning |
+|--------|---------|
+| `ok` | `EQUIPMENTS_SERVICE_URL` is configured and the health endpoint returned a 2xx status |
+| `unhealthy` | the service is configured but the health call returned non-2xx or failed before a healthy response |
+| `not_configured` | `EQUIPMENTS_SERVICE_URL` is missing or blank |
+
+Example response:
+
+```json
+{
+  "service": "equipments",
+  "configured": true,
+  "ok": true,
+  "status": "ok",
+  "baseUrl": "https://equipments.example.com",
+  "healthPath": "/health",
+  "httpStatus": 200
+}
+```
 
 ### POST /quotes - Request Body
 ```json

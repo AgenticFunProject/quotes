@@ -28,6 +28,15 @@ param authJwtAudience string = 'quotes-service'
 @description('Signing secret expected for platform bearer JWTs. Supply from secret material, never source control.')
 param authJwtSecret string
 
+@description('Optional Equipments service base URL used by the operator connectivity diagnostic endpoint.')
+param equipmentsServiceUrl string = ''
+
+@description('Equipments health path used by the operator connectivity diagnostic endpoint.')
+param equipmentsHealthPath string = '/health'
+
+@description('Equipments connectivity diagnostic timeout in seconds.')
+param equipmentsConnectivityTimeoutSeconds string = '3'
+
 var appServicePlanName = 'asp-${namePrefix}'
 var webAppName = 'app-${namePrefix}'
 var appInsightsName = 'appi-${namePrefix}'
@@ -124,6 +133,18 @@ resource webApp 'Microsoft.Web/sites@2023-12-01' = {
         {
           name: 'AUTH_JWT_SECRET'
           value: authJwtSecret
+        }
+        {
+          name: 'EQUIPMENTS_SERVICE_URL'
+          value: equipmentsServiceUrl
+        }
+        {
+          name: 'EQUIPMENTS_HEALTH_PATH'
+          value: equipmentsHealthPath
+        }
+        {
+          name: 'EQUIPMENTS_CONNECTIVITY_TIMEOUT_SECONDS'
+          value: equipmentsConnectivityTimeoutSeconds
         }
       ]
     }
