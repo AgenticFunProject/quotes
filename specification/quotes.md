@@ -1131,17 +1131,38 @@ should be paired with executable Gherkin scenarios when implemented.
 - Omitting `maxAlternativeOptions` preserves the full current alternative list,
   and sending it without `includeAlternativeOptions=true` does not add an
   `options` object to the normal quote response.
+- When alternative options are requested, the primary option and every returned
+  alternative expose an opaque `quoteOptionId`. The aggregate quote `id` and
+  `quoteReference` identify the quote request; `quoteOptionId` identifies the
+  specific priced option Booking selected from that aggregate quote.
+- `quoteOptionId` values are stable for the lifetime of the stored quote,
+  unique within their aggregate quote, and must not encode array position,
+  ranking, pricing basis, or other mutable presentation details.
+- Booking selects a stored option by calling
+  `GET /quotes/{id}?optionId={quoteOptionId}` before booking and
+  `GET /quotes/{id}/bookability?optionId={quoteOptionId}` for the option-scoped
+  validity check. Omitting `optionId` preserves the existing primary quote
+  lookup and bookability behavior.
 - The response should expose ranking metadata such as `rank`, `selectionReason`,
   or `primary=true` so clients do not reverse-engineer business ordering from
   array position alone.
-- Stable Booking-facing option identifiers remain future work; current returned
-  options are response-local priced alternatives.
+- Unknown option identifiers, option identifiers that belong to a different
+  aggregate quote, and malformed identifiers are rejected without falling back
+  to array position or current repricing.
 
 #### Provenance and audit expectations
 - Every option should persist its own pricing provenance, explainability data,
   and schedule snapshot.
 - The aggregate response should capture which ranking policy and version were
   used to order the options.
+- The accepted persistence model is one aggregate quote record with child option records.
+  Each child option stores its `quoteOptionId`, primary or
+  alternative role, rank, selection reason, pricing basis, schedule snapshot,
+  pricing provenance, line items, totals, validity window, and option
+  availability state.
+- The schema change is additive. Existing quotes without child option records
+  continue to support the current aggregate lookup and bookability behavior,
+  while option-scoped selection is available only for stored child options.
 - Audit trails should show whether the customer booked the primary option or an
   alternative, because that choice affects later analytics and dispute review.
 

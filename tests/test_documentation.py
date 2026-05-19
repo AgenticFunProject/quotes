@@ -67,6 +67,22 @@ def test_specs_document_bounded_alternative_options_as_current_behavior() -> Non
     assert "Bound alternative options on quote creation" in scenarios
 
 
+def test_specs_accept_stable_quote_option_identifiers_for_booking() -> None:
+    spec = (REPO_ROOT / "specification" / "quotes.md").read_text()
+    scenarios = (REPO_ROOT / "specification" / "quote-scenarios.md").read_text()
+
+    for text in [spec, scenarios]:
+        assert "quoteOptionId" in text
+        assert "GET /quotes/{id}?optionId={quoteOptionId}" in text
+        assert "GET /quotes/{id}/bookability?optionId={quoteOptionId}" in text
+
+    assert "one aggregate quote record with child option records" in spec
+    assert "Stable Booking-facing option identifiers remain future work" not in spec
+    assert "Select the primary quote option by stable identifier" in scenarios
+    assert "Select an alternative quote option by stable identifier" in scenarios
+    assert "Reject an expired or unavailable quote option" in scenarios
+
+
 def test_specs_document_platform_bearer_auth_for_protected_operations() -> None:
     readme = (REPO_ROOT / "README.md").read_text()
     spec = (REPO_ROOT / "specification" / "quotes.md").read_text()

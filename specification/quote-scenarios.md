@@ -193,6 +193,30 @@ And each option includes its own bookable commercial provenance snapshot
 And each option exposes stable ranking metadata so the client can explain why it is primary, cheapest, fastest, or otherwise preferred
 And the response includes a stable option identifier that Booking can use to select one option later without repricing the full request
 
+## Scenario: Select the primary quote option by stable identifier
+
+Given a multi-option quote response includes a primary option with `quoteOptionId`
+When Booking calls `GET /quotes/{id}?optionId={quoteOptionId}` using that primary option identifier
+Then the API returns the stored primary option without repricing the quote request
+And the selected option response distinguishes the aggregate quote `id`, public `quoteReference`, and selected `quoteOptionId`
+And `GET /quotes/{id}/bookability?optionId={quoteOptionId}` returns the primary option's stored bookability state
+
+## Scenario: Select an alternative quote option by stable identifier
+
+Given a multi-option quote response includes an alternative option with `quoteOptionId`
+When Booking calls `GET /quotes/{id}?optionId={quoteOptionId}` using that alternative option identifier
+Then the API returns that stored alternative option's pricing basis, line items, totals, schedule snapshot, and pricing provenance
+And the API does not infer the selected alternative from array position, rank, or pricing basis
+And `GET /quotes/{id}/bookability?optionId={quoteOptionId}` validates the selected alternative rather than the aggregate primary option
+
+## Scenario: Reject an expired or unavailable quote option
+
+Given a stored quote option is expired or marked unavailable before Booking selects it
+When Booking calls `GET /quotes/{id}/bookability?optionId={quoteOptionId}`
+Then the API returns a non-bookable response for that selected option with a machine-readable reason
+And `GET /quotes/{id}?optionId={quoteOptionId}` remains a read of the stored option snapshot rather than a repricing request
+And an unknown or cross-quote `quoteOptionId` is rejected instead of falling back to the primary option
+
 ## Scenario: Bound alternative options on quote creation
 
 Given the service has multiple eligible pricing bases for a quote request
