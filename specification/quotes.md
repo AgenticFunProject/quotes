@@ -67,6 +67,9 @@ service records `X-Actor` as the business actor for audit compatibility. When
 `X-Actor` is omitted, the token subject is recorded as the actor. Missing,
 malformed, expired, wrong-issuer, wrong-audience, or incorrectly signed bearer
 tokens return `401`. Valid tokens without the required scope return `403`.
+Role claims are not authorization shortcuts for Quotes: a valid Quotes-audience
+token with `role=admin` but without the required Quotes scope is authenticated
+and rejected with `403`.
 
 ## 2026-05-19 Cross-Repo Auth/RBAC Deployment Plan
 
@@ -110,25 +113,24 @@ The gateway must not attach bearer tokens to public quote request or read calls.
 
 ### Role compatibility decision
 
-`role=admin` compatibility remains an open decision. Equipments accepts the
-`admin` role as a privileged shortcut after normal token validation. Quotes
-currently authorizes by `quotes:admin` and `quotes:approve` scopes only. The
-next implementation must choose one of these explicit outcomes before code
-changes:
+Quotes keeps scope-only authorization for protected operations. `quotes:admin`
+is required for managed commercial writes, outbox replay, impact analysis
+creation, draft quote preview, and service connectivity diagnostics.
+`quotes:approve` is required for `POST /quotes/{id}/approval-decisions`.
+`role=admin` alone does not authorize protected Quotes operations.
 
-1. Keep Quotes scope-only authorization and require Users or the gateway to mint
-   Quotes-specific scopes.
-2. Accept `role=admin` for protected Quotes routes, with tests proving that the
-   role never bypasses issuer, audience, expiry, or signature validation.
-3. Accept `role=admin` only for `quotes:admin` operations while keeping
-   approval decisions scoped by `quotes:approve`.
+Equipments can continue to accept a validated `role=admin` token for its own
+privileged operations, but that compatibility behavior does not apply to
+Quotes. Users or the gateway must mint Quotes-specific scopes when callers need
+protected Quotes access.
 
 ### Protected-route status behavior
 
 Protected routes must return `401` when the bearer token is missing, malformed,
 expired, signed with the wrong secret, uses the wrong issuer, or uses the wrong
 audience. Protected routes must return `403` when the token is valid but lacks
-the required Quotes scope or any accepted role compatibility decided above.
+the required Quotes scope. A token with `role=admin` and no required Quotes
+scope is validly authenticated but remains insufficiently authorized.
 
 ### Web-page token propagation boundaries
 
@@ -169,7 +171,6 @@ target URLs.
 
 ### Remaining open decisions
 
-- Whether Quotes should accept `role=admin`, and for which protected actions.
 - Whether Users will mint first-class Quotes-audience tokens or whether the
   gateway remains the local token source for demo-only protected Quotes flows.
 - Whether web-page will ever expose protected Quotes admin or approval actions.

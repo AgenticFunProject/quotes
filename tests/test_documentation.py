@@ -75,11 +75,13 @@ def test_specs_document_platform_bearer_auth_for_protected_operations() -> None:
     for text in [readme, spec, scenarios]:
         assert "quotes:admin" in text
         assert "quotes:approve" in text
+        assert "`role=admin`" in text
 
     assert "AUTH_JWT_AUDIENCE" in spec
     assert "quotes-service" in spec
     assert "Require platform bearer authorization for commercial admin changes" in scenarios
     assert "Require platform bearer authorization for quote approval decisions" in scenarios
+    assert "without the required Quotes scope" in readme
 
 
 def test_specs_document_equipments_connectivity_diagnostic() -> None:
@@ -147,7 +149,8 @@ def test_quotes_spec_contains_2026_05_19_auth_rbac_deployment_plan() -> None:
         "Users-issued or gateway-issued Quotes-audience tokens",
         "`quotes:admin`",
         "`quotes:approve`",
-        "`role=admin` compatibility remains an open decision",
+        "Quotes keeps scope-only authorization",
+        "`role=admin` alone does not authorize protected Quotes operations",
         "return `401`",
         "return `403`",
         "`/api/auth/quotes-token`",
@@ -158,6 +161,9 @@ def test_quotes_spec_contains_2026_05_19_auth_rbac_deployment_plan() -> None:
     ]:
         assert text in plan
 
+    assert "`role=admin` compatibility remains an open decision" not in plan
+    assert "Whether Quotes should accept `role=admin`" not in plan
+
 
 def test_quote_scenarios_cover_2026_05_19_auth_rbac_deployment_boundaries() -> None:
     scenarios = (REPO_ROOT / "specification" / "quote-scenarios.md").read_text()
@@ -167,7 +173,7 @@ def test_quote_scenarios_cover_2026_05_19_auth_rbac_deployment_boundaries() -> N
         "Accept gateway-issued Quotes-audience platform tokens for protected operations",
         "Reject missing or invalid protected-route bearer tokens",
         "Reject valid tokens without the required Quotes scope",
-        "Resolve role=admin compatibility before implementation",
+        "Reject role=admin without the required Quotes scope",
         "Keep web-page bearer propagation inside the gateway boundary",
         "Verify Azure platform auth settings before deployment sign-off",
         "Keep Booking on public quote validation and Equipments on diagnostics",

@@ -115,12 +115,15 @@ Required scopes:
 
 - `quotes:approve` for `POST /quotes/{quote_id}/approval-decisions`
 - `quotes:admin` for managed commercial-data writes, outbox replay, impact
-  analysis creation, and draft quote preview
+  analysis creation, draft quote preview, and service connectivity diagnostics
 
 `X-Actor` remains supported as audit metadata when a valid bearer token is
 present. If `X-Actor` is omitted, the token subject is recorded as the actor.
 Missing or invalid bearer tokens return `401`; valid tokens without the required
 scope return `403`.
+Role claims are not authorization shortcuts for Quotes: a valid Quotes-audience
+token with `role=admin` but without the required Quotes scope is rejected with
+`403`.
 
 ### Service Connectivity Diagnostics
 

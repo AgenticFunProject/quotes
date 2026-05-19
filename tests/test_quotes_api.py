@@ -158,25 +158,28 @@ def _bearer_token(
     audience: str | list[str] = _AUTH_AUDIENCE,
     issuer: str = _AUTH_ISSUER,
     expires_in_seconds: int = 3600,
+    role: str | None = None,
 ) -> str:
     header = _base64url_json({"alg": "HS256", "typ": "JWT"})
-    payload = _base64url_json(
-        {
-            "sub": subject,
-            "iss": issuer,
-            "aud": audience,
-            "exp": int(time.time()) + expires_in_seconds,
-            "scope": " ".join(scopes),
-        }
-    )
+    claims: dict[str, object] = {
+        "sub": subject,
+        "iss": issuer,
+        "aud": audience,
+        "exp": int(time.time()) + expires_in_seconds,
+        "scope": " ".join(scopes),
+    }
+    if role is not None:
+        claims["role"] = role
+
+    payload = _base64url_json(claims)
     signature = hmac.new(_AUTH_SECRET.encode(), f"{header}.{payload}".encode(), hashlib.sha256).digest()
     encoded_signature = base64.urlsafe_b64encode(signature).decode().rstrip("=")
     return f"{header}.{payload}.{encoded_signature}"
 
 
-def _auth_headers(actor: str, scopes: list[str]) -> dict[str, str]:
+def _auth_headers(actor: str, scopes: list[str], *, role: str | None = None) -> dict[str, str]:
     return {
-        "Authorization": f"Bearer {_bearer_token(actor, scopes)}",
+        "Authorization": f"Bearer {_bearer_token(actor, scopes, role=role)}",
         "X-Actor": actor,
     }
 
@@ -1212,6 +1215,41 @@ def test_quote_approval_decision_rejects_token_without_approval_scope(client) ->
     assert response.json() == {"detail": f"missing required scope {_SCOPE_QUOTES_APPROVE}"}
 
 
+def test_quote_approval_decision_rejects_role_admin_without_approval_scope(client) -> None:
+    test_client, session_factory = client
+
+    with session_factory() as session:
+        quote = Quote(
+            quote_reference="QTE-2026-00992",
+            lifecycle_state=QuoteLifecycleState.PENDING_APPROVAL,
+            schedule_id="df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            schedule_snapshot={"scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274"},
+            equipment=[{"type": "20FT", "quantity": 1}],
+            cargo_weight_kg=Decimal("18000.00"),
+            currency="USD",
+            source_currency="USD",
+            pricing_basis=PricingBasis.MARKET,
+            pricing_provenance={"pricingBasis": PricingBasis.MARKET.value, "sourceTotalAmount": 1085.0},
+            approval_reasons=[{"code": "MARKET_UTILIZATION_THRESHOLD_EXCEEDED"}],
+            fx_snapshot=_fx_snapshot(),
+            rounding_policy="LINE_ITEM_HALF_UP_2DP",
+            line_items=[{"description": "Ocean Freight - 20FT x 1", "amount": 1085.0}],
+            total_amount=Decimal("1085.00"),
+        )
+        session.add(quote)
+        session.commit()
+        session.refresh(quote)
+
+    response = test_client.post(
+        f"/quotes/{quote.id}/approval-decisions",
+        headers=_auth_headers("pricing.manager@quotes", [], role="admin"),
+        json={"decision": "APPROVE"},
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": f"missing required scope {_SCOPE_QUOTES_APPROVE}"}
+
+
 def test_quote_approval_decision_rejects_non_pending_quotes(client) -> None:
     test_client, session_factory = client
     quote = _seed_quote(session_factory)
@@ -1974,6 +2012,26 @@ def test_admin_rejects_token_without_admin_scope(client) -> None:
     response = test_client.post(
         "/admin/rate-tables",
         headers=_auth_headers("pricing.ops@quotes", [_SCOPE_QUOTES_APPROVE]),
+        json={
+            "originPort": "NLRTM",
+            "destinationPort": "USNYC",
+            "equipmentType": "20FT",
+            "baseRateUsd": 990,
+            "validFrom": "2026-04-01",
+            "validTo": "2026-12-31",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": f"missing required scope {_SCOPE_QUOTES_ADMIN}"}
+
+
+def test_admin_rejects_role_admin_without_admin_scope(client) -> None:
+    test_client, _ = client
+
+    response = test_client.post(
+        "/admin/rate-tables",
+        headers=_auth_headers("pricing.ops@quotes", [], role="admin"),
         json={
             "originPort": "NLRTM",
             "destinationPort": "USNYC",

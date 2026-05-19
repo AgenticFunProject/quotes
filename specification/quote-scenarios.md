@@ -294,13 +294,15 @@ When the token lacks `quotes:admin` for admin operations or `quotes:approve` for
 Then Quotes returns `403`
 And the route does not perform the protected operation
 
-## Scenario: Resolve role=admin compatibility before implementation
+## Scenario: Reject role=admin without the required Quotes scope
 
 Given Equipments accepts a validated `role=admin` token for privileged operations
-And Quotes currently documents scope-based authorization
-When the platform decides whether Quotes should accept `role=admin`
-Then the decision is recorded before runtime auth code changes
-And tests cover the selected behavior without allowing role claims to bypass issuer, audience, expiry, or signature checks
+And Quotes keeps scope-only authorization for protected operations
+When a valid Quotes-audience token has `role=admin` but lacks `quotes:admin`
+Then protected admin operations return `403`
+When a valid Quotes-audience token has `role=admin` but lacks `quotes:approve`
+Then quote approval decisions return `403`
+And `role=admin` alone does not authorize protected Quotes operations
 
 ## Scenario: Keep web-page bearer propagation inside the gateway boundary
 
