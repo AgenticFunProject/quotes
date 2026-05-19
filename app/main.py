@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from enum import Enum
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Header, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -567,6 +567,14 @@ def _get_quote_or_404(quote_id: str, db: Session) -> Quote:
     return quote
 
 
+def _get_quote_option_or_404(quote: Quote, option_id: UUID, db: Session) -> QuoteOption:
+    option = db.scalar(select(QuoteOption).where(QuoteOption.id == str(option_id), QuoteOption.quote_id == quote.id))
+    if option is None:
+        raise HTTPException(status_code=404, detail="Quote option not found")
+
+    return option
+
+
 def _normalize_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
@@ -628,6 +636,83 @@ def _serialize_bookability(quote: Quote) -> dict[str, object]:
         "reason": _BOOKABILITY_REASON_EXPIRED if expired else _BOOKABILITY_REASON_OPEN,
         "expired": expired,
         "validUntil": quote.valid_until.isoformat(),
+    }
+
+
+def _serialize_quote_option_availability(
+    option: QuoteOption,
+    *,
+    now: datetime | None = None,
+) -> dict[str, object]:
+    valid_until = _normalize_utc(option.valid_until)
+    effective_now = _normalize_utc(now or datetime.now(timezone.utc))
+    availability = option.availability if isinstance(option.availability, dict) else {}
+    stored_expired = bool(availability.get("expired", False))
+    expired = stored_expired or valid_until <= effective_now
+    if expired:
+        return {
+            "bookable": False,
+            "status": _QUOTE_STATUS_EXPIRED,
+            "reason": _BOOKABILITY_REASON_EXPIRED,
+            "expired": True,
+            "validUntil": valid_until.isoformat(),
+        }
+
+    bookable = bool(availability.get("bookable", True))
+    return {
+        "bookable": bookable,
+        "status": str(availability.get("status", _QUOTE_STATUS_ACTIVE if bookable else "UNAVAILABLE")),
+        "reason": str(availability.get("reason", _BOOKABILITY_REASON_OPEN if bookable else "OPTION_UNAVAILABLE")),
+        "expired": False,
+        "validUntil": valid_until.isoformat(),
+    }
+
+
+def _serialize_stored_quote_option(quote: Quote, option: QuoteOption) -> dict[str, object]:
+    availability = _serialize_quote_option_availability(option)
+    payload = {
+        "id": quote.id,
+        "quoteReference": quote.quote_reference,
+        "quoteOptionId": option.id,
+        "optionRole": option.role.value,
+        "rank": option.rank,
+        "selectionReason": option.selection_reason,
+        "scheduleSnapshot": option.schedule_snapshot,
+        "pricingBasis": option.pricing_basis.value,
+        "pricingProvenance": option.pricing_provenance,
+        "lineItems": [
+            {
+                "description": item["description"],
+                "amount": float(item["amount"]),
+            }
+            for item in option.line_items
+        ],
+        "sourceCurrency": option.source_currency,
+        "currency": option.currency,
+        "responseCurrency": option.currency,
+        "fx": option.fx_snapshot,
+        "roundingPolicy": option.rounding_policy,
+        "sourceTotalAmount": _serialize_decimal(option.source_total_amount),
+        "totalAmount": _serialize_decimal(option.total_amount),
+        "validUntil": availability["validUntil"],
+        "availability": availability,
+        "createdAt": _normalize_utc(option.created_at).isoformat(),
+    }
+    if option.contract_id is not None:
+        payload["contractId"] = option.contract_id
+    if option.market_source is not None:
+        payload["marketSource"] = option.market_source
+
+    return payload
+
+
+def _serialize_quote_option_bookability(quote: Quote, option: QuoteOption) -> dict[str, object]:
+    availability = _serialize_quote_option_availability(option)
+    return {
+        "quoteId": quote.id,
+        "quoteReference": quote.quote_reference,
+        "quoteOptionId": option.id,
+        **availability,
     }
 
 
@@ -2621,8 +2706,16 @@ def validate_quote_rate_coverage(
 
 
 @app.get("/quotes/{quote_id}")
-def get_quote(quote_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
-    return _serialize_quote(_sync_quote_lifecycle(_get_quote_or_404(quote_id, db), db))
+def get_quote(
+    quote_id: str,
+    option_id: UUID | None = Query(default=None, alias="optionId"),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    quote = _get_quote_or_404(quote_id, db)
+    if option_id is not None:
+        return _serialize_stored_quote_option(quote, _get_quote_option_or_404(quote, option_id, db))
+
+    return _serialize_quote(_sync_quote_lifecycle(quote, db))
 
 
 @app.get("/quotes/{quote_id}/explain")
@@ -2640,5 +2733,13 @@ def get_quote_by_reference(quote_reference: str, db: Session = Depends(get_db)) 
 
 
 @app.get("/quotes/{quote_id}/bookability")
-def get_quote_bookability(quote_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
-    return _serialize_bookability(_sync_quote_lifecycle(_get_quote_or_404(quote_id, db), db))
+def get_quote_bookability(
+    quote_id: str,
+    option_id: UUID | None = Query(default=None, alias="optionId"),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    quote = _get_quote_or_404(quote_id, db)
+    if option_id is not None:
+        return _serialize_quote_option_bookability(quote, _get_quote_option_or_404(quote, option_id, db))
+
+    return _serialize_bookability(_sync_quote_lifecycle(quote, db))

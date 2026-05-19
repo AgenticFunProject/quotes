@@ -34,6 +34,7 @@ from app.models import (
     PricingStrategyVersion,
     Quote,
     QuoteLifecycleState,
+    QuoteOption,
     RateTable,
     SurchargeRule,
 )
@@ -317,6 +318,22 @@ def _json_column(value: object) -> object:
     if isinstance(value, str):
         return json.loads(value)
     return value
+
+
+def _create_multi_option_quote(test_client: TestClient) -> dict[str, object]:
+    response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "customerId": "cust-acme",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+            "includeAlternativeOptions": True,
+        },
+    )
+
+    assert response.status_code == 201
+    return response.json()
 
 
 def _validity_policy_snapshot(
@@ -2392,6 +2409,167 @@ def test_get_quote_by_quote_reference_returns_full_quote(client) -> None:
         "validUntil": quote.valid_until.isoformat(),
         "createdAt": quote.created_at.isoformat(),
     }
+
+
+def test_scenario_select_primary_quote_option_by_stable_identifier(client) -> None:
+    test_client, _ = client
+    payload = _create_multi_option_quote(test_client)
+    primary = payload["options"]["primary"]
+
+    response = test_client.get(f"/quotes/{payload['id']}", params={"optionId": primary["quoteOptionId"]})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == payload["id"]
+    assert body["quoteReference"] == payload["quoteReference"]
+    assert body["quoteOptionId"] == primary["quoteOptionId"]
+    assert body["optionRole"] == "PRIMARY"
+    assert body["rank"] == 0
+    assert body["selectionReason"] == "PRIMARY_SELECTED"
+    assert body["scheduleSnapshot"]["scheduleId"] == "df62a7d2-a45e-4d4d-b3cb-b4af65435274"
+    assert body["pricingBasis"] == primary["pricingBasis"]
+    assert body["pricingProvenance"] == primary["pricingProvenance"]
+    assert body["lineItems"] == primary["lineItems"]
+    assert body["sourceTotalAmount"] == primary["sourceTotalAmount"]
+    assert body["totalAmount"] == primary["totalAmount"]
+    assert body["validUntil"] == primary["bookability"]["validUntil"]
+    assert body["availability"] == primary["bookability"]
+
+    legacy_response = test_client.get(f"/quotes/{payload['id']}")
+
+    assert legacy_response.status_code == 200
+    assert "quoteOptionId" not in legacy_response.json()
+
+
+def test_scenario_select_alternative_quote_option_by_stable_identifier(client) -> None:
+    test_client, _ = client
+    payload = _create_multi_option_quote(test_client)
+    primary = payload["options"]["primary"]
+    alternative = payload["options"]["alternatives"][0]
+
+    response = test_client.get(
+        f"/quotes/{payload['quoteReference']}",
+        params={"optionId": alternative["quoteOptionId"]},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == payload["id"]
+    assert body["quoteReference"] == payload["quoteReference"]
+    assert body["quoteOptionId"] == alternative["quoteOptionId"]
+    assert body["optionRole"] == "ALTERNATIVE"
+    assert body["rank"] == 1
+    assert body["selectionReason"] == "ORDERED_ALTERNATIVE"
+    assert body["pricingBasis"] == PricingBasis.PUBLIC_TARIFF.value
+    assert body["pricingBasis"] != primary["pricingBasis"]
+    assert body["lineItems"] == alternative["lineItems"]
+    assert body["sourceTotalAmount"] == alternative["sourceTotalAmount"]
+    assert body["totalAmount"] == alternative["totalAmount"]
+
+    bookability_response = test_client.get(
+        f"/quotes/{payload['quoteReference']}/bookability",
+        params={"optionId": alternative["quoteOptionId"]},
+    )
+
+    assert bookability_response.status_code == 200
+    assert bookability_response.json() == {
+        "quoteId": payload["id"],
+        "quoteReference": payload["quoteReference"],
+        "quoteOptionId": alternative["quoteOptionId"],
+        "bookable": True,
+        "status": "ACTIVE",
+        "reason": "VALIDITY_WINDOW_OPEN",
+        "expired": False,
+        "validUntil": alternative["bookability"]["validUntil"],
+    }
+
+
+def test_get_quote_option_rejects_unknown_malformed_or_cross_quote_id(client) -> None:
+    test_client, _ = client
+    first_quote = _create_multi_option_quote(test_client)
+    second_quote = _create_multi_option_quote(test_client)
+
+    unknown_response = test_client.get(
+        f"/quotes/{first_quote['id']}",
+        params={"optionId": "00000000-0000-4000-8000-000000000000"},
+    )
+    cross_quote_response = test_client.get(
+        f"/quotes/{first_quote['id']}",
+        params={"optionId": second_quote["options"]["primary"]["quoteOptionId"]},
+    )
+    malformed_response = test_client.get(f"/quotes/{first_quote['id']}", params={"optionId": "not-a-uuid"})
+
+    assert unknown_response.status_code == 404
+    assert unknown_response.json() == {"detail": "Quote option not found"}
+    assert cross_quote_response.status_code == 404
+    assert cross_quote_response.json() == {"detail": "Quote option not found"}
+    assert malformed_response.status_code == 422
+
+
+def test_scenario_reject_expired_or_unavailable_quote_option(client) -> None:
+    test_client, session_factory = client
+    payload = _create_multi_option_quote(test_client)
+    primary = payload["options"]["primary"]
+    alternative = payload["options"]["alternatives"][0]
+    expired_until = datetime.now(timezone.utc) - timedelta(hours=1)
+
+    with session_factory() as session:
+        expired_option = session.scalar(select(QuoteOption).where(QuoteOption.id == primary["quoteOptionId"]))
+        unavailable_option = session.scalar(select(QuoteOption).where(QuoteOption.id == alternative["quoteOptionId"]))
+        assert expired_option is not None
+        assert unavailable_option is not None
+
+        expired_option.valid_until = expired_until
+        expired_option.availability = {
+            "bookable": True,
+            "status": "ACTIVE",
+            "reason": "VALIDITY_WINDOW_OPEN",
+            "expired": False,
+            "validUntil": expired_until.isoformat(),
+        }
+        unavailable_option.availability = {
+            "bookable": False,
+            "status": "UNAVAILABLE",
+            "reason": "OPTION_UNAVAILABLE",
+            "expired": False,
+            "validUntil": alternative["bookability"]["validUntil"],
+        }
+        session.commit()
+
+    expired_bookability = test_client.get(
+        f"/quotes/{payload['id']}/bookability",
+        params={"optionId": primary["quoteOptionId"]},
+    )
+    unavailable_bookability = test_client.get(
+        f"/quotes/{payload['id']}/bookability",
+        params={"optionId": alternative["quoteOptionId"]},
+    )
+    expired_lookup = test_client.get(f"/quotes/{payload['id']}", params={"optionId": primary["quoteOptionId"]})
+
+    assert expired_bookability.status_code == 200
+    assert expired_bookability.json() == {
+        "quoteId": payload["id"],
+        "quoteReference": payload["quoteReference"],
+        "quoteOptionId": primary["quoteOptionId"],
+        "bookable": False,
+        "status": "EXPIRED",
+        "reason": "VALIDITY_WINDOW_EXPIRED",
+        "expired": True,
+        "validUntil": expired_until.isoformat(),
+    }
+    assert unavailable_bookability.status_code == 200
+    assert unavailable_bookability.json() == {
+        "quoteId": payload["id"],
+        "quoteReference": payload["quoteReference"],
+        "quoteOptionId": alternative["quoteOptionId"],
+        "bookable": False,
+        "status": "UNAVAILABLE",
+        "reason": "OPTION_UNAVAILABLE",
+        "expired": False,
+        "validUntil": alternative["bookability"]["validUntil"],
+    }
+    assert expired_lookup.status_code == 200
+    assert expired_lookup.json()["quoteOptionId"] == primary["quoteOptionId"]
 
 
 def test_get_quote_returns_404_when_missing(client) -> None:
