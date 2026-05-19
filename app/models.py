@@ -5,7 +5,7 @@ from decimal import Decimal
 from enum import Enum
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, Enum as SqlEnum, Integer, Numeric, String
+from sqlalchemy import JSON, Boolean, Date, DateTime, Enum as SqlEnum, ForeignKey, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -37,6 +37,11 @@ class QuoteLifecycleState(str, Enum):
     BOOKED = "BOOKED"
     EXPIRED = "EXPIRED"
     VOID = "VOID"
+
+
+class QuoteOptionRole(str, Enum):
+    PRIMARY = "PRIMARY"
+    ALTERNATIVE = "ALTERNATIVE"
 
 
 class PricingBasis(str, Enum):
@@ -146,6 +151,46 @@ class Quote(Base):
     line_items: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
     total_amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=Decimal("0.00"))
     valid_until: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_default_valid_until)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)
+
+
+class QuoteOption(Base):
+    __tablename__ = "quote_options"
+    __table_args__ = (UniqueConstraint("quote_id", "rank", name="uq_quote_options_quote_rank"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    quote_id: Mapped[str] = mapped_column(ForeignKey("quotes.id"), index=True)
+    role: Mapped[QuoteOptionRole] = mapped_column(
+        SqlEnum(
+            QuoteOptionRole,
+            native_enum=False,
+            values_callable=lambda members: [member.value for member in members],
+        ),
+        index=True,
+    )
+    rank: Mapped[int] = mapped_column(Integer)
+    selection_reason: Mapped[str] = mapped_column(String(64))
+    pricing_basis: Mapped[PricingBasis] = mapped_column(
+        SqlEnum(
+            PricingBasis,
+            native_enum=False,
+            values_callable=lambda members: [member.value for member in members],
+        ),
+        index=True,
+    )
+    schedule_snapshot: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    pricing_provenance: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    line_items: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
+    source_currency: Mapped[str] = mapped_column(String(3), default="USD")
+    currency: Mapped[str] = mapped_column(String(3), default="USD")
+    fx_snapshot: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    rounding_policy: Mapped[str] = mapped_column(String(64), default="LINE_ITEM_HALF_UP_2DP")
+    source_total_amount: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    valid_until: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    availability: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    contract_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    market_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)
 
 

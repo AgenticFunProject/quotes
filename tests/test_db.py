@@ -26,6 +26,8 @@ from app.models import (
     PricingStrategyVersion,
     Quote,
     QuoteLifecycleState,
+    QuoteOption,
+    QuoteOptionRole,
     RateTable,
     SurchargeRule,
     SurchargeType,
@@ -48,6 +50,7 @@ def test_models_create_sqlite_tables() -> None:
         "outbox_events",
         "outbox_consumer_checkpoints",
         "pricing_strategy_versions",
+        "quote_options",
         "quote_validity_policies",
         "quotes",
         "rate_tables",
@@ -92,6 +95,7 @@ def test_models_persist_records() -> None:
     )
     session.add(
         Quote(
+            id="quote-1",
             quote_reference="QTE-2026-00001",
             lifecycle_state=QuoteLifecycleState.ISSUED,
             schedule_id="53c362b2-1229-4ea5-a24a-9891fb1f509d",
@@ -131,6 +135,35 @@ def test_models_persist_records() -> None:
             idempotency_key="request-123",
             line_items=[{"description": "Ocean Freight", "amount": 1800.0}],
             total_amount=Decimal("1800.00"),
+        )
+    )
+    session.add(
+        QuoteOption(
+            id="option-1",
+            quote_id="quote-1",
+            role=QuoteOptionRole.PRIMARY,
+            rank=0,
+            selection_reason="PRIMARY_SELECTED",
+            pricing_basis=PricingBasis.PUBLIC_TARIFF,
+            schedule_snapshot={
+                "scheduleId": "53c362b2-1229-4ea5-a24a-9891fb1f509d",
+                "originPort": "NLRTM",
+                "destinationPort": "USNYC",
+                "departureDate": "2026-04-15",
+            },
+            pricing_provenance={
+                "pricingBasis": PricingBasis.PUBLIC_TARIFF.value,
+                "referenceDataVersion": REFERENCE_DATA_VERSION,
+            },
+            line_items=[{"description": "Ocean Freight", "amount": 1800.0}],
+            source_currency="USD",
+            currency="USD",
+            fx_snapshot={"rate": 1.0},
+            rounding_policy="LINE_ITEM_HALF_UP_2DP",
+            source_total_amount=Decimal("1800.00"),
+            total_amount=Decimal("1800.00"),
+            valid_until=datetime(2026, 4, 8, tzinfo=timezone.utc),
+            availability={"bookable": True, "status": "ACTIVE"},
         )
     )
     session.add(
@@ -212,6 +245,7 @@ def test_models_persist_records() -> None:
     assert session.query(MarketRateSnapshot).count() == 1
     assert session.query(PricingStrategyVersion).count() == 1
     assert session.query(Quote).count() == 1
+    assert session.query(QuoteOption).count() == 1
     assert session.query(RateTable).count() == 1
     assert session.query(SurchargeRule).count() == 1
     stored_quote = session.query(Quote).one()
@@ -225,6 +259,23 @@ def test_models_persist_records() -> None:
     assert stored_quote.approval_reasons == [{"code": "MARKET_UTILIZATION_THRESHOLD_EXCEEDED"}]
     assert stored_quote.approval_decision["decision"] == "APPROVE"
     assert stored_quote.idempotency_key == "request-123"
+    stored_option = session.query(QuoteOption).one()
+    assert stored_option.id == "option-1"
+    assert stored_option.quote_id == stored_quote.id
+    assert stored_option.role == QuoteOptionRole.PRIMARY
+    assert stored_option.rank == 0
+    assert stored_option.selection_reason == "PRIMARY_SELECTED"
+    assert stored_option.pricing_basis == PricingBasis.PUBLIC_TARIFF
+    assert stored_option.schedule_snapshot["originPort"] == "NLRTM"
+    assert stored_option.pricing_provenance["referenceDataVersion"] == REFERENCE_DATA_VERSION
+    assert stored_option.line_items == [{"description": "Ocean Freight", "amount": 1800.0}]
+    assert stored_option.source_currency == "USD"
+    assert stored_option.currency == "USD"
+    assert stored_option.fx_snapshot == {"rate": 1.0}
+    assert stored_option.rounding_policy == "LINE_ITEM_HALF_UP_2DP"
+    assert stored_option.source_total_amount == Decimal("1800.00")
+    assert stored_option.total_amount == Decimal("1800.00")
+    assert stored_option.availability["bookable"] is True
     assert session.query(CommercialChangeEvent).one().action == CommercialChangeAction.CREATED
     assert stored_event.event_type == "quote.created"
     assert session.query(OutboxConsumerCheckpoint).one().consumer_name == "booking-cache"
@@ -285,6 +336,65 @@ def test_init_db_backfills_pricing_provenance_column_for_existing_sqlite_quotes_
     assert "source_currency" in quote_columns
     assert "fx_snapshot" in quote_columns
     assert "rounding_policy" in quote_columns
+    assert "quote_options" in inspector.get_table_names()
+
+
+def test_init_db_creates_quote_options_table_for_existing_sqlite_database() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE quotes ("
+                "id VARCHAR(36) PRIMARY KEY, "
+                "quote_reference VARCHAR(32), "
+                "lifecycle_state VARCHAR(32), "
+                "schedule_id VARCHAR(36), "
+                "schedule_snapshot JSON, "
+                "equipment JSON, "
+                "cargo_weight_kg NUMERIC(10, 2), "
+                "currency VARCHAR(3), "
+                "source_currency VARCHAR(3), "
+                "pricing_basis VARCHAR(32), "
+                "pricing_provenance JSON, "
+                "line_items JSON, "
+                "total_amount NUMERIC(10, 2), "
+                "valid_until DATETIME, "
+                "created_at DATETIME"
+                ")"
+            )
+        )
+
+    original_engine = db_module.engine
+    original_session_local = db_module.SessionLocal
+    try:
+        db_module.engine = engine
+        db_module.SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        db_module.init_db()
+    finally:
+        db_module.engine = original_engine
+        db_module.SessionLocal = original_session_local
+
+    inspector = inspect(engine)
+    assert "quote_options" in inspector.get_table_names()
+    option_columns = {column["name"] for column in inspector.get_columns("quote_options")}
+    for expected_column in {
+        "id",
+        "quote_id",
+        "role",
+        "rank",
+        "selection_reason",
+        "pricing_basis",
+        "schedule_snapshot",
+        "pricing_provenance",
+        "line_items",
+        "source_currency",
+        "currency",
+        "source_total_amount",
+        "total_amount",
+        "valid_until",
+        "availability",
+    }:
+        assert expected_column in option_columns
 
 
 def test_init_db_backfills_managed_commercial_columns_for_existing_sqlite_tables() -> None:

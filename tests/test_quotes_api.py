@@ -9,10 +9,11 @@ import hmac
 import json
 import time
 from urllib.error import HTTPError
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -305,6 +306,19 @@ def _fx_snapshot(*, currency: str = "USD", rate: float = 1.0) -> dict[str, objec
     }
 
 
+def _assert_quote_option_id(value: object) -> str:
+    assert isinstance(value, str)
+    assert value
+    UUID(value)
+    return value
+
+
+def _json_column(value: object) -> object:
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
 def _validity_policy_snapshot(
     *,
     policy_id: str,
@@ -380,13 +394,20 @@ def test_create_quote_returns_itemized_quote_and_persists_it(client) -> None:
     assert response.json()["id"]
     assert response.json()["quoteReference"].endswith("-00001")
     assert response.json()["quoteReference"].startswith("QTE-")
+    assert "options" not in response.json()
+    assert "quoteOptionId" not in response.json()
 
     valid_until = datetime.fromisoformat(response.json()["validUntil"])
 
     with session_factory() as session:
         stored_quote = session.scalar(select(Quote).where(Quote.id == response.json()["id"]))
+        persisted_option_count = session.scalar(
+            text("SELECT COUNT(*) FROM quote_options WHERE quote_id = :quote_id"),
+            {"quote_id": response.json()["id"]},
+        )
 
     assert stored_quote is not None
+    assert persisted_option_count == 0
     created_at = stored_quote.created_at
     assert valid_until > created_at
     assert timedelta(days=6, hours=23) <= valid_until - created_at <= timedelta(days=7, minutes=1)
@@ -891,12 +912,13 @@ def test_create_quote_market_hint_falls_back_to_contract_when_market_is_unavaila
 
 
 def test_create_quote_can_return_ordered_alternative_pricing_options(client) -> None:
-    test_client, _ = client
+    test_client, session_factory = client
+    schedule_id = "df62a7d2-a45e-4d4d-b3cb-b4af65435274"
 
     response = test_client.post(
         "/quotes",
         json={
-            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "scheduleId": schedule_id,
             "customerId": "cust-acme",
             "equipment": [{"type": "20FT", "quantity": 1}],
             "cargoWeightKg": 18000,
@@ -908,8 +930,14 @@ def test_create_quote_can_return_ordered_alternative_pricing_options(client) -> 
     payload = response.json()
     primary = payload["options"]["primary"]
     alternatives = payload["options"]["alternatives"]
+    visible_options = [primary, *alternatives]
+    option_ids = [_assert_quote_option_id(option["quoteOptionId"]) for option in visible_options]
 
     assert payload["totalAmount"] == 930.0
+    assert len(option_ids) == len(set(option_ids))
+    for index, option in enumerate(visible_options):
+        assert option["quoteOptionId"] not in {str(index), option["pricingBasis"], option["pricingBasis"].lower()}
+
     assert primary["pricingBasis"] == PricingBasis.CONTRACT.value
     assert primary["totalAmount"] == 930.0
     assert primary["sourceTotalAmount"] == 930.0
@@ -940,9 +968,40 @@ def test_create_quote_can_return_ordered_alternative_pricing_options(client) -> 
     assert market_option["pricingProvenance"]["baseRateRules"][0]["marketRateSnapshotId"] == "market-nlrtm-usnyc-20ft"
     assert market_option["bookability"]["bookable"] is True
 
+    with session_factory() as session:
+        persisted_options = session.execute(
+            text(
+                "SELECT id, role, rank, selection_reason, pricing_basis, schedule_snapshot, "
+                "pricing_provenance, line_items, source_total_amount, total_amount, "
+                "valid_until, availability "
+                "FROM quote_options WHERE quote_id = :quote_id ORDER BY rank"
+            ),
+            {"quote_id": payload["id"]},
+        ).mappings().all()
+
+    assert [row["id"] for row in persisted_options] == option_ids
+    assert [row["role"] for row in persisted_options] == ["PRIMARY", "ALTERNATIVE", "ALTERNATIVE"]
+    assert [row["rank"] for row in persisted_options] == [0, 1, 2]
+    assert all(row["selection_reason"] for row in persisted_options)
+    assert [row["pricing_basis"] for row in persisted_options] == [
+        PricingBasis.CONTRACT.value,
+        PricingBasis.PUBLIC_TARIFF.value,
+        PricingBasis.MARKET.value,
+    ]
+    for row, option in zip(persisted_options, visible_options, strict=True):
+        assert _json_column(row["schedule_snapshot"])["scheduleId"] == schedule_id
+        assert _json_column(row["pricing_provenance"])["pricingBasis"] == option["pricingBasis"]
+        assert _json_column(row["line_items"]) == option["lineItems"]
+        assert float(row["source_total_amount"]) == option["sourceTotalAmount"]
+        assert float(row["total_amount"]) == option["totalAmount"]
+        assert datetime.fromisoformat(row["valid_until"]).replace(tzinfo=timezone.utc) == datetime.fromisoformat(
+            option["bookability"]["validUntil"]
+        )
+        assert _json_column(row["availability"]) == option["bookability"]
+
 
 def test_create_quote_can_limit_ordered_alternative_pricing_options(client) -> None:
-    test_client, _ = client
+    test_client, session_factory = client
 
     response = test_client.post(
         "/quotes",
@@ -963,6 +1022,18 @@ def test_create_quote_can_limit_ordered_alternative_pricing_options(client) -> N
         PricingBasis.PUBLIC_TARIFF.value
     ]
     assert [option["totalAmount"] for option in payload["options"]["alternatives"]] == [1300.0]
+    visible_option_ids = [
+        payload["options"]["primary"]["quoteOptionId"],
+        payload["options"]["alternatives"][0]["quoteOptionId"],
+    ]
+
+    with session_factory() as session:
+        persisted_option_ids = session.execute(
+            text("SELECT id FROM quote_options WHERE quote_id = :quote_id ORDER BY rank"),
+            {"quote_id": payload["id"]},
+        ).scalars().all()
+
+    assert persisted_option_ids == visible_option_ids
 
 
 def test_create_quote_max_alternative_options_does_not_enable_options(client) -> None:

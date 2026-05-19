@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from enum import Enum
+from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Header, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -18,7 +19,32 @@ from app.auth import (
     require_bearer_scope,
 )
 from app.db import get_db, init_db
-from app.models import CommercialChangeAction, CommercialChangeEvent, CommercialChangeResourceType, Contract, ContractMatchType, ContractRateRule, EquipmentType, ExchangeRate, ImpactAnalysisChangeType, ImpactAnalysisRun, MarketRateSnapshot, OutboxConsumerCheckpoint, OutboxEvent, PortScope, PricingBasis, PricingStrategyVersion, Quote, QuoteLifecycleState, QuoteValidityPolicy, RateTable, SurchargeRule, SurchargeType
+from app.models import (
+    CommercialChangeAction,
+    CommercialChangeEvent,
+    CommercialChangeResourceType,
+    Contract,
+    ContractMatchType,
+    ContractRateRule,
+    EquipmentType,
+    ExchangeRate,
+    ImpactAnalysisChangeType,
+    ImpactAnalysisRun,
+    MarketRateSnapshot,
+    OutboxConsumerCheckpoint,
+    OutboxEvent,
+    PortScope,
+    PricingBasis,
+    PricingStrategyVersion,
+    Quote,
+    QuoteLifecycleState,
+    QuoteOption,
+    QuoteOptionRole,
+    QuoteValidityPolicy,
+    RateTable,
+    SurchargeRule,
+    SurchargeType,
+)
 from app.seed import REFERENCE_DATA_VERSION, seed_reference_data
 from app.schedules import Schedule, ScheduleProvider, get_schedule_provider
 from app.service_connections import check_configured_service_health
@@ -72,6 +98,14 @@ class ResolvedPricing:
 class ResolvedQuoteValidity:
     valid_until: datetime
     snapshot: dict[str, object]
+
+
+@dataclass(frozen=True)
+class SerializedQuoteOption:
+    option: dict[str, object]
+    role: QuoteOptionRole
+    rank: int
+    selection_reason: str
 
 
 class PricingModeHint(str, Enum):
@@ -1784,6 +1818,7 @@ def _build_quote_payload_from_stored_quote(quote: Quote) -> CreateQuoteRequest:
 
 def _serialize_quote_option(
     *,
+    quote_option_id: str,
     payload: CreateQuoteRequest,
     pricing: ResolvedPricing,
     fx_rate: ResolvedFxRate,
@@ -1795,6 +1830,7 @@ def _serialize_quote_option(
     )
     line_items, total_amount = _convert_quote_line_items(source_line_items, fx_rate=fx_rate)
     option = {
+        "quoteOptionId": quote_option_id,
         "pricingBasis": pricing.pricing_basis.value,
         "currency": payload.currency,
         "sourceCurrency": _SOURCE_CURRENCY,
@@ -1829,13 +1865,22 @@ def _serialize_quote_options(
     fx_rate: ResolvedFxRate,
     quote_validities: dict[PricingBasis, ResolvedQuoteValidity],
     max_alternative_options: int | None,
-) -> dict[str, object]:
+) -> tuple[dict[str, object], list[SerializedQuoteOption]]:
     primary_option, _ = _serialize_quote_option(
+        quote_option_id=str(uuid4()),
         payload=payload,
         pricing=primary_pricing,
         fx_rate=fx_rate,
         quote_validity=quote_validities[primary_pricing.pricing_basis],
     )
+    option_records = [
+        SerializedQuoteOption(
+            option=primary_option,
+            role=QuoteOptionRole.PRIMARY,
+            rank=0,
+            selection_reason="PRIMARY_SELECTED",
+        )
+    ]
     alternatives: list[tuple[dict[str, object], Decimal]] = []
     for pricing_basis, pricing in pricing_candidates.items():
         if pricing_basis == primary_pricing.pricing_basis:
@@ -1843,6 +1888,7 @@ def _serialize_quote_options(
 
         alternatives.append(
             _serialize_quote_option(
+                quote_option_id=str(uuid4()),
                 payload=payload,
                 pricing=pricing,
                 fx_rate=fx_rate,
@@ -1863,10 +1909,60 @@ def _serialize_quote_options(
     if max_alternative_options is not None:
         ordered_alternatives = ordered_alternatives[:max_alternative_options]
 
-    return {
-        "primary": primary_option,
-        "alternatives": ordered_alternatives,
-    }
+    for rank, option in enumerate(ordered_alternatives, start=1):
+        option_records.append(
+            SerializedQuoteOption(
+                option=option,
+                role=QuoteOptionRole.ALTERNATIVE,
+                rank=rank,
+                selection_reason="ORDERED_ALTERNATIVE",
+            )
+        )
+
+    return (
+        {
+            "primary": primary_option,
+            "alternatives": ordered_alternatives,
+        },
+        option_records,
+    )
+
+
+def _persist_quote_options(
+    db: Session,
+    *,
+    quote: Quote,
+    option_records: list[SerializedQuoteOption],
+) -> None:
+    for record in option_records:
+        option = record.option
+        availability = option["bookability"]
+        if not isinstance(availability, dict):
+            raise ValueError("quote option bookability must be an object")
+        db.add(
+            QuoteOption(
+                id=str(option["quoteOptionId"]),
+                quote_id=quote.id,
+                role=record.role,
+                rank=record.rank,
+                selection_reason=record.selection_reason,
+                pricing_basis=PricingBasis(str(option["pricingBasis"])),
+                schedule_snapshot=quote.schedule_snapshot,
+                pricing_provenance=option["pricingProvenance"],
+                line_items=option["lineItems"],
+                source_currency=str(option["sourceCurrency"]),
+                currency=str(option["currency"]),
+                fx_snapshot=option["fx"],
+                rounding_policy=str(option["roundingPolicy"]),
+                source_total_amount=Decimal(str(option["sourceTotalAmount"])).quantize(_MONEY_PRECISION),
+                total_amount=Decimal(str(option["totalAmount"])).quantize(_MONEY_PRECISION),
+                valid_until=datetime.fromisoformat(str(availability["validUntil"])),
+                availability=availability,
+                contract_id=None if option.get("contractId") is None else str(option["contractId"]),
+                market_source=None if option.get("marketSource") is None else str(option["marketSource"]),
+                created_at=quote.created_at,
+            )
+        )
 
 
 def _create_quote_record(
@@ -1876,6 +1972,7 @@ def _create_quote_record(
     schedule_provider: ScheduleProvider,
     repriced_from_quote: Quote | None = None,
     repricing_trigger: str | None = None,
+    commit: bool = True,
 ) -> Quote:
     schedule = _get_schedule(payload.schedule_id, schedule_provider)
     fx_rate = _resolve_fx_rate(db=db, currency=payload.currency)
@@ -1955,8 +2052,9 @@ def _create_quote_record(
     db.add(quote)
     db.flush()
     _enqueue_quote_event(db, quote=quote, event_type=_QUOTE_CREATED_EVENT, occurred_at=quote.created_at)
-    db.commit()
-    db.refresh(quote)
+    if commit:
+        db.commit()
+        db.refresh(quote)
     return quote
 
 
@@ -1966,7 +2064,12 @@ def create_quote(
     db: Session = Depends(get_db),
     schedule_provider: ScheduleProvider = Depends(get_schedule_provider),
 ) -> dict[str, object]:
-    quote = _create_quote_record(payload=payload, db=db, schedule_provider=schedule_provider)
+    quote = _create_quote_record(
+        payload=payload,
+        db=db,
+        schedule_provider=schedule_provider,
+        commit=not payload.include_alternative_options,
+    )
     response = _serialize_created_quote(quote)
     if payload.include_alternative_options:
         schedule = _get_schedule(payload.schedule_id, schedule_provider)
@@ -1997,7 +2100,7 @@ def create_quote(
             valid_until=quote.valid_until,
             snapshot=quote.pricing_provenance["validityPolicy"],
         )
-        response["options"] = _serialize_quote_options(
+        quote_options, option_records = _serialize_quote_options(
             payload=payload,
             pricing_candidates=pricing_candidates,
             primary_pricing=primary_pricing,
@@ -2005,6 +2108,10 @@ def create_quote(
             quote_validities=quote_validities,
             max_alternative_options=payload.max_alternative_options,
         )
+        _persist_quote_options(db, quote=quote, option_records=option_records)
+        db.commit()
+        db.refresh(quote)
+        response["options"] = quote_options
 
     return response
 
