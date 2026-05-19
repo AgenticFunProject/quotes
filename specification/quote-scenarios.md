@@ -264,3 +264,62 @@ Given `specification/quotes.md` is the main service contract for Quotes behavior
 When a reader reviews the current integration boundaries in that specification
 Then the reader is directed to `specification/system-architecture.md` for repository-level system state
 And the service specification keeps its own boundary focused on quote runtime dependencies and consumers
+
+## Scenario: Accept Users-issued Quotes-audience platform tokens for protected operations
+
+Given Users can issue HS256 platform tokens from the local password login flow
+And the token uses the configured Quotes issuer, `quotes-service` audience, and shared signing secret
+When an operator calls a protected Quotes route with the required Quotes scope
+Then Quotes accepts the request after validating signature, issuer, audience, and expiry
+And the token subject remains the durable actor fallback when `X-Actor` is omitted
+
+## Scenario: Accept gateway-issued Quotes-audience platform tokens for protected operations
+
+Given the web-page gateway exposes `/api/auth/quotes-token` for local operator demos
+When the gateway-issued token has `aud` set to `quotes-service` and the required Quotes scope
+Then protected Quotes routes can accept it as a local demo token
+And the documentation labels this as a developer helper rather than production identity-provider behavior
+
+## Scenario: Reject missing or invalid protected-route bearer tokens
+
+Given a client calls a protected Quotes admin or approval route
+When the bearer token is missing, malformed, expired, signed with the wrong secret, or has the wrong issuer or audience
+Then Quotes returns `401`
+And the response does not expose credential material or signing-secret details
+
+## Scenario: Reject valid tokens without the required Quotes scope
+
+Given a client has a valid platform token for the Quotes audience
+When the token lacks `quotes:admin` for admin operations or `quotes:approve` for approval decisions
+Then Quotes returns `403`
+And the route does not perform the protected operation
+
+## Scenario: Resolve role=admin compatibility before implementation
+
+Given Equipments accepts a validated `role=admin` token for privileged operations
+And Quotes currently documents scope-based authorization
+When the platform decides whether Quotes should accept `role=admin`
+Then the decision is recorded before runtime auth code changes
+And tests cover the selected behavior without allowing role claims to bypass issuer, audience, expiry, or signature checks
+
+## Scenario: Keep web-page bearer propagation inside the gateway boundary
+
+Given public quote creation and lookup stay unauthenticated
+When the web-page calls `/api/quotes` for customer quote workflows
+Then the browser helper does not attach bearer tokens to those public requests
+And any future protected Quotes UI operation attaches Quotes-audience tokens only to the explicit protected path
+
+## Scenario: Verify Azure platform auth settings before deployment sign-off
+
+Given Quotes is deployed through the Azure workflow
+When maintainers sign off a deployment that includes protected route behavior
+Then `AUTH_JWT_ISSUER`, `AUTH_JWT_AUDIENCE=quotes-service`, and `AUTH_JWT_SECRET` are configured from non-local secret material
+And verification covers public quote behavior, a protected `quotes:admin` route, a protected `quotes:approve` route, and rejection of an Equipments-audience token
+
+## Scenario: Keep Booking on public quote validation and Equipments on diagnostics
+
+Given Booking consumes quote validity and pricing provenance
+And Equipments remains a separate protected inventory service
+When the current integration boundary is implemented
+Then Booking uses public quote validation and lookup routes without forwarding caller bearer tokens
+And Quotes only calls Equipments through the configured admin connectivity diagnostic until a new service contract is accepted

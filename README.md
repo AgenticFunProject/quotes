@@ -33,6 +33,8 @@ Planning docs for the next iterations live under `specification/`:
 
 - `specification/roadmap.md` for phased feature and architecture work
 - `specification/adr-001-eventing-strategy.md` for the eventing decision record
+- `specification/quotes.md#2026-05-19-cross-repo-authrbac-deployment-plan`
+  for the current cross-repo auth/RBAC/deployment plan
 
 The service uses SQLite by default, creates its tables on startup in `db.sqlite`,
 and seeds reference rates and surcharge rules used by `POST /quotes`.

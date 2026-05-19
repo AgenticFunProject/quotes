@@ -68,6 +68,117 @@ service records `X-Actor` as the business actor for audit compatibility. When
 malformed, expired, wrong-issuer, wrong-audience, or incorrectly signed bearer
 tokens return `401`. Valid tokens without the required scope return `403`.
 
+## 2026-05-19 Cross-Repo Auth/RBAC Deployment Plan
+
+This plan turns the 2026-05-19 AgenticFunProject remote discovery into a
+reviewable Quotes implementation sequence. It is intentionally written before
+runtime auth changes so the token contract, RBAC compatibility decisions,
+gateway behavior, deployment checks, and downstream boundaries are agreed first.
+
+### Token issuer, audience, and source
+
+Protected Quotes routes continue to validate HS256 platform tokens with:
+
+- `AUTH_JWT_ISSUER`, default `platform-auth`
+- `AUTH_JWT_AUDIENCE`, default `quotes-service`
+- `AUTH_JWT_SECRET`, supplied from secret material outside local development
+- a space-delimited `scope` claim
+
+Quotes should accept Users-issued or gateway-issued Quotes-audience tokens only
+when the token validates against the configured issuer, audience, expiry, and
+signature. Users currently defaults issued tokens to the Equipments audience, so
+any Users-issued Quotes token must be deliberately configured with
+`AUTH_JWT_AUDIENCE=quotes-service` or an equivalent future multi-audience
+contract. The web-page `/api/auth/quotes-token` helper is a local developer
+source, not production identity-provider behavior.
+
+### Quotes scopes
+
+Quotes keeps the service-specific scopes already documented:
+
+- `quotes:admin` for managed commercial writes, outbox replay, impact analysis
+  creation, draft quote preview, and service connectivity diagnostics
+- `quotes:approve` for `POST /quotes/{id}/approval-decisions`
+
+Public quote request/read endpoints remain unauthenticated. Callers must not
+attach bearer tokens to public quote request or read calls unless a future
+gateway route intentionally exposes a protected Quotes operation. Protected
+gateway work must not attach bearer tokens to public quote request or read
+calls.
+
+The gateway must not attach bearer tokens to public quote request or read calls.
+
+### Role compatibility decision
+
+`role=admin` compatibility remains an open decision. Equipments accepts the
+`admin` role as a privileged shortcut after normal token validation. Quotes
+currently authorizes by `quotes:admin` and `quotes:approve` scopes only. The
+next implementation must choose one of these explicit outcomes before code
+changes:
+
+1. Keep Quotes scope-only authorization and require Users or the gateway to mint
+   Quotes-specific scopes.
+2. Accept `role=admin` for protected Quotes routes, with tests proving that the
+   role never bypasses issuer, audience, expiry, or signature validation.
+3. Accept `role=admin` only for `quotes:admin` operations while keeping
+   approval decisions scoped by `quotes:approve`.
+
+### Protected-route status behavior
+
+Protected routes must return `401` when the bearer token is missing, malformed,
+expired, signed with the wrong secret, uses the wrong issuer, or uses the wrong
+audience. Protected routes must return `403` when the token is valid but lacks
+the required Quotes scope or any accepted role compatibility decided above.
+
+### Web-page token propagation boundaries
+
+The web-page gateway can mint a local `/api/auth/quotes-token` token for manual
+operator and demo flows. The browser API helper currently attaches bearer
+tokens only to `/api/equipment`, and that boundary should remain intact for
+customer quote creation and quote lookup. If the UI later exposes protected
+Quotes admin or approval operations, token attachment should be limited to those
+explicit protected paths and should not turn public quote workflows into
+authenticated workflows.
+
+### Azure deployment verification
+
+Deploy to Azure only after the target environment has explicit platform auth
+settings:
+
+- `AUTH_JWT_ISSUER` set to the accepted platform issuer
+- `AUTH_JWT_AUDIENCE` set to `quotes-service`
+- `AUTH_JWT_SECRET` supplied from GitHub secret material or a secret manager,
+  not from `quotes-dev-secret`
+
+Deployment sign-off should verify `/health`, one unauthenticated public quote
+read or request flow, one protected `quotes:admin` route, and one protected
+`quotes:approve` route with a valid Quotes-audience token. It should also
+verify that an Equipments-audience token is rejected by Quotes with `401`.
+
+### Booking and Equipments integration boundaries
+
+Booking should continue using public Quotes validation and lookup behavior for
+quote bookability and pricing provenance until a dedicated service-to-service
+contract is accepted. Booking must not forward a customer's bearer token to
+Quotes public endpoints by default.
+
+Equipments remains a separate protected service. Quotes only calls Equipments
+through the configured `/admin/service-connections/equipments` diagnostic today;
+that diagnostic requires `quotes:admin` and must not accept caller-supplied
+target URLs.
+
+### Remaining open decisions
+
+- Whether Quotes should accept `role=admin`, and for which protected actions.
+- Whether Users will mint first-class Quotes-audience tokens or whether the
+  gateway remains the local token source for demo-only protected Quotes flows.
+- Whether web-page will ever expose protected Quotes admin or approval actions.
+- Whether near-term deployment remains Azure App Service for Quotes while Users
+  and Equipments document Container Apps, or whether the town converges on
+  Container Apps.
+- When Booking moves from public quote validation and lookup calls to any
+  authenticated service-to-service Quotes contract.
+
 ## Service Connectivity Diagnostics
 
 `GET /admin/service-connections/equipments` lets operators test whether the

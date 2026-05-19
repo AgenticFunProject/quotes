@@ -107,3 +107,66 @@ def test_system_architecture_documents_current_repositories_and_azure_deployment
     assert "rg-quotes-dev-371ad1" in architecture
     assert "No deployed Azure resources were confirmed" in architecture
     assert "`web-page`, or `users`" in architecture
+
+
+def test_system_architecture_documents_2026_05_19_auth_and_deployment_evidence() -> None:
+    architecture = (REPO_ROOT / "specification" / "system-architecture.md").read_text()
+    evidence = _section(architecture, "2026-05-19 Auth And Deployment Evidence Snapshot")
+
+    for text in [
+        "Users: confirmed local SQLite user records",
+        "Bearer-token enforcement remains out of scope",
+        "Equipments: confirmed HS256 bearer-token enforcement",
+        "`equipments:read`",
+        "`equipments:modify`",
+        "web-page: confirmed `/api/auth/quotes-token` helper",
+        "browser API helper currently attaches bearer tokens only to `/api/equipment`",
+        "Booking: confirmed specification-only repository state",
+        "QuoteClientRestClient must not forward the caller `Authorization` header",
+        "Quotes Azure deployment: confirmed workflow wiring",
+        "`AUTH_JWT_AUDIENCE=quotes-service`",
+        "Gap:",
+        "Assumption:",
+    ]:
+        assert text in evidence
+
+
+def test_quotes_spec_contains_2026_05_19_auth_rbac_deployment_plan() -> None:
+    spec = (REPO_ROOT / "specification" / "quotes.md").read_text()
+    plan = _section(spec, "2026-05-19 Cross-Repo Auth/RBAC Deployment Plan")
+
+    for text in [
+        "Token issuer, audience, and source",
+        "`AUTH_JWT_ISSUER`",
+        "`AUTH_JWT_AUDIENCE`",
+        "`AUTH_JWT_SECRET`",
+        "`quotes-service`",
+        "Users-issued or gateway-issued Quotes-audience tokens",
+        "`quotes:admin`",
+        "`quotes:approve`",
+        "`role=admin` compatibility remains an open decision",
+        "return `401`",
+        "return `403`",
+        "`/api/auth/quotes-token`",
+        "must not attach bearer tokens to public quote request or read calls",
+        "Deploy to Azure",
+        "Booking and Equipments integration boundaries",
+        "Remaining open decisions",
+    ]:
+        assert text in plan
+
+
+def test_quote_scenarios_cover_2026_05_19_auth_rbac_deployment_boundaries() -> None:
+    scenarios = (REPO_ROOT / "specification" / "quote-scenarios.md").read_text()
+
+    for scenario_name in [
+        "Accept Users-issued Quotes-audience platform tokens for protected operations",
+        "Accept gateway-issued Quotes-audience platform tokens for protected operations",
+        "Reject missing or invalid protected-route bearer tokens",
+        "Reject valid tokens without the required Quotes scope",
+        "Resolve role=admin compatibility before implementation",
+        "Keep web-page bearer propagation inside the gateway boundary",
+        "Verify Azure platform auth settings before deployment sign-off",
+        "Keep Booking on public quote validation and Equipments on diagnostics",
+    ]:
+        assert f"## Scenario: {scenario_name}" in scenarios
