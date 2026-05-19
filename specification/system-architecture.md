@@ -42,7 +42,7 @@ organization on 2026-05-15.
 | Repository | Visibility | Default branch | Current role | State |
 |------------|------------|----------------|--------------|-------|
 | `quotes` | Public | `main` | FastAPI Quotes service with SQLite persistence, tests, product specs, Bruno collection, GitHub Actions, and Azure App Service infrastructure | Confirmed implementation |
-| `booking` | Public | `master` | Booking service implementation and specification set; defines Java/Spring Boot domain, API, JWT roles, ownership checks, deployment profile expectations, and external clients for schedules, equipments, and quotes | Confirmed implementation and specification state in current checkout |
+| `booking` | Public | `master` | Booking service implementation and specification set; defines Java/Spring Boot domain, API, JWT roles, ownership checks, deployment profile expectations, and external clients for schedules, equipments, and quotes | Confirmed remote default branch implementation and specification state; local worktrees may be on focused branches |
 | `equipments` | Public | `master` | TypeScript/Fastify Equipments service with inventory, reservations, audit metadata, OpenAPI, tests, persisted authorization rules, Dockerfile, and Azure Container Apps manifests | Confirmed implementation |
 | `web-page` | Public | `main` | Customer portal demo and local gateway/proxy; generates Equipments- and Quotes-audience demo tokens and proxies `/api/quotes`, `/api/equipment`, `/api/users`, and `/api/bookings` | Confirmed implementation |
 | `users` | Private | `main` | TypeScript Users service for stable local user ids, external-identity lookup, profile/status management, local password verification, local password login, JWT signing, and Azure Container Apps scaffolding | Confirmed implementation; bearer enforcement on existing Users API routes remains deferred |
@@ -98,10 +98,7 @@ connected in production.
 - web-page: confirmed `/api/auth/quotes-token` helper for local demo
   Quotes-audience tokens, plus `/api/quotes`, `/api/equipment`, `/api/users`,
   and `/api/bookings` proxy routes. The browser API helper currently attaches bearer tokens only to `/api/equipment`, so Quotes public request/read calls stay unauthenticated unless a later gateway workflow deliberately adds a protected Quotes operation.
-- Booking: confirmed specification-only repository state is no longer accurate;
-  the remote default branch now contains Spring Boot source and tests as well
-  as specifications. Booking still treats Quotes through configured client
-  boundaries such as `QUOTE_API_URL`. QuoteClientRestClient must not forward the caller `Authorization` header to public quote validation or lookup routes unless a future service-to-service auth contract explicitly requires it.
+- Booking: local working tree state may vary by active branch; `origin/master` confirms Spring Boot source and tests as well as specifications. Booking still treats Quotes through configured client boundaries such as `QUOTE_API_URL`. QuoteClientRestClient must not forward the caller `Authorization` header to public quote validation or lookup routes unless a future service-to-service auth contract explicitly requires it.
 - Quotes Azure deployment: confirmed workflow wiring exists for
   `AUTH_JWT_ISSUER`, `AUTH_JWT_AUDIENCE=quotes-service`, and
   `AUTH_JWT_SECRET`. The live App Service was previously confirmed, but this
@@ -187,7 +184,9 @@ This boundary is important because it prevents service documentation from drifti
 ### Confirmed gaps
 
 - No Schedules repository was found in the AgenticFunProject organization during discovery.
-- Booking currently provides Spring Boot source and detailed specifications, but its live deployment state was not confirmed from this repository snapshot.
+- Booking provides Spring Boot source and detailed specifications on the remote
+  default branch, but its live deployment state was not confirmed from this
+  repository snapshot.
 - Users has local password verification, local token issuance, and stable user metadata, but bearer-token enforcement for its existing routes is explicitly deferred.
 - Web-page can mint local demo tokens for Equipments and Quotes, but the browser helper currently attaches bearer tokens only to Equipments API calls.
 - Quotes Azure App Service discovery predated the platform-auth deployment
@@ -209,7 +208,7 @@ Near-term architecture evolution already implied by the Quotes specifications:
 2. Keep Booking as a downstream consumer of stored quote state, with tighter documented contracts as Booking integration becomes concrete.
 3. Continue with the outbox-first eventing model until at least two meaningful downstream consumers justify broker adoption.
 4. Decide whether the web-page gateway should attach Quotes-audience tokens for any protected Quotes operations exposed in local demos; keep public quote create/read traffic unauthenticated by default.
-5. Add or implement Booking clients for `GET /quotes/{id}`, `GET /quotes/{id}/bookability`, and outbox replay after Booking source code exists.
+5. Tighten or implement Booking clients for `GET /quotes/{id}`, `GET /quotes/{id}/bookability`, and outbox replay against the existing Spring Boot client boundary.
 6. Replace shared HS256 development secrets with managed identity, OIDC/JWKS validation, or an API gateway policy before production exposure.
 
 ## Documentation Contract

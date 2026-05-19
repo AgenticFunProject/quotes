@@ -121,7 +121,8 @@ def test_system_architecture_documents_2026_05_19_auth_and_deployment_evidence()
         "`equipments:modify`",
         "web-page: confirmed `/api/auth/quotes-token` helper",
         "browser API helper currently attaches bearer tokens only to `/api/equipment`",
-        "Booking: confirmed specification-only repository state",
+        "Booking: local working tree state may vary by active branch",
+        "`origin/master` confirms Spring Boot source and tests",
         "QuoteClientRestClient must not forward the caller `Authorization` header",
         "Quotes Azure deployment: confirmed workflow wiring",
         "`AUTH_JWT_AUDIENCE=quotes-service`",
@@ -129,6 +130,8 @@ def test_system_architecture_documents_2026_05_19_auth_and_deployment_evidence()
         "Assumption:",
     ]:
         assert text in evidence
+
+    assert "Booking: confirmed specification-only repository state" not in evidence
 
 
 def test_quotes_spec_contains_2026_05_19_auth_rbac_deployment_plan() -> None:
