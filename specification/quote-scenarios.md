@@ -1,12 +1,15 @@
 # Quote Scenarios
 
 This document is the human-readable source of truth for the executable quote
-service scenarios covered in `tests/test_quotes_api.py`.
+service scenarios covered in `tests/test_quotes_api.py` and the documented
+integration or deployment boundary scenarios guarded by `tests/test_documentation.py`.
+Every scenario must describe a concrete actor, request path or input, and
+observable response status or payload.
 
 ## Scenario: Create a quote on a seeded peak-season lane
 
 Given the service has the seeded schedule and reference pricing data
-When a client requests a quote for the Rotterdam to New York schedule
+When a client posts to `POST /quotes` for the Rotterdam to New York schedule
 Then the API returns the commercial quote response shape documented in v1
 And the response includes the seasonal and congestion surcharges for that lane
 And the response includes both the internal quote UUID and the public quote reference
@@ -14,7 +17,7 @@ And the response includes both the internal quote UUID and the public quote refe
 ## Scenario: Retrieve a stored quote
 
 Given a quote has been stored by the service
-When the client looks it up by internal UUID or public quote reference
+When the client calls `GET /quotes/{id}` by internal UUID or public quote reference
 Then the API returns the full stored quote record
 And the stored quote includes the pricing basis and provenance snapshot used to create it
 And the explicit `/quotes/reference/{quoteReference}` path returns the same payload as the primary lookup path
@@ -22,7 +25,7 @@ And the explicit `/quotes/reference/{quoteReference}` path returns the same payl
 ## Scenario: Validate whether a stored quote can still be booked
 
 Given a quote has been stored by the service
-When Booking asks for the quote's bookability status
+When Booking calls `GET /quotes/{id}/bookability` for the quote UUID or quote reference
 Then the API explains whether the quote is still usable from its validity
 window
 And the bookability check accepts the same quote UUID or quote reference used by quote lookup
@@ -37,7 +40,7 @@ And the response identifies which equipment selections are uncovered when no eff
 ## Scenario: Persist quote lifecycle events in the outbox
 
 Given the service stores quote lifecycle state and outbox events together
-When a client creates a quote and that quote later expires
+When a client posts to `POST /quotes` and the quote is later read after expiry
 Then the service persists `quote.created` and `quote.expired` events for the same quote
 And each event includes the quote identifiers, stored commercial snapshot, and pricing provenance
 
@@ -45,34 +48,34 @@ And each event includes the quote identifiers, stored commercial snapshot, and p
 
 Given the service recognizes the schedule identifier
 And no seeded base freight row exists for that route and equipment
-When the client requests a quote
+When the client posts to `POST /quotes` with that schedule and equipment
 Then the API rejects the request with a commercial validation error
 
 ## Scenario: Apply customer contract pricing with surcharge waivers
 
 Given the service stores seeded customer contract rules for the Rotterdam to New York lane
-When a client requests a quote with `customerId` for that lane
+When a client posts to `POST /quotes` with `customerId` for that lane
 Then the API prices the shipment from the matched contract instead of the public tariff
 And the stored quote records the matched contract basis and waived surcharge types
 
 ## Scenario: Prefer account contract pricing over customer pricing
 
 Given both a customer contract and a narrower account contract match the same shipment
-When a client requests a quote with both `customerId` and `accountId`
+When a client posts to `POST /quotes` with both `customerId` and `accountId`
 Then the account contract takes precedence deterministically
 And the resulting quote can differ from the customer-level contract for the same shipment inputs
 
 ## Scenario: Create, update, and activate a managed rate-table version
 
 Given the service stores an active public tariff for a quoteable lane
-When a commercial operator creates a draft replacement rate table, updates it, and activates it
+When a commercial operator calls `POST /admin/rate-tables`, `PATCH /admin/rate-tables/{id}`, and `POST /admin/rate-tables/{id}/activate`
 Then later quote requests use the activated rate-table version instead of the superseded active version
 And the stored quote provenance records the selected `rateVersion`
 
 ## Scenario: Create, update, and activate a managed surcharge-rule version
 
 Given the service stores an active surcharge rule for a quoteable lane
-When a commercial operator creates a draft replacement surcharge rule, updates it, and activates it
+When a commercial operator calls `POST /admin/surcharge-rules`, `PATCH /admin/surcharge-rules/{id}`, and `POST /admin/surcharge-rules/{id}/activate`
 Then later quote requests apply the activated surcharge-rule version instead of the superseded active version
 And the stored quote provenance records the selected `surchargeRuleVersion`
 
@@ -110,14 +113,14 @@ And the API never accepts a caller-supplied target URL for this diagnostic check
 ## Scenario: Record an audit trail for managed commercial changes
 
 Given a commercial operator creates, edits, and activates a managed rate-table version
-When support reads the managed commercial audit trail for that rate table
+When support calls `GET /admin/commercial-change-events` for that rate table
 Then the API returns the recorded `CREATED`, `UPDATED`, and `ACTIVATED` events
 And each event includes the actor, managed version, and post-change snapshot
 
 ## Scenario: Publish managed commercial changes to the outbox
 
 Given a commercial operator creates, edits, and activates a managed rate-table version
-When an integration consumer reads the outbox feed for rate-table changes
+When an integration consumer calls `GET /admin/outbox-events` for rate-table changes
 Then the service returns stable `rate.updated` events for each managed change
 And each payload includes the commercial action, actor, resource version, and post-change snapshot
 
@@ -131,21 +134,21 @@ And the consumer checkpoint advances so the next replay can resume without rerea
 ## Scenario: Analyze quote impact for schedule or contract changes
 
 Given the service stores quotes with schedule and contract provenance
-When an operator creates an impact analysis for a schedule or contract change
+When an operator posts to `POST /admin/impact-analyses` for a schedule or contract change
 Then the service persists a summary of the affected quotes
 And the summary reports each affected quote's identifiers, lifecycle state, and current bookability
 
 ## Scenario: Preview quote pricing with draft managed commercial data
 
 Given the service stores active public tariff data and draft replacement commercial rows
-When a commercial operator previews a quote with explicit draft rate-table and surcharge-rule identifiers
+When a commercial operator posts to `POST /admin/quote-preview` with explicit draft rate-table and surcharge-rule identifiers
 Then the API prices the shipment without persisting a quote
 And the response provenance records the draft managed versions that would be used after activation
 
 ## Scenario: Return a quote in a requested display currency
 
 Given the service stores governed FX data for supported quote currencies
-When a client requests a quote with `currency` set to `EUR`
+When a client posts to `POST /quotes` with `currency` set to `EUR`
 Then the API keeps the commercial source basis in `USD`
 And the response exposes the persisted FX snapshot and rounding policy used for conversion
 And the stored quote provenance records both the source total and the display-currency total deterministically
@@ -153,14 +156,14 @@ And the stored quote provenance records both the source total and the display-cu
 ## Scenario: Use approved market pricing when the client hints MARKET
 
 Given the service stores approved market-rate snapshots for the requested lane and equipment
-When a client requests a quote with `pricingModeHint` set to `MARKET`
+When a client posts to `POST /quotes` with `pricingModeHint` set to `MARKET`
 Then the API prices the base freight from the approved market snapshot instead of tariff or contract data
 And the stored quote records the selected market source and optimization trace for explainability
 
 ## Scenario: Fall back from MARKET to contract or tariff pricing when market coverage is missing
 
 Given the service cannot fully cover the request from approved market-rate snapshots
-When a client requests a quote with `pricingModeHint` set to `MARKET`
+When a client posts to `POST /quotes` with `pricingModeHint` set to `MARKET`
 Then the API falls back to the deterministic contract-or-tariff basis available for that request
 And the stored optimization trace records that market pricing was requested but unavailable
 
@@ -187,7 +190,7 @@ And support can later read both the original and repriced provenance snapshots w
 
 Given more than one eligible service option can satisfy the same shipment request
 And the service has a configured ranking policy for primary and alternative options
-When a client requests a quote with alternative options enabled and a bounded option count
+When a client posts to `POST /quotes` with alternative options enabled and a bounded option count
 Then the API returns a primary priced option and an ordered set of alternative quote options
 And each option includes its own bookable commercial provenance snapshot
 And each option exposes stable ranking metadata so the client can explain why it is primary, cheapest, fastest, or otherwise preferred
@@ -229,7 +232,7 @@ And `maxAlternativeOptions` without `includeAlternativeOptions=true` does not ad
 ## Scenario: Hold a quote for manual approval when commercial guardrails are exceeded
 
 Given a priced quote violates an approval guardrail such as margin or waiver policy
-When the client requests the quote
+When the client posts to `POST /quotes` for that shipment
 Then the service stores the quote in a pending approval state instead of issuing it directly
 And the stored quote records the exact approval reasons that must be reviewed
 And the quote is not bookable while it remains pending approval
@@ -256,38 +259,26 @@ And support can still retrieve the held quote and its original approval reasons 
 
 Given the service stores multiple quote validity policies by customer, contract, or pricing mode
 And the matching policy resolves from the customer's contract or pricing mode instead of the default validity rule
-When a client requests a quote that matches a non-default validity policy
+When a client posts to `POST /quotes` with inputs that match a non-default validity policy
 Then the API derives `validUntil` from the matched policy instead of the generic default window
 And the stored quote records the policy provenance used by later bookability checks
 And later bookability validation uses the stored policy-derived validity window even if the current policy catalog has changed
 
+## Scenario: Derive shorter quote validity from high-volatility market pricing
+
+Given the service stores an approved market-rate snapshot with high-volatility signals
+When a client posts to `POST /quotes` with `pricingModeHint` set to `MARKET` for that lane
+Then the API derives `validUntil` from the high-volatility validity policy
+And the stored quote provenance records the matched validity policy and market-signal inputs
+And later `GET /quotes/{id}/bookability` evaluates the stored high-volatility validity window
+
 ## Scenario: Explain why similar quotes received different validity windows
 
-Given two otherwise similar quote requests match different validity policies
-When support compares the stored quotes after creation
-Then the service can explain which policy version each quote matched
-And support can see which customer, contract, pricing-mode, or volatility inputs produced the different `validUntil` timestamps
-
-## Scenario: Document the current repository landscape explicitly
-
-Given the Quotes service now operates inside a larger multi-repository town workspace
-When a maintainer reads `specification/system-architecture.md`
-Then the document distinguishes the Quotes git worktree from the surrounding rig and town paths
-And the document lists the currently confirmed repositories separately from visible but not fully documented system components
-
-## Scenario: Mark unsupported architecture detail as assumptions or gaps
-
-Given not every visible town component has a maintained contract in this repository
-When the architecture-state document describes control-plane components outside the Quotes repo
-Then unverified responsibilities are labeled as assumptions or gaps instead of settled facts
-And the document records which service integrations are explicitly confirmed today
-
-## Scenario: Keep the service specification linked to the broader architecture state
-
-Given `specification/quotes.md` is the main service contract for Quotes behavior
-When a reader reviews the current integration boundaries in that specification
-Then the reader is directed to `specification/system-architecture.md` for repository-level system state
-And the service specification keeps its own boundary focused on quote runtime dependencies and consumers
+Given one stored quote matched an account validity policy
+And another stored quote matched the high-volatility market validity policy
+When support reads `GET /quotes/{id}` or `GET /quotes/{id}/explain` for each quote
+Then each payload exposes the stored `pricingProvenance.validityPolicy` snapshot
+And support can compare the policy identifier, matched inputs, and resulting `validUntil` values without recomputing current policy rules
 
 ## Scenario: Accept Users-issued Quotes-audience platform tokens for protected operations
 
