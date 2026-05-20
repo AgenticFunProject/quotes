@@ -2,6 +2,60 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+SCENARIO_PREFIX = "## Scenario: "
+
+
+EXPECTED_QUOTE_SCENARIOS = [
+    "Create a quote on a seeded peak-season lane",
+    "Retrieve a stored quote",
+    "Validate whether a stored quote can still be booked",
+    "Validate rate coverage before requesting a quote",
+    "Persist quote lifecycle events in the outbox",
+    "Request a quote for a seeded schedule without an effective rate",
+    "Apply customer contract pricing with surcharge waivers",
+    "Prefer account contract pricing over customer pricing",
+    "Create, update, and activate a managed rate-table version",
+    "Create, update, and activate a managed surcharge-rule version",
+    "Require platform bearer authorization for commercial admin changes",
+    "Require platform bearer authorization for quote approval decisions",
+    "Check Equipments service connectivity",
+    "Record an audit trail for managed commercial changes",
+    "Publish managed commercial changes to the outbox",
+    "Replay outbox events for a named downstream consumer",
+    "Analyze quote impact for schedule or contract changes",
+    "Preview quote pricing with draft managed commercial data",
+    "Return a quote in a requested display currency",
+    "Use approved market pricing when the client hints MARKET",
+    "Fall back from MARKET to contract or tariff pricing when market coverage is missing",
+    "Explain why a quote used market or fallback pricing",
+    "Reprice an existing quote and explain the commercial variance",
+    "Return multiple commercial options for one quote request",
+    "Bound alternative options on quote creation",
+    "Hold a quote for manual approval when commercial guardrails are exceeded",
+    "Approve a previously held quote without changing the reviewed commercial snapshot",
+    "Reject a previously held quote and preserve the review trail",
+    "Derive quote validity from a customer-specific policy",
+    "Derive shorter quote validity from high-volatility market pricing",
+    "Explain why similar quotes received different validity windows",
+    "Accept Users-issued Quotes-audience platform tokens for protected operations",
+    "Accept gateway-issued Quotes-audience platform tokens for protected operations",
+    "Reject missing or invalid protected-route bearer tokens",
+    "Reject valid tokens without the required Quotes scope",
+    "Resolve role=admin compatibility before implementation",
+    "Keep web-page bearer propagation inside the gateway boundary",
+    "Verify Azure platform auth settings before deployment sign-off",
+    "Keep Booking on public quote validation and Equipments on diagnostics",
+]
+
+FORBIDDEN_SCENARIO_TERMS = [
+    "architecture-state",
+    "broader architecture state",
+    "repository landscape",
+    "town workspace",
+    "unverified responsibilities",
+    "assumptions or gaps",
+    "documentation expectations",
+]
 
 
 def _section(markdown: str, heading: str) -> str:
@@ -11,6 +65,20 @@ def _section(markdown: str, heading: str) -> str:
     if next_heading == -1:
         return markdown[start:]
     return markdown[start:next_heading]
+
+
+def _scenario_headings(markdown: str) -> list[str]:
+    return [line.removeprefix(SCENARIO_PREFIX) for line in markdown.splitlines() if line.startswith(SCENARIO_PREFIX)]
+
+
+def _scenario_sections(markdown: str) -> dict[str, str]:
+    sections = {}
+    for heading in _scenario_headings(markdown):
+        marker = f"{SCENARIO_PREFIX}{heading}"
+        start = markdown.index(marker)
+        next_heading = markdown.find(f"\n{SCENARIO_PREFIX}", start + len(marker))
+        sections[heading] = markdown[start:] if next_heading == -1 else markdown[start:next_heading]
+    return sections
 
 
 def test_readme_current_api_surface_lists_implemented_support_endpoints() -> None:
@@ -173,3 +241,28 @@ def test_quote_scenarios_cover_2026_05_19_auth_rbac_deployment_boundaries() -> N
         "Keep Booking on public quote validation and Equipments on diagnostics",
     ]:
         assert f"## Scenario: {scenario_name}" in scenarios
+
+
+def test_quote_scenario_catalog_contains_only_quote_behavior_scenarios() -> None:
+    scenarios = (REPO_ROOT / "specification" / "quote-scenarios.md").read_text()
+
+    assert _scenario_headings(scenarios) == EXPECTED_QUOTE_SCENARIOS
+
+
+def test_quote_scenario_sections_have_concrete_gherkin_shape() -> None:
+    scenarios = (REPO_ROOT / "specification" / "quote-scenarios.md").read_text()
+
+    for scenario_name, scenario in _scenario_sections(scenarios).items():
+        assert "\nGiven " in scenario, scenario_name
+        assert "\nWhen " in scenario, scenario_name
+        assert "\nThen " in scenario, scenario_name
+        for forbidden_term in FORBIDDEN_SCENARIO_TERMS:
+            assert forbidden_term not in scenario, scenario_name
+
+
+def test_quotes_spec_keeps_scenario_catalog_focused_on_quote_behavior() -> None:
+    spec = (REPO_ROOT / "specification" / "quotes.md").read_text()
+    executable_scenarios = _section(spec, "Executable Scenarios")
+
+    assert "quote service behavior and documented integration boundaries" in executable_scenarios
+    assert "architecture-state scenarios" not in executable_scenarios

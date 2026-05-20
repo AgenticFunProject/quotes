@@ -787,9 +787,9 @@ Expected result:
 - System-level repository boundaries, town topology, and architecture-state assumptions are tracked separately in `specification/system-architecture.md` so the service contract and the broader workspace model can evolve without drifting apart.
 
 ## Executable Scenarios
-- Human-readable quote scenarios live in `specification/quote-scenarios.md`.
-- Human-readable architecture-state scenarios for repository boundaries and documentation expectations also live in `specification/quote-scenarios.md`.
-- The matching executable coverage lives in `tests/test_quotes_api.py`.
+- Human-readable scenarios for quote service behavior and documented integration boundaries live in `specification/quote-scenarios.md`.
+- Matching executable service coverage lives in `tests/test_quotes_api.py`; documentation-only boundary guardrails live in `tests/test_documentation.py`.
+- Repository landscape and broader architecture-state notes live in `specification/system-architecture.md`, not in the quote scenario catalog.
 
 ## Current Implementation Notes
 - `POST /quotes` returns the commercial quote payload: `id`, `quoteReference`, `validUntil`, `currency`, `lineItems`, and `totalAmount`.
