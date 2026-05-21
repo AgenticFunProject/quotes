@@ -21,6 +21,123 @@ fixtures:
     cargoWeightKg: 18000
   quote_revocation_request:
     reason: Customer requested a corrected quote.
+  rate_table_version_request:
+    originPort: NLRTM
+    destinationPort: USNYC
+    equipmentType: 40FT_HC
+    baseRateUsd: 1600
+    validFrom: "2026-04-01"
+    validTo: "2026-12-31"
+  rate_table_version_update:
+    baseRateUsd: 1615
+  rate_table_version_quote_request:
+    scheduleId: df62a7d2-a45e-4d4d-b3cb-b4af65435274
+    equipment:
+      - type: 40FT_HC
+        quantity: 1
+    cargoWeightKg: 18000
+  surcharge_rule_version_request:
+    surchargeType: PORT_CONGESTION
+    description: Port Congestion Surcharge - Origin CNSHA
+    amountUsd: 105
+    currency: USD
+    portCode: CNSHA
+    portScope: ORIGIN
+  surcharge_rule_version_update:
+    amountUsd: 115
+  surcharge_rule_version_quote_request:
+    scheduleId: 7a59721c-cd5d-4d9f-86a0-9aa9f7f6c47b
+    equipment:
+      - type: 20FT
+        quantity: 1
+    cargoWeightKg: 12000
+  admin_auth_rate_table_request:
+    originPort: SGSIN
+    destinationPort: AEMSA
+    equipmentType: 20FT
+    baseRateUsd: 745
+    validFrom: "2026-04-01"
+    validTo: "2026-12-31"
+  commercial_audit_rate_table_request:
+    originPort: NLRTM
+    destinationPort: USNYC
+    equipmentType: 40FT
+    baseRateUsd: 1505
+    validFrom: "2026-04-01"
+    validTo: "2026-12-31"
+  commercial_audit_rate_table_update:
+    baseRateUsd: 1510
+  commercial_outbox_rate_table_request:
+    originPort: SGSIN
+    destinationPort: AEMSA
+    equipmentType: 40FT
+    baseRateUsd: 1090
+    validFrom: "2026-04-01"
+    validTo: "2026-12-31"
+  commercial_outbox_rate_table_update:
+    baseRateUsd: 1095
+  outbox_drain_rate_events_request:
+    fromStart: true
+    batchSize: 500
+    eventTypes:
+      - rate.updated
+  outbox_replay_rate_events_request:
+    batchSize: 10
+    eventTypes:
+      - rate.updated
+  outbox_drain_quote_events_request:
+    fromStart: true
+    batchSize: 500
+    eventTypes:
+      - quote.created
+  outbox_replay_quote_events_request:
+    batchSize: 1
+    eventTypes:
+      - quote.created
+  impact_public_quote_request:
+    scheduleId: df62a7d2-a45e-4d4d-b3cb-b4af65435274
+    equipment:
+      - type: 20FT
+        quantity: 1
+    cargoWeightKg: 18000
+  impact_contract_quote_request:
+    scheduleId: df62a7d2-a45e-4d4d-b3cb-b4af65435274
+    customerId: cust-acme
+    equipment:
+      - type: 20FT
+        quantity: 1
+    cargoWeightKg: 18000
+  schedule_impact_analysis_request:
+    changeType: SCHEDULE
+    scheduleId: df62a7d2-a45e-4d4d-b3cb-b4af65435274
+  contract_impact_analysis_request:
+    changeType: CONTRACT
+    contractId: 7c9cc0a4-bd6d-4e6f-9c1c-e5c3a1300001
+  quote_preview_rate_table_request:
+    originPort: NLRTM
+    destinationPort: USNYC
+    equipmentType: 20FT
+    baseRateUsd: 1110
+    validFrom: "2026-04-01"
+    validTo: "2026-12-31"
+  quote_preview_surcharge_rule_request:
+    surchargeType: PORT_CONGESTION
+    description: Port Congestion Surcharge - Destination USNYC
+    amountUsd: 210
+    currency: USD
+    portCode: USNYC
+    portScope: DESTINATION
+  quote_preview_request:
+    scheduleId: df62a7d2-a45e-4d4d-b3cb-b4af65435274
+    equipment:
+      - type: 20FT
+        quantity: 1
+    cargoWeightKg: 18000
+    currency: EUR
+    rateTableIds:
+      - "{preview_rate_table_id}"
+    surchargeRuleIds:
+      - "{preview_surcharge_rule_id}"
 scenarios:
   "Create a quote on a seeded peak-season lane":
     binding: smoke.create_peak_season_quote
@@ -204,29 +321,174 @@ scenarios:
     actions: []
     assertions: []
   "Create, update, and activate a managed rate-table version":
-    binding: planned.manage_rate_table_version
-    status: planned
+    binding: admin.manage_rate_table_version
+    status: executable
     group: admin-commercial
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    requires_env:
+      admin_token: QUOTES_CONTRACT_ADMIN_TOKEN
+    fixtures:
+      - rate_table_version_request
+      - rate_table_version_update
+      - rate_table_version_quote_request
+    actions:
+      - name: create_rate_table
+        method: POST
+        path: /admin/rate-tables
+        auth: admin
+        actor: pricing.ops@quotes
+        body_fixture: rate_table_version_request
+        save:
+          rate_table_id: $.id
+      - name: update_rate_table
+        method: PATCH
+        path: /admin/rate-tables/{rate_table_id}
+        auth: admin
+        actor: pricing.ops@quotes
+        body_fixture: rate_table_version_update
+      - name: activate_rate_table
+        method: POST
+        path: /admin/rate-tables/{rate_table_id}/activate
+        auth: admin
+        actor: pricing.manager@quotes
+      - name: create_quote_after_activation
+        method: POST
+        path: /quotes
+        body_fixture: rate_table_version_quote_request
+        save:
+          quote_id: $.id
+      - name: retrieve_quote_after_activation
+        method: GET
+        path: /quotes/{quote_id}
+    assertions:
+      - action: create_rate_table
+        status: 201
+      - action: create_rate_table
+        path: $.isActive
+        json_equals: false
+      - action: update_rate_table
+        status: 200
+      - action: update_rate_table
+        path: $.baseRateUsd
+        json_equals: 1615.0
+      - action: activate_rate_table
+        status: 200
+      - action: activate_rate_table
+        path: $.isActive
+        json_equals: true
+      - action: create_quote_after_activation
+        status: 201
+      - action: retrieve_quote_after_activation
+        status: 200
+      - action: retrieve_quote_after_activation
+        path: $.pricingProvenance.baseRateRules.0.rateVersion
+        json_equals: 2
   "Create, update, and activate a managed surcharge-rule version":
-    binding: planned.manage_surcharge_rule_version
-    status: planned
+    binding: admin.manage_surcharge_rule_version
+    status: executable
     group: admin-commercial
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    requires_env:
+      admin_token: QUOTES_CONTRACT_ADMIN_TOKEN
+    fixtures:
+      - surcharge_rule_version_request
+      - surcharge_rule_version_update
+      - surcharge_rule_version_quote_request
+    actions:
+      - name: create_surcharge_rule
+        method: POST
+        path: /admin/surcharge-rules
+        auth: admin
+        actor: pricing.ops@quotes
+        body_fixture: surcharge_rule_version_request
+        save:
+          surcharge_rule_id: $.id
+      - name: update_surcharge_rule
+        method: PATCH
+        path: /admin/surcharge-rules/{surcharge_rule_id}
+        auth: admin
+        actor: pricing.ops@quotes
+        body_fixture: surcharge_rule_version_update
+      - name: activate_surcharge_rule
+        method: POST
+        path: /admin/surcharge-rules/{surcharge_rule_id}/activate
+        auth: admin
+        actor: pricing.manager@quotes
+      - name: create_quote_after_activation
+        method: POST
+        path: /quotes
+        body_fixture: surcharge_rule_version_quote_request
+        save:
+          quote_id: $.id
+      - name: retrieve_quote_after_activation
+        method: GET
+        path: /quotes/{quote_id}
+    assertions:
+      - action: create_surcharge_rule
+        status: 201
+      - action: create_surcharge_rule
+        path: $.isActive
+        json_equals: false
+      - action: update_surcharge_rule
+        status: 200
+      - action: update_surcharge_rule
+        path: $.amountUsd
+        json_equals: 115.0
+      - action: activate_surcharge_rule
+        status: 200
+      - action: activate_surcharge_rule
+        path: $.isActive
+        json_equals: true
+      - action: create_quote_after_activation
+        status: 201
+      - action: retrieve_quote_after_activation
+        status: 200
+      - action: retrieve_quote_after_activation
+        path: $.pricingProvenance.appliedSurchargeRules.1.surchargeRuleVersion
+        json_equals: 2
   "Require platform bearer authorization for commercial admin changes":
-    binding: planned.require_admin_authorization
-    status: planned
+    binding: auth.require_admin_authorization
+    status: executable
     group: auth
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    requires_env:
+      admin_token: QUOTES_CONTRACT_ADMIN_TOKEN
+      approve_token: QUOTES_CONTRACT_APPROVER_TOKEN
+    fixtures:
+      - admin_auth_rate_table_request
+    actions:
+      - name: reject_missing_token
+        method: POST
+        path: /admin/rate-tables
+        body_fixture: admin_auth_rate_table_request
+      - name: reject_wrong_scope
+        method: POST
+        path: /admin/rate-tables
+        auth: approve
+        actor: pricing.ops@quotes
+        body_fixture: admin_auth_rate_table_request
+      - name: accept_admin_token
+        method: POST
+        path: /admin/rate-tables
+        auth: admin
+        actor: pricing.ops@quotes
+        body_fixture: admin_auth_rate_table_request
+    assertions:
+      - action: reject_missing_token
+        status: 401
+      - action: reject_wrong_scope
+        status: 403
+      - action: accept_admin_token
+        status: 201
+      - action: accept_admin_token
+        path: $.createdBy
+        json_equals: pricing.ops@quotes
   "Require platform bearer authorization for quote approval decisions":
     binding: planned.require_approval_authorization
     status: planned
@@ -236,53 +498,325 @@ scenarios:
     actions: []
     assertions: []
   "Check Equipments service connectivity":
-    binding: planned.check_equipments_connectivity
-    status: planned
+    binding: diagnostics.check_equipments_connectivity
+    status: executable
     group: diagnostics
-    profiles: []
+    profiles:
+      - local
+      - azure
+    requires_env:
+      admin_token: QUOTES_CONTRACT_ADMIN_TOKEN
+      equipments_service: QUOTES_CONTRACT_EQUIPMENTS_SERVICE_CONFIGURED
     fixtures: []
-    actions: []
-    assertions: []
+    actions:
+      - name: check_equipments_connection
+        method: GET
+        path: /admin/service-connections/equipments
+        auth: admin
+        actor: ops@quotes
+    assertions:
+      - action: check_equipments_connection
+        status: 200
+      - action: check_equipments_connection
+        path: $.status
+        json_equals: ok
   "Record an audit trail for managed commercial changes":
-    binding: planned.record_commercial_audit_trail
-    status: planned
+    binding: admin.record_commercial_audit_trail
+    status: executable
     group: admin-commercial
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    requires_env:
+      admin_token: QUOTES_CONTRACT_ADMIN_TOKEN
+    fixtures:
+      - commercial_audit_rate_table_request
+      - commercial_audit_rate_table_update
+    actions:
+      - name: create_rate_table
+        method: POST
+        path: /admin/rate-tables
+        auth: admin
+        actor: pricing.ops@quotes
+        body_fixture: commercial_audit_rate_table_request
+        save:
+          audit_rate_table_id: $.id
+      - name: update_rate_table
+        method: PATCH
+        path: /admin/rate-tables/{audit_rate_table_id}
+        auth: admin
+        actor: pricing.ops@quotes
+        body_fixture: commercial_audit_rate_table_update
+      - name: activate_rate_table
+        method: POST
+        path: /admin/rate-tables/{audit_rate_table_id}/activate
+        auth: admin
+        actor: pricing.manager@quotes
+      - name: list_change_events
+        method: GET
+        path: /admin/commercial-change-events?resourceType=RATE_TABLE&resourceId={audit_rate_table_id}
+        auth: admin
+        actor: support@quotes
+    assertions:
+      - action: create_rate_table
+        status: 201
+      - action: update_rate_table
+        status: 200
+      - action: activate_rate_table
+        status: 200
+      - action: list_change_events
+        status: 200
+      - action: list_change_events
+        path: $.events.0.action
+        json_equals: ACTIVATED
+      - action: list_change_events
+        path: $.events.0.actor
+        json_equals: pricing.manager@quotes
+      - action: list_change_events
+        path: $.events.0.snapshot.isActive
+        json_equals: true
+      - action: list_change_events
+        path: $.events.1.action
+        json_equals: UPDATED
+      - action: list_change_events
+        path: $.events.2.action
+        json_equals: CREATED
   "Publish managed commercial changes to the outbox":
-    binding: planned.publish_commercial_changes_to_outbox
-    status: planned
+    binding: admin.publish_commercial_changes_to_outbox
+    status: executable
     group: admin-commercial
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    requires_env:
+      admin_token: QUOTES_CONTRACT_ADMIN_TOKEN
+    fixtures:
+      - outbox_drain_rate_events_request
+      - commercial_outbox_rate_table_request
+      - commercial_outbox_rate_table_update
+      - outbox_replay_rate_events_request
+    actions:
+      - name: drain_existing_rate_events
+        method: POST
+        path: /admin/outbox-consumers/contract-admin-outbox/replay
+        auth: admin
+        actor: integration@quotes
+        body_fixture: outbox_drain_rate_events_request
+      - name: create_rate_table
+        method: POST
+        path: /admin/rate-tables
+        auth: admin
+        actor: pricing.ops@quotes
+        body_fixture: commercial_outbox_rate_table_request
+        save:
+          outbox_rate_table_id: $.id
+      - name: update_rate_table
+        method: PATCH
+        path: /admin/rate-tables/{outbox_rate_table_id}
+        auth: admin
+        actor: pricing.ops@quotes
+        body_fixture: commercial_outbox_rate_table_update
+      - name: activate_rate_table
+        method: POST
+        path: /admin/rate-tables/{outbox_rate_table_id}/activate
+        auth: admin
+        actor: pricing.manager@quotes
+      - name: replay_new_rate_events
+        method: POST
+        path: /admin/outbox-consumers/contract-admin-outbox/replay
+        auth: admin
+        actor: integration@quotes
+        body_fixture: outbox_replay_rate_events_request
+    assertions:
+      - action: drain_existing_rate_events
+        status: 200
+      - action: create_rate_table
+        status: 201
+      - action: update_rate_table
+        status: 200
+      - action: activate_rate_table
+        status: 200
+      - action: replay_new_rate_events
+        status: 200
+      - action: replay_new_rate_events
+        path: $.replayedCount
+        json_equals: 3
+      - action: replay_new_rate_events
+        path: $.events.0.payload.action
+        json_equals: CREATED
+      - action: replay_new_rate_events
+        path: $.events.2.payload.action
+        json_equals: ACTIVATED
+      - action: replay_new_rate_events
+        path: $.events.2.payload.actor
+        json_equals: pricing.manager@quotes
   "Replay outbox events for a named downstream consumer":
-    binding: planned.replay_outbox_events
-    status: planned
+    binding: admin.replay_outbox_events
+    status: executable
     group: admin-commercial
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    requires_env:
+      admin_token: QUOTES_CONTRACT_ADMIN_TOKEN
+    fixtures:
+      - outbox_drain_quote_events_request
+      - peak_season_quote_request
+      - outbox_replay_quote_events_request
+    actions:
+      - name: drain_existing_quote_events
+        method: POST
+        path: /admin/outbox-consumers/contract-admin-replay/replay
+        auth: admin
+        actor: booking.sync@quotes
+        body_fixture: outbox_drain_quote_events_request
+      - name: create_quote
+        method: POST
+        path: /quotes
+        body_fixture: peak_season_quote_request
+      - name: replay_new_quote_event
+        method: POST
+        path: /admin/outbox-consumers/contract-admin-replay/replay
+        auth: admin
+        actor: booking.sync@quotes
+        body_fixture: outbox_replay_quote_events_request
+      - name: replay_again
+        method: POST
+        path: /admin/outbox-consumers/contract-admin-replay/replay
+        auth: admin
+        actor: booking.sync@quotes
+        body_fixture: outbox_replay_quote_events_request
+    assertions:
+      - action: drain_existing_quote_events
+        status: 200
+      - action: create_quote
+        status: 201
+      - action: replay_new_quote_event
+        status: 200
+      - action: replay_new_quote_event
+        path: $.replayedCount
+        json_equals: 1
+      - action: replay_new_quote_event
+        path: $.events.0.eventType
+        json_equals: quote.created
+      - action: replay_again
+        status: 200
+      - action: replay_again
+        path: $.replayedCount
+        json_equals: 0
   "Analyze quote impact for schedule or contract changes":
-    binding: planned.analyze_quote_impact
-    status: planned
+    binding: admin.analyze_quote_impact
+    status: executable
     group: admin-commercial
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    requires_env:
+      admin_token: QUOTES_CONTRACT_ADMIN_TOKEN
+    fixtures:
+      - impact_public_quote_request
+      - impact_contract_quote_request
+      - schedule_impact_analysis_request
+      - contract_impact_analysis_request
+    actions:
+      - name: create_public_quote
+        method: POST
+        path: /quotes
+        body_fixture: impact_public_quote_request
+      - name: create_contract_quote
+        method: POST
+        path: /quotes
+        body_fixture: impact_contract_quote_request
+      - name: analyze_schedule_impact
+        method: POST
+        path: /admin/impact-analyses
+        auth: admin
+        actor: ops@quotes
+        body_fixture: schedule_impact_analysis_request
+      - name: analyze_contract_impact
+        method: POST
+        path: /admin/impact-analyses
+        auth: admin
+        actor: ops@quotes
+        body_fixture: contract_impact_analysis_request
+        save:
+          contract_impact_id: $.id
+      - name: retrieve_contract_impact
+        method: GET
+        path: /admin/impact-analyses/{contract_impact_id}
+        auth: admin
+        actor: ops@quotes
+    assertions:
+      - action: create_public_quote
+        status: 201
+      - action: create_contract_quote
+        status: 201
+      - action: analyze_schedule_impact
+        status: 201
+      - action: analyze_schedule_impact
+        json_field: $.summary.affectedQuotes.0.quoteId
+      - action: analyze_contract_impact
+        status: 201
+      - action: analyze_contract_impact
+        path: $.summary.affectedCount
+        json_equals: 1
+      - action: retrieve_contract_impact
+        status: 200
+      - action: retrieve_contract_impact
+        path: $.summary.affectedCount
+        json_equals: 1
   "Preview quote pricing with draft managed commercial data":
-    binding: planned.preview_quote_pricing
-    status: planned
+    binding: admin.preview_quote_pricing
+    status: executable
     group: admin-commercial
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    requires_env:
+      admin_token: QUOTES_CONTRACT_ADMIN_TOKEN
+    fixtures:
+      - quote_preview_rate_table_request
+      - quote_preview_surcharge_rule_request
+      - quote_preview_request
+    actions:
+      - name: create_preview_rate_table
+        method: POST
+        path: /admin/rate-tables
+        auth: admin
+        actor: pricing.ops@quotes
+        body_fixture: quote_preview_rate_table_request
+        save:
+          preview_rate_table_id: $.id
+      - name: create_preview_surcharge_rule
+        method: POST
+        path: /admin/surcharge-rules
+        auth: admin
+        actor: pricing.ops@quotes
+        body_fixture: quote_preview_surcharge_rule_request
+        save:
+          preview_surcharge_rule_id: $.id
+      - name: preview_quote
+        method: POST
+        path: /admin/quote-preview
+        auth: admin
+        actor: pricing.ops@quotes
+        body_fixture: quote_preview_request
+    assertions:
+      - action: create_preview_rate_table
+        status: 201
+      - action: create_preview_surcharge_rule
+        status: 201
+      - action: preview_quote
+        status: 200
+      - action: preview_quote
+        path: $.totalAmount
+        json_equals: 1398.4
+      - action: preview_quote
+        path: $.pricingProvenance.baseRateRules.0.rateVersion
+        json_equals: 2
+      - action: preview_quote
+        path: $.pricingProvenance.appliedSurchargeRules.1.surchargeRuleVersion
+        json_equals: 2
   "Return a quote in a requested display currency":
     binding: planned.return_requested_display_currency
     status: planned

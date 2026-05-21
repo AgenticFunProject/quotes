@@ -9,4 +9,7 @@ fi
 
 "${ROOT_DIR}/.venv/bin/python" "${ROOT_DIR}/scripts/verify_gherkin_contract.py"
 "${ROOT_DIR}/.venv/bin/python" "${ROOT_DIR}/scripts/gherkin_contract.py" run --profile local --group smoke --dry-run
+"${ROOT_DIR}/.venv/bin/python" "${ROOT_DIR}/scripts/gherkin_contract.py" run --profile local --group admin-commercial --dry-run
+"${ROOT_DIR}/.venv/bin/python" "${ROOT_DIR}/scripts/gherkin_contract.py" run --profile local --group auth --dry-run
+"${ROOT_DIR}/.venv/bin/python" "${ROOT_DIR}/scripts/gherkin_contract.py" run --profile local --group diagnostics --dry-run
 exec "${ROOT_DIR}/.venv/bin/python" -m pytest tests -q "$@"

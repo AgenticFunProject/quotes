@@ -9,6 +9,10 @@ import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+
+from gherkin_contract import _assert_responses  # noqa: E402
+
 RUNNER = REPO_ROOT / "scripts" / "gherkin_contract.py"
 SPEC = REPO_ROOT / "specification" / "quote-scenarios.md"
 BINDINGS = REPO_ROOT / "specification" / "gherkin-bindings.yaml"
@@ -19,6 +23,18 @@ SMOKE_SCENARIOS = [
     "Validate whether a stored quote can still be booked",
     "Revoke an issued quote and block booking reuse",
 ]
+COMMERCIAL_ADMIN_SCENARIOS = [
+    "Create, update, and activate a managed rate-table version",
+    "Create, update, and activate a managed surcharge-rule version",
+    "Require platform bearer authorization for commercial admin changes",
+    "Check Equipments service connectivity",
+    "Record an audit trail for managed commercial changes",
+    "Publish managed commercial changes to the outbox",
+    "Replay outbox events for a named downstream consumer",
+    "Analyze quote impact for schedule or contract changes",
+    "Preview quote pricing with draft managed commercial data",
+]
+EXECUTABLE_SCENARIOS = [*SMOKE_SCENARIOS, *COMMERCIAL_ADMIN_SCENARIOS]
 
 
 def _run_contract_command(*args: str) -> subprocess.CompletedProcess[str]:
@@ -59,8 +75,8 @@ def test_contract_cli_validates_binding_coverage() -> None:
 
     assert result.returncode == 0, result.stderr
     assert "gherkin-contract: verified 41 scenarios" in result.stdout
-    assert "4 executable bindings" in result.stdout
-    for scenario in SMOKE_SCENARIOS:
+    assert "13 executable bindings" in result.stdout
+    for scenario in EXECUTABLE_SCENARIOS:
         assert scenario in result.stdout
 
 
@@ -97,6 +113,56 @@ def test_smoke_bindings_define_profiles_fixtures_actions_and_assertions() -> Non
         assert binding["assertions"]
 
 
+def test_commercial_admin_bindings_define_executable_black_box_steps() -> None:
+    document = yaml.safe_load(BINDINGS.read_text())
+    scenarios = document["scenarios"]
+
+    for scenario in COMMERCIAL_ADMIN_SCENARIOS:
+        binding = scenarios[scenario]
+        assert binding["status"] == "executable"
+        assert "local" in binding["profiles"]
+        assert binding["actions"]
+        assert binding["assertions"]
+
+
+def test_commercial_admin_groups_dry_run_without_service() -> None:
+    for group in ["admin-commercial", "auth", "diagnostics"]:
+        result = _run_contract_command(
+            "run",
+            "--spec",
+            str(SPEC),
+            "--bindings",
+            str(BINDINGS),
+            "--profile",
+            "local",
+            "--group",
+            group,
+            "--dry-run",
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert f"dry-run: local {group}" in result.stdout
+
+
+def test_diagnostics_binding_reports_external_profile_gate() -> None:
+    result = _run_contract_command(
+        "run",
+        "--spec",
+        str(SPEC),
+        "--bindings",
+        str(BINDINGS),
+        "--profile",
+        "local",
+        "--scenario",
+        "Check Equipments service connectivity",
+        "--dry-run",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "requires-env:" in result.stdout
+    assert "QUOTES_CONTRACT_EQUIPMENTS_SERVICE_CONFIGURED" in result.stdout
+
+
 def test_smoke_create_quote_assertions_match_created_response() -> None:
     document = yaml.safe_load(BINDINGS.read_text())
     scenarios = document["scenarios"]
@@ -123,3 +189,36 @@ def test_create_quote_smoke_binding_asserts_creation_response_fields_only() -> N
     ]
 
     assert create_quote_fields == ["$.id", "$.quoteReference"]
+
+
+def test_contract_assertions_can_check_nested_response_lists() -> None:
+    _assert_responses(
+        "Record an audit trail for managed commercial changes",
+        [
+            {
+                "action": "list_events",
+                "path": "$.events.0.action",
+                "json_equals": "ACTIVATED",
+            },
+            {
+                "action": "list_events",
+                "path": "$.events.0.snapshot.version",
+                "json_equals": 2,
+            },
+        ],
+        {
+            "list_events": (
+                200,
+                {
+                    "events": [
+                        {
+                            "action": "ACTIVATED",
+                            "snapshot": {
+                                "version": 2,
+                            },
+                        }
+                    ]
+                },
+            )
+        },
+    )

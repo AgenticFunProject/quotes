@@ -139,6 +139,7 @@ def validate_contract(contract: Contract) -> list[str]:
         for fixture in _string_list(binding.get("fixtures"), scenario.name, "fixtures", errors):
             if fixture not in contract.fixtures:
                 errors.append(f"{scenario.name}: unknown fixture {fixture!r}")
+        _validate_string_mapping(binding.get("requires_env", {}), scenario.name, "requires_env", errors)
 
         actions = binding.get("actions")
         assertions = binding.get("assertions")
@@ -166,6 +167,8 @@ def run_dry_run(contract: Contract, scenario_names: list[str], profile: str, sel
     for scenario_name in scenario_names:
         binding = contract.bindings[scenario_name]
         print(f"DRY-RUN {scenario_name}")
+        if required_env := _required_env(binding):
+            print(f"  requires-env: {', '.join(required_env)}")
         for action in binding.get("actions", []):
             method = action.get("method", "GET")
             path = action.get("path", "")
@@ -186,6 +189,10 @@ def run_live(contract: Contract, scenario_names: list[str], profile: str) -> Non
 
     for scenario_name in scenario_names:
         binding = contract.bindings[scenario_name]
+        missing_env = [env_name for env_name in _required_env(binding) if not os.environ.get(env_name)]
+        if missing_env:
+            print(f"GATED {scenario_name}: missing required environment {', '.join(missing_env)}")
+            continue
         state: dict[str, Any] = {}
         responses: dict[str, tuple[int, Any]] = {}
         print(f"RUN {scenario_name}")
@@ -289,6 +296,16 @@ def _required_string(value: Any, name: str) -> str:
     return value
 
 
+def _validate_string_mapping(value: Any, scenario_name: str, field: str, errors: list[str]) -> None:
+    if not isinstance(value, dict):
+        errors.append(f"{scenario_name}: {field} must be a mapping")
+        return
+
+    for key, item in value.items():
+        if not isinstance(key, str) or not key or not isinstance(item, str) or not item:
+            errors.append(f"{scenario_name}: {field} must map non-empty strings to non-empty strings")
+
+
 def _validate_business_steps(scenario: Scenario, errors: list[str]) -> None:
     for step in scenario.steps:
         for pattern in FORBIDDEN_EXECUTABLE_STEP_PATTERNS:
@@ -367,7 +384,7 @@ def _execute_action(
 
     body_fixture = action.get("body_fixture")
     if body_fixture:
-        body = json.dumps(fixtures[body_fixture]).encode()
+        body = json.dumps(_render_templates(fixtures[body_fixture], state)).encode()
         headers["Content-Type"] = "application/json"
 
     auth_name = action.get("auth")
@@ -428,8 +445,27 @@ def _json_path(document: Any, pointer: Any) -> Any:
     for part in path[2:].split("."):
         if isinstance(value, dict) and part in value:
             value = value[part]
+        elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
+            value = value[int(part)]
         else:
             raise ContractError(f"json path not found: {path}")
+    return value
+
+
+def _required_env(binding: dict[str, Any]) -> list[str]:
+    return list(_mapping(binding.get("requires_env", {}), "requires_env").values())
+
+
+def _render_templates(value: Any, state: dict[str, Any]) -> Any:
+    if isinstance(value, str):
+        try:
+            return value.format(**state)
+        except KeyError as exception:
+            raise ContractError(f"missing state for fixture placeholder: {exception.args[0]}") from None
+    if isinstance(value, list):
+        return [_render_templates(item, state) for item in value]
+    if isinstance(value, dict):
+        return {key: _render_templates(item, state) for key, item in value.items()}
     return value
 
 

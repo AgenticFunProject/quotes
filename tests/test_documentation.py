@@ -339,6 +339,15 @@ def test_quote_scenario_catalog_has_executable_contract_coverage_matrix() -> Non
         "Retrieve a stored quote",
         "Validate whether a stored quote can still be booked",
         "Revoke an issued quote and block booking reuse",
+        "Create, update, and activate a managed rate-table version",
+        "Create, update, and activate a managed surcharge-rule version",
+        "Require platform bearer authorization for commercial admin changes",
+        "Check Equipments service connectivity",
+        "Record an audit trail for managed commercial changes",
+        "Publish managed commercial changes to the outbox",
+        "Replay outbox events for a named downstream consumer",
+        "Analyze quote impact for schedule or contract changes",
+        "Preview quote pricing with draft managed commercial data",
     ]
 
 
