@@ -127,10 +127,20 @@ def test_readme_project_structure_mentions_current_modules_and_tests() -> None:
         "app/schedules.py",
         "tests/test_seed.py",
         "scripts/verify.sh",
+        "scripts/verify_gherkin_contract.py",
         "specification/quotes.md",
         "specification/quote-scenarios.md",
     ]:
         assert path in project_structure
+
+
+def test_ci_runs_standalone_gherkin_contract_verifier() -> None:
+    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    verify_script = (REPO_ROOT / "scripts" / "verify.sh").read_text()
+
+    assert "Verify Gherkin contract coverage" in workflow
+    assert "scripts/verify_gherkin_contract.py" in workflow
+    assert "scripts/verify_gherkin_contract.py" in verify_script
 
 
 def test_spec_endpoint_table_includes_current_workflow_routes() -> None:

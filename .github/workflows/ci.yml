@@ -32,5 +32,8 @@ jobs:
       - name: Validate package build
         run: .venv/bin/python -m build
 
+      - name: Verify Gherkin contract coverage
+        run: .venv/bin/python scripts/verify_gherkin_contract.py
+
       - name: Run tests
-        run: ./scripts/verify.sh
+        run: .venv/bin/python -m pytest tests -q

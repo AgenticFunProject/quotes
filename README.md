@@ -339,6 +339,7 @@ That command is the canonical verification entry point for both local runs and
 merge-gate automation. It bootstraps `.venv` if needed and then runs:
 
 ```bash
+.venv/bin/python scripts/verify_gherkin_contract.py
 .venv/bin/python -m pytest tests -q
 ```
 
@@ -347,7 +348,7 @@ merge-gate automation. It bootstraps `.venv` if needed and then runs:
 `.github/workflows/ci.yml` runs on pushes to `main`, pull requests targeting
 `main`, and manual dispatch. It bootstraps the same repo-local `.venv` used by
 local operators, validates that the project builds as a Python package, and
-then executes `./scripts/verify.sh`.
+then runs the Gherkin contract coverage verifier followed by the pytest suite.
 
 ## Azure Deployment
 
@@ -453,7 +454,8 @@ quotes/
 │   └── surcharges.py    # Surcharge matching and calculation logic
 ├── scripts/
 │   ├── bootstrap-venv.sh # Local virtualenv bootstrap
-│   └── verify.sh        # scripts/verify.sh: pytest verification wrapper
+│   ├── verify.sh        # scripts/verify.sh: local verification wrapper
+│   └── verify_gherkin_contract.py # scripts/verify_gherkin_contract.py: scenario-to-test contract verifier
 ├── specification/
 │   ├── quotes.md        # specification/quotes.md: API and behavior spec
 │   ├── quote-scenarios.md # specification/quote-scenarios.md: scenario catalog
