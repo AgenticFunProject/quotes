@@ -11,7 +11,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
-from gherkin_contract import _assert_responses  # noqa: E402
+from gherkin_contract import ContractError, _assert_responses  # noqa: E402
 
 RUNNER = REPO_ROOT / "scripts" / "gherkin_contract.py"
 SPEC = REPO_ROOT / "specification" / "quote-scenarios.md"
@@ -119,7 +119,8 @@ def test_public_lifecycle_bindings_define_executable_black_box_steps() -> None:
         binding = scenarios[scenario]
         assert binding["status"] == "executable"
         assert "local" in binding["profiles"]
-        assert binding["fixtures"]
+        assert "fixtures" in binding
+        assert binding["fixtures"] or binding.get("requires_env")
         assert binding["actions"]
         assert binding["assertions"]
 
@@ -161,6 +162,33 @@ def test_repricing_binding_is_isolated_from_alternative_option_quotes() -> None:
     assert repricing_equipment.isdisjoint(alternative_equipment)
     assert fixtures["repricing_rate_table_request"]["equipmentType"] not in alternative_equipment
     assert all(action["path"] != "/admin/surcharge-rules" for action in repricing_binding["actions"])
+
+
+def test_lifecycle_binding_asserts_created_and_expired_events_for_same_quote() -> None:
+    document = yaml.safe_load(BINDINGS.read_text())
+    binding = document["scenarios"]["Persist quote lifecycle events in the outbox"]
+    actions_by_name = {action["name"]: action for action in binding["actions"]}
+
+    assert "create_quote" not in actions_by_name
+    assert actions_by_name["materialize_expired_quote"]["save"] == {"quote_id": "$.id"}
+    assert "{quote_id}" in actions_by_name["list_created_events"]["path"]
+    assert "{quote_id}" in actions_by_name["list_expired_events"]["path"]
+
+    same_quote_assertions = [
+        assertion
+        for assertion in binding["assertions"]
+        if assertion.get("json_equals_state") == "quote_id"
+    ]
+
+    assert {
+        (assertion["action"], assertion["path"])
+        for assertion in same_quote_assertions
+    } == {
+        ("list_created_events", "$.events.0.aggregateId"),
+        ("list_created_events", "$.events.0.payload.quoteId"),
+        ("list_expired_events", "$.events.0.aggregateId"),
+        ("list_expired_events", "$.events.0.payload.quoteId"),
+    }
 
 
 def test_smoke_create_quote_assertions_match_created_response() -> None:
@@ -224,3 +252,62 @@ def test_contract_assertions_can_check_nested_option_lists_and_missing_fields() 
             )
         },
     )
+
+
+def test_contract_assertions_can_compare_response_fields_to_saved_state() -> None:
+    _assert_responses(
+        "Persist quote lifecycle events in the outbox",
+        [
+            {
+                "action": "list_created_events",
+                "path": "$.events.0.aggregateId",
+                "json_equals_state": "quote_id",
+            },
+        ],
+        {
+            "list_created_events": (
+                200,
+                {
+                    "events": [
+                        {
+                            "aggregateId": "quote-123",
+                        }
+                    ]
+                },
+            )
+        },
+        {"quote_id": "quote-123"},
+    )
+
+
+def test_contract_assertions_fail_when_response_field_differs_from_saved_state() -> None:
+    try:
+        _assert_responses(
+            "Persist quote lifecycle events in the outbox",
+            [
+                {
+                    "action": "list_expired_events",
+                    "path": "$.events.0.aggregateId",
+                    "json_equals_state": "quote_id",
+                },
+            ],
+            {
+                "list_expired_events": (
+                    200,
+                    {
+                        "events": [
+                            {
+                                "aggregateId": "other-quote",
+                            }
+                        ]
+                    },
+                )
+            },
+            {"quote_id": "quote-123"},
+        )
+    except ContractError as exception:
+        assert "$.events.0.aggregateId was 'other-quote', expected saved state quote_id='quote-123'" in str(
+            exception
+        )
+    else:
+        raise AssertionError("expected saved-state assertion to fail")

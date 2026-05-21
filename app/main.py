@@ -2568,6 +2568,7 @@ def list_commercial_change_events(
 @app.get("/admin/outbox-events")
 def list_outbox_events(
     aggregate_type: str | None = Query(default=None, alias="aggregateType"),
+    aggregate_id: str | None = Query(default=None, alias="aggregateId"),
     event_type: str | None = Query(default=None, alias="eventType"),
     published: bool | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
@@ -2577,6 +2578,8 @@ def list_outbox_events(
     query = select(OutboxEvent).order_by(OutboxEvent.occurred_at, OutboxEvent.id)
     if aggregate_type is not None:
         query = query.where(OutboxEvent.aggregate_type == aggregate_type)
+    if aggregate_id is not None:
+        query = query.where(OutboxEvent.aggregate_id == aggregate_id)
     if event_type is not None:
         query = query.where(OutboxEvent.event_type == event_type)
     if published is True:

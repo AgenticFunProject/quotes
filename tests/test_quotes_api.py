@@ -1893,6 +1893,44 @@ def test_admin_outbox_replay_advances_named_consumer_checkpoint(client) -> None:
     assert checkpoint.last_replayed_by == "booking.sync@quotes"
 
 
+def test_admin_outbox_events_can_filter_by_aggregate_id(client) -> None:
+    test_client, _ = client
+
+    first_quote_response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+    second_quote_response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "customerId": "cust-acme",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+
+    assert first_quote_response.status_code == 201
+    assert second_quote_response.status_code == 201
+
+    response = test_client.get(
+        "/admin/outbox-events",
+        headers=_auth_headers("ops@quotes", [_SCOPE_QUOTES_ADMIN]),
+        params={
+            "aggregateType": "quote",
+            "aggregateId": second_quote_response.json()["id"],
+            "eventType": "quote.created",
+        },
+    )
+
+    assert response.status_code == 200
+    assert [event["aggregateId"] for event in response.json()["events"]] == [second_quote_response.json()["id"]]
+
+
 def test_admin_impact_analysis_persists_schedule_and_contract_results(client) -> None:
     test_client, session_factory = client
 

@@ -266,40 +266,42 @@ scenarios:
     profiles:
       - local
       - azure
-    fixtures:
-      - peak_season_quote_request
+    fixtures: []
     requires_env:
-      QUOTES_CONTRACT_EXPIRED_QUOTE_ID: Pre-seeded quote whose validity window has already expired in the selected profile.
+      QUOTES_CONTRACT_EXPIRED_QUOTE_ID: Pre-seeded quote created through the public quote API whose validity window has already expired in the selected profile.
     state_from_env:
       expired_quote_id: QUOTES_CONTRACT_EXPIRED_QUOTE_ID
     actions:
-      - name: create_quote
-        method: POST
-        path: /quotes
-        body_fixture: peak_season_quote_request
-        save:
-          quote_id: $.id
       - name: materialize_expired_quote
         method: GET
-        path: /quotes/{expired_quote_id}/bookability
+        path: /quotes/{expired_quote_id}
+        save:
+          quote_id: $.id
       - name: list_created_events
         method: GET
-        path: /admin/outbox-events?aggregateType=quote&eventType=quote.created&limit=10
+        path: /admin/outbox-events?aggregateType=quote&aggregateId={quote_id}&eventType=quote.created&limit=10
         auth: admin
       - name: list_expired_events
         method: GET
-        path: /admin/outbox-events?aggregateType=quote&eventType=quote.expired&limit=10
+        path: /admin/outbox-events?aggregateType=quote&aggregateId={quote_id}&eventType=quote.expired&limit=10
         auth: admin
     assertions:
-      - action: create_quote
-        status: 201
       - action: materialize_expired_quote
         status: 200
       - action: materialize_expired_quote
-        path: $.status
+        path: $.id
+        json_equals_state: expired_quote_id
+      - action: materialize_expired_quote
+        path: $.lifecycleState
         json_equals: EXPIRED
       - action: list_created_events
         status: 200
+      - action: list_created_events
+        path: $.events.0.aggregateId
+        json_equals_state: quote_id
+      - action: list_created_events
+        path: $.events.0.payload.quoteId
+        json_equals_state: quote_id
       - action: list_created_events
         path: $.events.0.eventType
         json_equals: quote.created
@@ -307,6 +309,12 @@ scenarios:
         json_field: $.events.0.payload.pricingProvenance
       - action: list_expired_events
         status: 200
+      - action: list_expired_events
+        path: $.events.0.aggregateId
+        json_equals_state: quote_id
+      - action: list_expired_events
+        path: $.events.0.payload.quoteId
+        json_equals_state: quote_id
       - action: list_expired_events
         path: $.events.0.eventType
         json_equals: quote.expired

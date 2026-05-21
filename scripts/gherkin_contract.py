@@ -206,7 +206,7 @@ def run_live(contract: Contract, scenario_names: list[str], profile: str) -> Non
             status, payload = _execute_action(action, contract.fixtures, tokens, base_url, timeout, state)
             responses[_required_string(action.get("name"), f"{scenario_name}.actions[].name")] = (status, payload)
             print(f"  - {action['name']}: {status}")
-        _assert_responses(scenario_name, binding.get("assertions", []), responses)
+        _assert_responses(scenario_name, binding.get("assertions", []), responses, state)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -419,7 +419,13 @@ def _execute_action(
     return status, payload
 
 
-def _assert_responses(scenario_name: str, assertions: list[dict[str, Any]], responses: dict[str, tuple[int, Any]]) -> None:
+def _assert_responses(
+    scenario_name: str,
+    assertions: list[dict[str, Any]],
+    responses: dict[str, tuple[int, Any]],
+    state: dict[str, Any] | None = None,
+) -> None:
+    saved_state = state or {}
     for assertion in assertions:
         action_name = _required_string(assertion.get("action"), f"{scenario_name}.assertions[].action")
         status, payload = responses[action_name]
@@ -436,6 +442,21 @@ def _assert_responses(scenario_name: str, assertions: list[dict[str, Any]], resp
             actual = _json_path(payload, _required_string(assertion.get("path"), f"{scenario_name}.assertions[].path"))
             if actual != expected:
                 raise ContractError(f"{scenario_name}: {action_name} {assertion['path']} was {actual!r}, expected {expected!r}")
+        if "json_equals_state" in assertion:
+            state_key = _required_string(
+                assertion.get("json_equals_state"),
+                f"{scenario_name}.assertions[].json_equals_state",
+            )
+            if state_key not in saved_state:
+                raise ContractError(f"{scenario_name}: saved state {state_key!r} is not available")
+            path = _required_string(assertion.get("path"), f"{scenario_name}.assertions[].path")
+            expected = saved_state[state_key]
+            actual = _json_path(payload, path)
+            if actual != expected:
+                raise ContractError(
+                    f"{scenario_name}: {action_name} {path} was {actual!r}, "
+                    f"expected saved state {state_key}={expected!r}"
+                )
 
 
 def _decode_json(body: bytes) -> Any:

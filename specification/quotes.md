@@ -734,7 +734,7 @@ Revoked quotes return:
 - `POST /admin/rate-tables/{id}/activate` and `POST /admin/surcharge-rules/{id}/activate` promote the selected draft version and deactivate overlapping active versions for the same commercial scope.
 - Every managed commercial create, update, and activate operation appends a durable row to `commercial_change_events` with the actor, action, resource version, and post-change snapshot.
 - `GET /admin/commercial-change-events` returns the audit trail and can be filtered by `resourceType` and `resourceId`.
-- `GET /admin/outbox-events` returns the current durable event stream with optional aggregate, event-type, and publication filters.
+- `GET /admin/outbox-events` returns the current durable event stream with optional aggregate type, aggregate ID, event-type, and publication filters.
 - `POST /admin/outbox-consumers/{consumerName}/replay` replays the next ordered outbox batch for a named consumer and advances its checkpoint.
 - `POST /admin/impact-analyses` persists a schedule- or contract-change impact summary for the affected quotes.
 - `GET /admin/impact-analyses/{id}` returns a previously recorded impact-analysis run.
