@@ -24,16 +24,16 @@ dry-run, and run against configured service profiles.
 | Request a quote for a seeded schedule without an effective rate | `readiness.request_quote_without_effective_rate` |
 | Apply customer contract pricing with surcharge waivers | `planned.apply_customer_contract_pricing` |
 | Prefer account contract pricing over customer pricing | `planned.prefer_account_contract_pricing` |
-| Create, update, and activate a managed rate-table version | `planned.manage_rate_table_version` |
-| Create, update, and activate a managed surcharge-rule version | `planned.manage_surcharge_rule_version` |
-| Require platform bearer authorization for commercial admin changes | `planned.require_admin_authorization` |
+| Create, update, and activate a managed rate-table version | `admin.manage_rate_table_version` |
+| Create, update, and activate a managed surcharge-rule version | `admin.manage_surcharge_rule_version` |
+| Require platform bearer authorization for commercial admin changes | `auth.require_admin_authorization` |
 | Require platform bearer authorization for quote approval decisions | `planned.require_approval_authorization` |
-| Check Equipments service connectivity | `planned.check_equipments_connectivity` |
-| Record an audit trail for managed commercial changes | `planned.record_commercial_audit_trail` |
-| Publish managed commercial changes to the outbox | `planned.publish_commercial_changes_to_outbox` |
-| Replay outbox events for a named downstream consumer | `planned.replay_outbox_events` |
-| Analyze quote impact for schedule or contract changes | `planned.analyze_quote_impact` |
-| Preview quote pricing with draft managed commercial data | `planned.preview_quote_pricing` |
+| Check Equipments service connectivity | `diagnostics.check_equipments_connectivity` |
+| Record an audit trail for managed commercial changes | `admin.record_commercial_audit_trail` |
+| Publish managed commercial changes to the outbox | `admin.publish_commercial_changes_to_outbox` |
+| Replay outbox events for a named downstream consumer | `admin.replay_outbox_events` |
+| Analyze quote impact for schedule or contract changes | `admin.analyze_quote_impact` |
+| Preview quote pricing with draft managed commercial data | `admin.preview_quote_pricing` |
 | Return a quote in a requested display currency | `planned.return_requested_display_currency` |
 | Use approved market pricing when the client hints MARKET | `planned.use_approved_market_pricing` |
 | Fall back from MARKET to contract or tariff pricing when market coverage is missing | `planned.fall_back_from_market_pricing` |

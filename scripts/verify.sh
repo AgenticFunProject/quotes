@@ -12,4 +12,7 @@ fi
 "${ROOT_DIR}/.venv/bin/python" "${ROOT_DIR}/scripts/gherkin_contract.py" run --profile local --group quote-readiness --dry-run
 "${ROOT_DIR}/.venv/bin/python" "${ROOT_DIR}/scripts/gherkin_contract.py" run --profile local --group lifecycle --dry-run
 "${ROOT_DIR}/.venv/bin/python" "${ROOT_DIR}/scripts/gherkin_contract.py" run --profile local --group pricing --dry-run
+"${ROOT_DIR}/.venv/bin/python" "${ROOT_DIR}/scripts/gherkin_contract.py" run --profile local --group admin-commercial --dry-run
+"${ROOT_DIR}/.venv/bin/python" "${ROOT_DIR}/scripts/gherkin_contract.py" run --profile local --group auth --dry-run
+"${ROOT_DIR}/.venv/bin/python" "${ROOT_DIR}/scripts/gherkin_contract.py" run --profile local --group diagnostics --dry-run
 exec "${ROOT_DIR}/.venv/bin/python" -m pytest tests -q "$@"

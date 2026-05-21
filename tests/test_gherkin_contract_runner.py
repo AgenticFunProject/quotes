@@ -4,6 +4,7 @@ import ast
 from pathlib import Path
 import subprocess
 import sys
+from unittest.mock import patch
 
 import yaml
 
@@ -11,7 +12,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
-from gherkin_contract import ContractError, _assert_responses  # noqa: E402
+from gherkin_contract import ContractError, _assert_responses, load_contract, run_live  # noqa: E402
 
 RUNNER = REPO_ROOT / "scripts" / "gherkin_contract.py"
 SPEC = REPO_ROOT / "specification" / "quote-scenarios.md"
@@ -32,7 +33,18 @@ PUBLIC_LIFECYCLE_SCENARIOS = [
     "Return multiple commercial options for one quote request",
     "Bound alternative options on quote creation",
 ]
-EXECUTABLE_SCENARIOS = [*SMOKE_SCENARIOS, *PUBLIC_LIFECYCLE_SCENARIOS]
+COMMERCIAL_ADMIN_SCENARIOS = [
+    "Create, update, and activate a managed rate-table version",
+    "Create, update, and activate a managed surcharge-rule version",
+    "Require platform bearer authorization for commercial admin changes",
+    "Check Equipments service connectivity",
+    "Record an audit trail for managed commercial changes",
+    "Publish managed commercial changes to the outbox",
+    "Replay outbox events for a named downstream consumer",
+    "Analyze quote impact for schedule or contract changes",
+    "Preview quote pricing with draft managed commercial data",
+]
+EXECUTABLE_SCENARIOS = [*SMOKE_SCENARIOS, *PUBLIC_LIFECYCLE_SCENARIOS, *COMMERCIAL_ADMIN_SCENARIOS]
 
 
 def _run_contract_command(*args: str) -> subprocess.CompletedProcess[str]:
@@ -73,7 +85,7 @@ def test_contract_cli_validates_binding_coverage() -> None:
 
     assert result.returncode == 0, result.stderr
     assert "gherkin-contract: verified 41 scenarios" in result.stdout
-    assert "11 executable bindings" in result.stdout
+    assert "20 executable bindings" in result.stdout
     for scenario in EXECUTABLE_SCENARIOS:
         assert scenario in result.stdout
 
@@ -144,6 +156,25 @@ def test_public_lifecycle_bindings_dry_run_without_service() -> None:
         assert f"DRY-RUN {scenario}" in result.stdout
 
 
+def test_lifecycle_env_gate_reports_env_name_not_description() -> None:
+    result = _run_contract_command(
+        "run",
+        "--spec",
+        str(SPEC),
+        "--bindings",
+        str(BINDINGS),
+        "--profile",
+        "local",
+        "--scenario",
+        "Persist quote lifecycle events in the outbox",
+        "--dry-run",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "QUOTES_CONTRACT_EXPIRED_QUOTE_ID" in result.stdout
+    assert "Pre-seeded quote" not in result.stdout
+
+
 def test_repricing_binding_is_isolated_from_alternative_option_quotes() -> None:
     document = yaml.safe_load(BINDINGS.read_text())
     fixtures = document["fixtures"]
@@ -189,6 +220,107 @@ def test_lifecycle_binding_asserts_created_and_expired_events_for_same_quote() -
         ("list_expired_events", "$.events.0.aggregateId"),
         ("list_expired_events", "$.events.0.payload.quoteId"),
     }
+
+
+def test_commercial_admin_bindings_define_executable_black_box_steps() -> None:
+    document = yaml.safe_load(BINDINGS.read_text())
+    scenarios = document["scenarios"]
+
+    for scenario in COMMERCIAL_ADMIN_SCENARIOS:
+        binding = scenarios[scenario]
+        assert binding["status"] == "executable"
+        assert "local" in binding["profiles"]
+        assert binding["actions"]
+        assert binding["assertions"]
+
+
+def test_commercial_admin_groups_dry_run_without_service() -> None:
+    for group in ["admin-commercial", "auth", "diagnostics"]:
+        result = _run_contract_command(
+            "run",
+            "--spec",
+            str(SPEC),
+            "--bindings",
+            str(BINDINGS),
+            "--profile",
+            "local",
+            "--group",
+            group,
+            "--dry-run",
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert f"dry-run: local {group}" in result.stdout
+
+
+def test_azure_profile_resolves_auth_gates_to_azure_token_env_names() -> None:
+    result = _run_contract_command(
+        "run",
+        "--spec",
+        str(SPEC),
+        "--bindings",
+        str(BINDINGS),
+        "--profile",
+        "azure",
+        "--scenario",
+        "Require platform bearer authorization for commercial admin changes",
+        "--dry-run",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "QUOTES_CONTRACT_AZURE_ADMIN_TOKEN" in result.stdout
+    assert "QUOTES_CONTRACT_AZURE_APPROVER_TOKEN" in result.stdout
+    assert "QUOTES_CONTRACT_ADMIN_TOKEN" not in result.stdout
+    assert "QUOTES_CONTRACT_APPROVER_TOKEN" not in result.stdout
+
+
+def test_azure_live_run_uses_azure_token_env_gates(monkeypatch, capsys) -> None:
+    monkeypatch.delenv("QUOTES_CONTRACT_ADMIN_TOKEN", raising=False)
+    monkeypatch.delenv("QUOTES_CONTRACT_APPROVER_TOKEN", raising=False)
+    monkeypatch.setenv("QUOTES_CONTRACT_AZURE_BASE_URL", "http://quotes.azure.test")
+    monkeypatch.setenv("QUOTES_CONTRACT_AZURE_ADMIN_TOKEN", "azure-admin")
+    monkeypatch.setenv("QUOTES_CONTRACT_AZURE_APPROVER_TOKEN", "azure-approve")
+
+    contract = load_contract(SPEC, BINDINGS)
+    scenario_name = "Require platform bearer authorization for commercial admin changes"
+    responses = {
+        "reject_missing_token": (401, {}),
+        "reject_wrong_scope": (403, {}),
+        "accept_admin_token": (201, {"createdBy": "pricing.ops@quotes"}),
+    }
+    token_envs_seen = []
+
+    def fake_execute_action(action, fixtures, token_envs, base_url, timeout, state):
+        token_envs_seen.append(dict(token_envs))
+        return responses[action["name"]]
+
+    with patch("gherkin_contract._execute_action", side_effect=fake_execute_action):
+        run_live(contract, [scenario_name], "azure")
+
+    output = capsys.readouterr().out
+    assert "GATED" not in output
+    assert token_envs_seen
+    assert all(token_envs["admin"] == "QUOTES_CONTRACT_AZURE_ADMIN_TOKEN" for token_envs in token_envs_seen)
+    assert all(token_envs["approve"] == "QUOTES_CONTRACT_AZURE_APPROVER_TOKEN" for token_envs in token_envs_seen)
+
+
+def test_diagnostics_binding_reports_external_profile_gate() -> None:
+    result = _run_contract_command(
+        "run",
+        "--spec",
+        str(SPEC),
+        "--bindings",
+        str(BINDINGS),
+        "--profile",
+        "local",
+        "--scenario",
+        "Check Equipments service connectivity",
+        "--dry-run",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "requires-env:" in result.stdout
+    assert "QUOTES_CONTRACT_EQUIPMENTS_SERVICE_CONFIGURED" in result.stdout
 
 
 def test_smoke_create_quote_assertions_match_created_response() -> None:
@@ -248,6 +380,39 @@ def test_contract_assertions_can_check_nested_option_lists_and_missing_fields() 
                             }
                         ]
                     }
+                },
+            )
+        },
+    )
+
+
+def test_contract_assertions_can_check_nested_response_lists() -> None:
+    _assert_responses(
+        "Record an audit trail for managed commercial changes",
+        [
+            {
+                "action": "list_events",
+                "path": "$.events.0.action",
+                "json_equals": "ACTIVATED",
+            },
+            {
+                "action": "list_events",
+                "path": "$.events.0.snapshot.version",
+                "json_equals": 2,
+            },
+        ],
+        {
+            "list_events": (
+                200,
+                {
+                    "events": [
+                        {
+                            "action": "ACTIVATED",
+                            "snapshot": {
+                                "version": 2,
+                            },
+                        }
+                    ]
                 },
             )
         },

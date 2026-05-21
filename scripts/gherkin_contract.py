@@ -139,7 +139,6 @@ def validate_contract(contract: Contract) -> list[str]:
         for fixture in _string_list(binding.get("fixtures"), scenario.name, "fixtures", errors):
             if fixture not in contract.fixtures:
                 errors.append(f"{scenario.name}: unknown fixture {fixture!r}")
-
         _validate_string_mapping(binding.get("requires_env", {}), scenario.name, "requires_env", errors)
         _validate_string_mapping(binding.get("state_from_env", {}), scenario.name, "state_from_env", errors)
 
@@ -165,11 +164,13 @@ def print_validation_summary(contract: Contract) -> None:
 
 
 def run_dry_run(contract: Contract, scenario_names: list[str], profile: str, selection_label: str) -> None:
+    profile_config = _mapping(contract.profiles[profile], f"profile {profile}")
+    token_envs = _profile_token_envs(profile_config, profile)
     print(f"dry-run: {profile} {selection_label}")
     for scenario_name in scenario_names:
         binding = contract.bindings[scenario_name]
         print(f"DRY-RUN {scenario_name}")
-        if required_env := _required_env(binding):
+        if required_env := _required_env(binding, token_envs):
             print(f"  requires-env: {', '.join(required_env)}")
         for action in binding.get("actions", []):
             method = action.get("method", "GET")
@@ -178,23 +179,21 @@ def run_dry_run(contract: Contract, scenario_names: list[str], profile: str, sel
 
 
 def run_live(contract: Contract, scenario_names: list[str], profile: str) -> None:
-    profile_config = contract.profiles[profile]
+    profile_config = _mapping(contract.profiles[profile], f"profile {profile}")
     base_url_env = _required_string(profile_config.get("base_url_env"), f"profile {profile}.base_url_env")
     base_url = os.environ.get(base_url_env, "").rstrip("/")
     if not base_url:
         raise ContractError(f"profile {profile!r} requires environment variable {base_url_env}")
 
     timeout = float(profile_config.get("timeout_seconds", 10))
-    tokens = profile_config.get("tokens", {})
-    if not isinstance(tokens, dict):
-        raise ContractError(f"profile {profile}.tokens must be a mapping")
+    token_envs = _profile_token_envs(profile_config, profile)
 
     for scenario_name in scenario_names:
         binding = contract.bindings[scenario_name]
         state, missing_env = _state_from_env(binding)
         missing_env.extend(
             env_name
-            for env_name in _required_env(binding)
+            for env_name in _required_env(binding, token_envs)
             if not os.environ.get(env_name) and env_name not in missing_env
         )
         if missing_env:
@@ -203,7 +202,7 @@ def run_live(contract: Contract, scenario_names: list[str], profile: str) -> Non
         responses: dict[str, tuple[int, Any]] = {}
         print(f"RUN {scenario_name}")
         for action in binding.get("actions", []):
-            status, payload = _execute_action(action, contract.fixtures, tokens, base_url, timeout, state)
+            status, payload = _execute_action(action, contract.fixtures, token_envs, base_url, timeout, state)
             responses[_required_string(action.get("name"), f"{scenario_name}.actions[].name")] = (status, payload)
             print(f"  - {action['name']}: {status}")
         _assert_responses(scenario_name, binding.get("assertions", []), responses, state)
@@ -390,7 +389,7 @@ def _execute_action(
 
     body_fixture = action.get("body_fixture")
     if body_fixture:
-        body = json.dumps(fixtures[body_fixture]).encode()
+        body = json.dumps(_render_templates(fixtures[body_fixture], state)).encode()
         headers["Content-Type"] = "application/json"
 
     auth_name = action.get("auth")
@@ -491,8 +490,45 @@ def _json_path_exists(document: Any, pointer: Any) -> bool:
         return False
 
 
-def _required_env(binding: dict[str, Any]) -> list[str]:
-    return list(_mapping(binding.get("requires_env", {}), "requires_env"))
+def _profile_token_envs(profile_config: dict[str, Any], profile: str) -> dict[str, Any]:
+    token_envs = profile_config.get("tokens", {})
+    if not isinstance(token_envs, dict):
+        raise ContractError(f"profile {profile}.tokens must be a mapping")
+    return token_envs
+
+
+def _required_env(binding: dict[str, Any], token_envs: dict[str, Any]) -> list[str]:
+    required_env: list[str] = []
+    for env_key, env_reference in _mapping(binding.get("requires_env", {}), "requires_env").items():
+        if not _is_env_reference(env_reference, token_envs):
+            env_reference = env_key
+        required_env.append(_resolve_env_reference(env_reference, token_envs))
+
+    for action in binding.get("actions", []):
+        if isinstance(action, dict) and action.get("auth"):
+            required_env.append(_token_env_name(action["auth"], token_envs))
+
+    return list(dict.fromkeys(required_env))
+
+
+def _resolve_env_reference(env_reference: Any, token_envs: dict[str, Any]) -> str:
+    reference = _required_string(env_reference, "requires_env")
+    if reference in token_envs:
+        return _token_env_name(reference, token_envs)
+    return reference
+
+
+def _is_env_reference(value: Any, token_envs: dict[str, Any]) -> bool:
+    if not isinstance(value, str):
+        return False
+    if value in token_envs:
+        return True
+    return bool(re.fullmatch(r"[A-Z][A-Z0-9_]*", value))
+
+
+def _token_env_name(auth_name: Any, token_envs: dict[str, Any]) -> str:
+    auth_key = _required_string(auth_name, "action.auth")
+    return _required_string(token_envs.get(auth_key), f"token env for {auth_key}")
 
 
 def _state_from_env(binding: dict[str, Any]) -> tuple[dict[str, str], list[str]]:
@@ -506,6 +542,19 @@ def _state_from_env(binding: dict[str, Any]) -> tuple[dict[str, str], list[str]]
             continue
         state[variable] = value
     return state, missing
+
+
+def _render_templates(value: Any, state: dict[str, Any]) -> Any:
+    if isinstance(value, str):
+        try:
+            return value.format(**state)
+        except KeyError as exception:
+            raise ContractError(f"missing state for fixture placeholder: {exception.args[0]}") from None
+    if isinstance(value, list):
+        return [_render_templates(item, state) for item in value]
+    if isinstance(value, dict):
+        return {key: _render_templates(item, state) for key, item in value.items()}
+    return value
 
 
 if __name__ == "__main__":
