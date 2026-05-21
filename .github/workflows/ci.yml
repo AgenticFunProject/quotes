@@ -35,5 +35,8 @@ jobs:
       - name: Verify Gherkin contract coverage
         run: .venv/bin/python scripts/verify_gherkin_contract.py
 
+      - name: Dry-run Gherkin smoke contracts
+        run: .venv/bin/python scripts/gherkin_contract.py run --profile local --group smoke --dry-run
+
       - name: Run tests
         run: .venv/bin/python -m pytest tests -q
