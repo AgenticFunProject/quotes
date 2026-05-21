@@ -21,6 +21,104 @@ fixtures:
     cargoWeightKg: 18000
   quote_revocation_request:
     reason: Customer requested a corrected quote.
+  rate_coverage_request:
+    originPort: NLRTM
+    destinationPort: USNYC
+    departureDate: "2026-08-18"
+    equipment:
+      - type: 20FT
+        quantity: 2
+      - type: 40FT_HC
+        quantity: 1
+  equipment_availability_plan_request:
+    depotCode: CNSHA-01
+    equipment:
+      - type: 40FT
+        quantity: 2
+    availability:
+      - equipmentType: 40FT
+        availableCount: 1
+        depotCode: CNSHA-01
+      - equipmentType: 40HC
+        availableCount: 3
+        depotCode: CNSHA-01
+    substitutions:
+      - requestedType: 40FT
+        substituteType: 40HC
+        priority: 1
+        reason: High-cube unit is acceptable for standard 40-foot dry demand
+  no_effective_rate_quote_request:
+    scheduleId: 1ce1ab21-9d58-4a6d-b867-afc93098352f
+    equipment:
+      - type: 20FT
+        quantity: 1
+    cargoWeightKg: 12000
+  repricing_original_quote_request:
+    scheduleId: df62a7d2-a45e-4d4d-b3cb-b4af65435274
+    equipment:
+      - type: 20FT
+        quantity: 1
+    cargoWeightKg: 18000
+    currency: EUR
+  repricing_rate_table_request:
+    originPort: NLRTM
+    destinationPort: USNYC
+    equipmentType: 20FT
+    baseRateUsd: 1110
+    validFrom: "2026-04-01"
+    validTo: "2026-12-31"
+  repricing_surcharge_rule_request:
+    surchargeType: PORT_CONGESTION
+    description: Port Congestion Surcharge - Destination USNYC
+    amountUsd: 210
+    currency: USD
+    portCode: USNYC
+    portScope: DESTINATION
+  quote_reprice_request:
+    trigger: COMMERCIAL_REFRESH
+  alternative_options_quote_request:
+    scheduleId: df62a7d2-a45e-4d4d-b3cb-b4af65435274
+    customerId: cust-acme
+    equipment:
+      - type: 20FT
+        quantity: 1
+    cargoWeightKg: 18000
+    includeAlternativeOptions: true
+  bounded_alternative_options_quote_request:
+    scheduleId: df62a7d2-a45e-4d4d-b3cb-b4af65435274
+    customerId: cust-acme
+    equipment:
+      - type: 20FT
+        quantity: 1
+    cargoWeightKg: 18000
+    includeAlternativeOptions: true
+    maxAlternativeOptions: 1
+  bounded_alternative_options_disabled_request:
+    scheduleId: df62a7d2-a45e-4d4d-b3cb-b4af65435274
+    customerId: cust-acme
+    equipment:
+      - type: 20FT
+        quantity: 1
+    cargoWeightKg: 18000
+    maxAlternativeOptions: 1
+  invalid_low_alternative_options_request:
+    scheduleId: df62a7d2-a45e-4d4d-b3cb-b4af65435274
+    customerId: cust-acme
+    equipment:
+      - type: 20FT
+        quantity: 1
+    cargoWeightKg: 18000
+    includeAlternativeOptions: true
+    maxAlternativeOptions: 0
+  invalid_high_alternative_options_request:
+    scheduleId: df62a7d2-a45e-4d4d-b3cb-b4af65435274
+    customerId: cust-acme
+    equipment:
+      - type: 20FT
+        quantity: 1
+    cargoWeightKg: 18000
+    includeAlternativeOptions: true
+    maxAlternativeOptions: 11
 scenarios:
   "Create a quote on a seeded peak-season lane":
     binding: smoke.create_peak_season_quote
@@ -111,29 +209,116 @@ scenarios:
         path: $.status
         json_equals: ACTIVE
   "Validate rate coverage before requesting a quote":
-    binding: planned.validate_rate_coverage_before_quote
-    status: planned
+    binding: readiness.validate_rate_coverage_before_quote
+    status: executable
     group: quote-readiness
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    fixtures:
+      - rate_coverage_request
+    actions:
+      - name: validate_coverage
+        method: POST
+        path: /quotes/coverage/validate
+        body_fixture: rate_coverage_request
+    assertions:
+      - action: validate_coverage
+        status: 200
+      - action: validate_coverage
+        path: $.covered
+        json_equals: true
+      - action: validate_coverage
+        path: $.reason
+        json_equals: RATE_AVAILABLE
+      - action: validate_coverage
+        path: $.coverage.0.equipmentType
+        json_equals: 20FT
+      - action: validate_coverage
+        path: $.coverage.1.equipmentType
+        json_equals: 40FT_HC
   "Plan equipment availability with explicit substitution suggestions":
-    binding: planned.plan_equipment_availability
-    status: planned
+    binding: readiness.plan_equipment_availability
+    status: executable
     group: quote-readiness
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    fixtures:
+      - equipment_availability_plan_request
+    actions:
+      - name: plan_equipment
+        method: POST
+        path: /quotes/equipment-availability/plan
+        body_fixture: equipment_availability_plan_request
+    assertions:
+      - action: plan_equipment
+        status: 200
+      - action: plan_equipment
+        path: $.status
+        json_equals: AVAILABLE_WITH_SUBSTITUTIONS
+      - action: plan_equipment
+        path: $.available
+        json_equals: true
+      - action: plan_equipment
+        path: $.substitutions.0.substituteType
+        json_equals: 40FT_HC
+      - action: plan_equipment
+        path: $.substitutions.0.quantityCovered
+        json_equals: 1
   "Persist quote lifecycle events in the outbox":
-    binding: planned.persist_quote_lifecycle_events
-    status: planned
+    binding: lifecycle.persist_quote_lifecycle_events
+    status: executable
     group: lifecycle
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    fixtures:
+      - peak_season_quote_request
+    requires_env:
+      QUOTES_CONTRACT_EXPIRED_QUOTE_ID: Pre-seeded quote whose validity window has already expired in the selected profile.
+    state_from_env:
+      expired_quote_id: QUOTES_CONTRACT_EXPIRED_QUOTE_ID
+    actions:
+      - name: create_quote
+        method: POST
+        path: /quotes
+        body_fixture: peak_season_quote_request
+        save:
+          quote_id: $.id
+      - name: materialize_expired_quote
+        method: GET
+        path: /quotes/{expired_quote_id}/bookability
+      - name: list_created_events
+        method: GET
+        path: /admin/outbox-events?aggregateType=quote&eventType=quote.created&limit=10
+        auth: admin
+      - name: list_expired_events
+        method: GET
+        path: /admin/outbox-events?aggregateType=quote&eventType=quote.expired&limit=10
+        auth: admin
+    assertions:
+      - action: create_quote
+        status: 201
+      - action: materialize_expired_quote
+        status: 200
+      - action: materialize_expired_quote
+        path: $.status
+        json_equals: EXPIRED
+      - action: list_created_events
+        status: 200
+      - action: list_created_events
+        path: $.events.0.eventType
+        json_equals: quote.created
+      - action: list_created_events
+        json_field: $.events.0.payload.pricingProvenance
+      - action: list_expired_events
+        status: 200
+      - action: list_expired_events
+        path: $.events.0.eventType
+        json_equals: quote.expired
+      - action: list_expired_events
+        json_field: $.events.0.payload.pricingProvenance
   "Revoke an issued quote and block booking reuse":
     binding: smoke.revoke_quote_blocks_booking_reuse
     status: executable
@@ -180,13 +365,25 @@ scenarios:
         path: $.reason
         json_equals: QUOTE_REVOKED
   "Request a quote for a seeded schedule without an effective rate":
-    binding: planned.request_quote_without_effective_rate
-    status: planned
+    binding: readiness.request_quote_without_effective_rate
+    status: executable
     group: quote-readiness
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    fixtures:
+      - no_effective_rate_quote_request
+    actions:
+      - name: create_quote_without_rate
+        method: POST
+        path: /quotes
+        body_fixture: no_effective_rate_quote_request
+    assertions:
+      - action: create_quote_without_rate
+        status: 400
+      - action: create_quote_without_rate
+        path: $.detail
+        json_equals: No rate available for 20FT on selected schedule
   "Apply customer contract pricing with surcharge waivers":
     binding: planned.apply_customer_contract_pricing
     status: planned
@@ -316,29 +513,173 @@ scenarios:
     actions: []
     assertions: []
   "Reprice an existing quote and explain the commercial variance":
-    binding: planned.reprice_existing_quote
-    status: planned
+    binding: pricing.reprice_existing_quote
+    status: executable
     group: pricing
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    fixtures:
+      - repricing_original_quote_request
+      - repricing_rate_table_request
+      - repricing_surcharge_rule_request
+      - quote_reprice_request
+    actions:
+      - name: create_original_quote
+        method: POST
+        path: /quotes
+        body_fixture: repricing_original_quote_request
+        save:
+          original_quote_id: $.id
+          original_quote_reference: $.quoteReference
+      - name: create_repricing_rate_table
+        method: POST
+        path: /admin/rate-tables
+        auth: admin
+        actor: pricing.ops@quotes
+        body_fixture: repricing_rate_table_request
+        save:
+          rate_table_id: $.id
+      - name: activate_repricing_rate_table
+        method: POST
+        path: /admin/rate-tables/{rate_table_id}/activate
+        auth: admin
+        actor: pricing.manager@quotes
+      - name: create_repricing_surcharge_rule
+        method: POST
+        path: /admin/surcharge-rules
+        auth: admin
+        actor: pricing.ops@quotes
+        body_fixture: repricing_surcharge_rule_request
+        save:
+          surcharge_rule_id: $.id
+      - name: activate_repricing_surcharge_rule
+        method: POST
+        path: /admin/surcharge-rules/{surcharge_rule_id}/activate
+        auth: admin
+        actor: pricing.manager@quotes
+      - name: reprice_quote
+        method: POST
+        path: /quotes/{original_quote_id}/reprice
+        auth: admin
+        actor: pricing.ops@quotes
+        body_fixture: quote_reprice_request
+        save:
+          repriced_quote_id: $.id
+      - name: retrieve_original_quote
+        method: GET
+        path: /quotes/{original_quote_id}
+      - name: explain_repriced_quote
+        method: GET
+        path: /quotes/{repriced_quote_id}/explain
+    assertions:
+      - action: create_original_quote
+        status: 201
+      - action: create_repricing_rate_table
+        status: 201
+      - action: activate_repricing_rate_table
+        status: 200
+      - action: create_repricing_surcharge_rule
+        status: 201
+      - action: activate_repricing_surcharge_rule
+        status: 200
+      - action: reprice_quote
+        status: 201
+      - action: reprice_quote
+        json_field: $.repricedFromQuoteId
+      - action: reprice_quote
+        json_field: $.repricedFromQuoteReference
+      - action: reprice_quote
+        path: $.varianceSummary.direction
+        json_equals: HIGHER
+      - action: retrieve_original_quote
+        status: 200
+      - action: retrieve_original_quote
+        json_missing: $.varianceSummary
+      - action: explain_repriced_quote
+        status: 200
+      - action: explain_repriced_quote
+        json_field: $.varianceSummary.baseRate
   "Return multiple commercial options for one quote request":
-    binding: planned.return_multiple_commercial_options
-    status: planned
+    binding: pricing.return_multiple_commercial_options
+    status: executable
     group: pricing
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    fixtures:
+      - alternative_options_quote_request
+    actions:
+      - name: create_quote_with_options
+        method: POST
+        path: /quotes
+        body_fixture: alternative_options_quote_request
+    assertions:
+      - action: create_quote_with_options
+        status: 201
+      - action: create_quote_with_options
+        path: $.options.primary.pricingBasis
+        json_equals: CONTRACT
+      - action: create_quote_with_options
+        path: $.options.alternatives.0.pricingBasis
+        json_equals: PUBLIC_TARIFF
+      - action: create_quote_with_options
+        path: $.options.alternatives.1.pricingBasis
+        json_equals: MARKET
+      - action: create_quote_with_options
+        path: $.options.alternatives.0.totalAmount
+        json_equals: 1300.0
+      - action: create_quote_with_options
+        path: $.options.alternatives.1.totalAmount
+        json_equals: 1435.0
   "Bound alternative options on quote creation":
-    binding: planned.bound_alternative_options
-    status: planned
+    binding: pricing.bound_alternative_options
+    status: executable
     group: pricing
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    fixtures:
+      - bounded_alternative_options_quote_request
+      - bounded_alternative_options_disabled_request
+      - invalid_low_alternative_options_request
+      - invalid_high_alternative_options_request
+    actions:
+      - name: create_bounded_options_quote
+        method: POST
+        path: /quotes
+        body_fixture: bounded_alternative_options_quote_request
+      - name: create_options_disabled_quote
+        method: POST
+        path: /quotes
+        body_fixture: bounded_alternative_options_disabled_request
+      - name: reject_too_few_alternatives
+        method: POST
+        path: /quotes
+        body_fixture: invalid_low_alternative_options_request
+      - name: reject_too_many_alternatives
+        method: POST
+        path: /quotes
+        body_fixture: invalid_high_alternative_options_request
+    assertions:
+      - action: create_bounded_options_quote
+        status: 201
+      - action: create_bounded_options_quote
+        path: $.options.primary.pricingBasis
+        json_equals: CONTRACT
+      - action: create_bounded_options_quote
+        path: $.options.alternatives.0.pricingBasis
+        json_equals: PUBLIC_TARIFF
+      - action: create_bounded_options_quote
+        json_missing: $.options.alternatives.1
+      - action: create_options_disabled_quote
+        status: 201
+      - action: create_options_disabled_quote
+        json_missing: $.options
+      - action: reject_too_few_alternatives
+        status: 422
+      - action: reject_too_many_alternatives
+        status: 422
   "Hold a quote for manual approval when commercial guardrails are exceeded":
     binding: planned.hold_quote_for_manual_approval
     status: planned

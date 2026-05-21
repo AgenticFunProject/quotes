@@ -17,11 +17,11 @@ dry-run, and run against configured service profiles.
 | Create a quote on a seeded peak-season lane | `smoke.create_peak_season_quote` |
 | Retrieve a stored quote | `smoke.retrieve_stored_quote` |
 | Validate whether a stored quote can still be booked | `smoke.validate_stored_quote_bookability` |
-| Validate rate coverage before requesting a quote | `planned.validate_rate_coverage_before_quote` |
-| Plan equipment availability with explicit substitution suggestions | `planned.plan_equipment_availability` |
-| Persist quote lifecycle events in the outbox | `planned.persist_quote_lifecycle_events` |
+| Validate rate coverage before requesting a quote | `readiness.validate_rate_coverage_before_quote` |
+| Plan equipment availability with explicit substitution suggestions | `readiness.plan_equipment_availability` |
+| Persist quote lifecycle events in the outbox | `lifecycle.persist_quote_lifecycle_events` |
 | Revoke an issued quote and block booking reuse | `smoke.revoke_quote_blocks_booking_reuse` |
-| Request a quote for a seeded schedule without an effective rate | `planned.request_quote_without_effective_rate` |
+| Request a quote for a seeded schedule without an effective rate | `readiness.request_quote_without_effective_rate` |
 | Apply customer contract pricing with surcharge waivers | `planned.apply_customer_contract_pricing` |
 | Prefer account contract pricing over customer pricing | `planned.prefer_account_contract_pricing` |
 | Create, update, and activate a managed rate-table version | `planned.manage_rate_table_version` |
@@ -38,9 +38,9 @@ dry-run, and run against configured service profiles.
 | Use approved market pricing when the client hints MARKET | `planned.use_approved_market_pricing` |
 | Fall back from MARKET to contract or tariff pricing when market coverage is missing | `planned.fall_back_from_market_pricing` |
 | Explain why a quote used market or fallback pricing | `planned.explain_pricing_basis` |
-| Reprice an existing quote and explain the commercial variance | `planned.reprice_existing_quote` |
-| Return multiple commercial options for one quote request | `planned.return_multiple_commercial_options` |
-| Bound alternative options on quote creation | `planned.bound_alternative_options` |
+| Reprice an existing quote and explain the commercial variance | `pricing.reprice_existing_quote` |
+| Return multiple commercial options for one quote request | `pricing.return_multiple_commercial_options` |
+| Bound alternative options on quote creation | `pricing.bound_alternative_options` |
 | Hold a quote for manual approval when commercial guardrails are exceeded | `planned.hold_quote_for_manual_approval` |
 | Approve a previously held quote without changing the reviewed commercial snapshot | `planned.approve_held_quote` |
 | Reject a previously held quote and preserve the review trail | `planned.reject_held_quote` |

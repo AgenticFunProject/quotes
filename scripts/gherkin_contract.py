@@ -140,6 +140,9 @@ def validate_contract(contract: Contract) -> list[str]:
             if fixture not in contract.fixtures:
                 errors.append(f"{scenario.name}: unknown fixture {fixture!r}")
 
+        _validate_string_mapping(binding.get("requires_env", {}), scenario.name, "requires_env", errors)
+        _validate_string_mapping(binding.get("state_from_env", {}), scenario.name, "state_from_env", errors)
+
         actions = binding.get("actions")
         assertions = binding.get("assertions")
         if status == EXECUTABLE_STATUS:
@@ -166,6 +169,8 @@ def run_dry_run(contract: Contract, scenario_names: list[str], profile: str, sel
     for scenario_name in scenario_names:
         binding = contract.bindings[scenario_name]
         print(f"DRY-RUN {scenario_name}")
+        if required_env := _required_env(binding):
+            print(f"  requires-env: {', '.join(required_env)}")
         for action in binding.get("actions", []):
             method = action.get("method", "GET")
             path = action.get("path", "")
@@ -186,7 +191,15 @@ def run_live(contract: Contract, scenario_names: list[str], profile: str) -> Non
 
     for scenario_name in scenario_names:
         binding = contract.bindings[scenario_name]
-        state: dict[str, Any] = {}
+        state, missing_env = _state_from_env(binding)
+        missing_env.extend(
+            env_name
+            for env_name in _required_env(binding)
+            if not os.environ.get(env_name) and env_name not in missing_env
+        )
+        if missing_env:
+            print(f"GATED {scenario_name}: missing required environment {', '.join(missing_env)}")
+            continue
         responses: dict[str, tuple[int, Any]] = {}
         print(f"RUN {scenario_name}")
         for action in binding.get("actions", []):
@@ -287,6 +300,16 @@ def _required_string(value: Any, name: str) -> str:
     if not isinstance(value, str) or not value:
         raise ContractError(f"{name} is required")
     return value
+
+
+def _validate_string_mapping(value: Any, scenario_name: str, field: str, errors: list[str]) -> None:
+    if not isinstance(value, dict):
+        errors.append(f"{scenario_name}: {field} must be a mapping")
+        return
+
+    for key, item in value.items():
+        if not isinstance(key, str) or not key or not isinstance(item, str) or not item:
+            errors.append(f"{scenario_name}: {field} must map non-empty strings to non-empty strings")
 
 
 def _validate_business_steps(scenario: Scenario, errors: list[str]) -> None:
@@ -404,6 +427,10 @@ def _assert_responses(scenario_name: str, assertions: list[dict[str, Any]], resp
             raise ContractError(f"{scenario_name}: {action_name} returned {status}, expected {assertion['status']}")
         if "json_field" in assertion:
             _json_path(payload, assertion["json_field"])
+        if "json_missing" in assertion:
+            path = _required_string(assertion.get("json_missing"), f"{scenario_name}.assertions[].json_missing")
+            if _json_path_exists(payload, path):
+                raise ContractError(f"{scenario_name}: {action_name} unexpectedly contained {path}")
         if "json_equals" in assertion:
             expected = assertion["json_equals"]
             actual = _json_path(payload, _required_string(assertion.get("path"), f"{scenario_name}.assertions[].path"))
@@ -428,9 +455,36 @@ def _json_path(document: Any, pointer: Any) -> Any:
     for part in path[2:].split("."):
         if isinstance(value, dict) and part in value:
             value = value[part]
+        elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
+            value = value[int(part)]
         else:
             raise ContractError(f"json path not found: {path}")
     return value
+
+
+def _json_path_exists(document: Any, pointer: Any) -> bool:
+    try:
+        _json_path(document, pointer)
+        return True
+    except ContractError:
+        return False
+
+
+def _required_env(binding: dict[str, Any]) -> list[str]:
+    return list(_mapping(binding.get("requires_env", {}), "requires_env"))
+
+
+def _state_from_env(binding: dict[str, Any]) -> tuple[dict[str, str], list[str]]:
+    state_env = _mapping(binding.get("state_from_env", {}), "state_from_env")
+    state: dict[str, str] = {}
+    missing: list[str] = []
+    for variable, env_name in state_env.items():
+        value = os.environ.get(env_name)
+        if not value:
+            missing.append(env_name)
+            continue
+        state[variable] = value
+    return state, missing
 
 
 if __name__ == "__main__":

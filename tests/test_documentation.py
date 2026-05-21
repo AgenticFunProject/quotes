@@ -338,7 +338,14 @@ def test_quote_scenario_catalog_has_executable_contract_coverage_matrix() -> Non
         "Create a quote on a seeded peak-season lane",
         "Retrieve a stored quote",
         "Validate whether a stored quote can still be booked",
+        "Validate rate coverage before requesting a quote",
+        "Plan equipment availability with explicit substitution suggestions",
+        "Persist quote lifecycle events in the outbox",
         "Revoke an issued quote and block booking reuse",
+        "Request a quote for a seeded schedule without an effective rate",
+        "Reprice an existing quote and explain the commercial variance",
+        "Return multiple commercial options for one quote request",
+        "Bound alternative options on quote creation",
     ]
 
 
