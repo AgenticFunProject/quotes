@@ -13,6 +13,7 @@ EXPECTED_QUOTE_SCENARIOS = [
     "Validate rate coverage before requesting a quote",
     "Plan equipment availability with explicit substitution suggestions",
     "Persist quote lifecycle events in the outbox",
+    "Revoke an issued quote and block booking reuse",
     "Request a quote for a seeded schedule without an effective rate",
     "Apply customer contract pricing with surcharge waivers",
     "Prefer account contract pricing over customer pricing",
@@ -151,6 +152,7 @@ def test_spec_endpoint_table_includes_current_workflow_routes() -> None:
 
     for path in [
         "/quotes/{id}/approval-decisions",
+        "/quotes/{id}/revocations",
         "/quotes/equipment-availability/plan",
         "/admin/service-connections/equipments",
         "/admin/outbox-events",

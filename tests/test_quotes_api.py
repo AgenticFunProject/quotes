@@ -2443,6 +2443,108 @@ def test_get_quote_bookability_returns_404_when_missing(client) -> None:
     assert response.json() == {"detail": "Quote not found"}
 
 
+def test_quote_revocation_requires_admin_scope(client) -> None:
+    test_client, session_factory = client
+    quote = _seed_quote(session_factory)
+
+    missing_token_response = test_client.post(
+        f"/quotes/{quote.id}/revocations",
+        json={"reason": "Customer requested a corrected quote."},
+    )
+    wrong_scope_response = test_client.post(
+        f"/quotes/{quote.id}/revocations",
+        headers=_auth_headers("pricing.manager@quotes", [_SCOPE_QUOTES_APPROVE]),
+        json={"reason": "Customer requested a corrected quote."},
+    )
+
+    assert missing_token_response.status_code == 401
+    assert missing_token_response.json() == {"detail": "missing bearer token"}
+    assert wrong_scope_response.status_code == 403
+    assert wrong_scope_response.json() == {"detail": f"missing required scope {_SCOPE_QUOTES_ADMIN}"}
+
+
+def test_quote_revocation_voids_quote_and_publishes_outbox_event(client) -> None:
+    test_client, session_factory = client
+    quote = _seed_quote(session_factory)
+
+    response = test_client.post(
+        f"/quotes/{quote.id}/revocations",
+        headers=_auth_headers("ops@quotes", [_SCOPE_QUOTES_ADMIN]),
+        json={"reason": "Customer requested a corrected quote."},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["lifecycleState"] == "VOID"
+    assert response.json()["pricingProvenance"] == _public_tariff_pricing_provenance()
+    assert response.json()["sourceTotalAmount"] == 1960.0
+    assert response.json()["totalAmount"] == 1960.0
+
+    bookability_response = test_client.get(f"/quotes/{quote.id}/bookability")
+
+    assert bookability_response.status_code == 200
+    assert bookability_response.json() == {
+        "quoteId": quote.quote_reference,
+        "bookable": False,
+        "status": "VOID",
+        "reason": "QUOTE_REVOKED",
+        "expired": False,
+        "validUntil": quote.valid_until.isoformat(),
+    }
+
+    with session_factory() as session:
+        stored_quote = session.scalar(select(Quote).where(Quote.id == quote.id))
+        revoked_event = session.scalar(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == quote.id,
+                OutboxEvent.event_type == "quote.revoked",
+            )
+        )
+
+    assert stored_quote is not None
+    assert stored_quote.lifecycle_state == QuoteLifecycleState.VOID
+    assert revoked_event is not None
+    assert revoked_event.payload["quoteId"] == quote.id
+    assert revoked_event.payload["quoteReference"] == quote.quote_reference
+    assert revoked_event.payload["lifecycleState"] == "VOID"
+    assert revoked_event.payload["pricingProvenance"] == _public_tariff_pricing_provenance()
+    assert revoked_event.payload["lineItems"] == quote.line_items
+    assert revoked_event.payload["sourceTotalAmount"] == 1960.0
+    assert revoked_event.payload["totalAmount"] == 1960.0
+    assert revoked_event.payload["revocation"]["actor"] == "ops@quotes"
+    assert revoked_event.payload["revocation"]["reason"] == "Customer requested a corrected quote."
+    datetime.fromisoformat(revoked_event.payload["revocation"]["revokedAt"])
+
+
+def test_quote_revocation_rejects_pending_approval_quote(client) -> None:
+    test_client, session_factory = client
+    quote = _seed_quote(session_factory)
+
+    with session_factory() as session:
+        stored_quote = session.scalar(select(Quote).where(Quote.id == quote.id))
+        assert stored_quote is not None
+        stored_quote.lifecycle_state = QuoteLifecycleState.PENDING_APPROVAL
+        session.commit()
+
+    response = test_client.post(
+        f"/quotes/{quote.id}/revocations",
+        headers=_auth_headers("ops@quotes", [_SCOPE_QUOTES_ADMIN]),
+        json={"reason": "Customer requested a corrected quote."},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Pending approval quotes cannot be revoked"}
+
+    with session_factory() as session:
+        revoked_events = session.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == quote.id,
+                OutboxEvent.event_type == "quote.revoked",
+            )
+        ).all()
+
+    assert revoked_events == []
+
+
 def test_validate_quote_rate_coverage_returns_covered_route_details(client) -> None:
     test_client, _ = client
 

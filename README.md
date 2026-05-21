@@ -52,6 +52,9 @@ and seeds reference rates and surcharge rules used by `POST /quotes`.
   the current approved commercial data, preserves the original quote unchanged,
   and persists a structured variance summary on the repriced result. Requires
   `quotes:admin`.
+- `POST /quotes/{quote_id}/revocations` lets an operator void an issued or
+  approved, unexpired, unbooked quote with a short reason and persists a
+  `quote.revoked` outbox event. Requires `quotes:admin`.
 - `POST /quotes/coverage/validate` checks whether active public tariff data
   covers a route, departure date, and equipment selection before quote creation.
 - `POST /quotes/equipment-availability/plan` checks a requested equipment mix
@@ -70,7 +73,8 @@ and seeds reference rates and surcharge rules used by `POST /quotes`.
   business-facing lookup path for the human-readable quote reference and
   returns the same payload as `GET /quotes/{quote_id}`.
 - `GET /quotes/{quote_id}/bookability` returns whether a stored quote is still
-  within its validity window and therefore usable by Booking.
+  within its validity window and therefore usable by Booking. Revoked quotes
+  return `bookable=false`, `status=VOID`, and `reason=QUOTE_REVOKED`.
 - `POST /quotes/{quote_id}/approval-decisions` approves or rejects quotes that
   are currently held in the pending-approval lifecycle state and writes the
   corresponding outbox event. Requires a platform bearer token with
@@ -101,8 +105,9 @@ and seeds reference rates and surcharge rules used by `POST /quotes`.
   `not_configured` diagnostic status. Requires `quotes:admin`.
 - Quote lifecycle writes also create durable rows in `outbox_events`, starting
   with `quote.created` at creation time and `quote.expired` when an issued quote
-  is first observed past `validUntil`. Those payloads include the same stored
-  pricing provenance snapshot used by quote reads.
+  is first observed past `validUntil`. Operator revocations write
+  `quote.revoked` with actor and reason metadata. Those payloads include the
+  same stored pricing provenance snapshot used by quote reads.
 
 ### Platform Bearer Auth
 
@@ -123,7 +128,7 @@ Required scopes:
 
 - `quotes:approve` for `POST /quotes/{quote_id}/approval-decisions`
 - `quotes:admin` for all `/admin/*` routes and
-  `POST /quotes/{quote_id}/reprice`
+  `POST /quotes/{quote_id}/reprice` and `POST /quotes/{quote_id}/revocations`
 
 `X-Actor` remains supported as audit metadata when a valid bearer token is
 present. If `X-Actor` is omitted, the token subject is recorded as the actor.

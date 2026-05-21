@@ -20,6 +20,7 @@ guards the documented integration/deployment boundary.
 | Validate rate coverage before requesting a quote | `tests/test_quotes_api.py::test_scenario_route_coverage_validation_distinguishes_quoteable_lanes` |
 | Plan equipment availability with explicit substitution suggestions | `tests/test_quotes_api.py::test_scenario_equipment_availability_plan_reports_direct_stock`<br>`tests/test_quotes_api.py::test_scenario_equipment_availability_plan_suggests_substitutions_for_shortage` |
 | Persist quote lifecycle events in the outbox | `tests/test_quotes_api.py::test_scenario_quote_lifecycle_events_are_written_to_the_outbox` |
+| Revoke an issued quote and block booking reuse | `tests/test_quotes_api.py::test_quote_revocation_requires_admin_scope`<br>`tests/test_quotes_api.py::test_quote_revocation_voids_quote_and_publishes_outbox_event`<br>`tests/test_quotes_api.py::test_quote_revocation_rejects_pending_approval_quote` |
 | Request a quote for a seeded schedule without an effective rate | `tests/test_quotes_api.py::test_scenario_known_schedule_without_rate_returns_a_commercial_validation_error` |
 | Apply customer contract pricing with surcharge waivers | `tests/test_quotes_api.py::test_scenario_contract_pricing_uses_customer_context_and_deterministic_precedence` |
 | Prefer account contract pricing over customer pricing | `tests/test_quotes_api.py::test_scenario_contract_pricing_uses_customer_context_and_deterministic_precedence` |
@@ -102,6 +103,15 @@ Given the service stores quote lifecycle state and outbox events together
 When a client posts to `POST /quotes` and the quote is later read after expiry
 Then the service persists `quote.created` and `quote.expired` events for the same quote
 And each event includes the quote identifiers, stored commercial snapshot, and pricing provenance
+
+## Scenario: Revoke an issued quote and block booking reuse
+
+Given an issued or approved quote is still unexpired and not booked
+And a commercial operator has a platform bearer token with `quotes:admin`
+When the operator posts to `POST /quotes/{id}/revocations` with a short reason
+Then the quote lifecycle becomes `VOID`
+And `GET /quotes/{id}/bookability` returns `bookable=false` with `status=VOID` and `reason=QUOTE_REVOKED`
+And the service persists a `quote.revoked` outbox event with the actor, reason, commercial snapshot, and pricing provenance
 
 ## Scenario: Request a quote for a seeded schedule without an effective rate
 

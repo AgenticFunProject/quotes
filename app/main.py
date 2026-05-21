@@ -30,10 +30,14 @@ _QUOTE_STATUS_ACTIVE = "ACTIVE"
 _QUOTE_STATUS_EXPIRED = "EXPIRED"
 _QUOTE_STATUS_PENDING_APPROVAL = "PENDING_APPROVAL"
 _QUOTE_STATUS_REJECTED = "REJECTED"
+_QUOTE_STATUS_BOOKED = "BOOKED"
+_QUOTE_STATUS_VOID = "VOID"
 _BOOKABILITY_REASON_OPEN = "VALIDITY_WINDOW_OPEN"
 _BOOKABILITY_REASON_EXPIRED = "VALIDITY_WINDOW_EXPIRED"
 _BOOKABILITY_REASON_APPROVAL_PENDING = "APPROVAL_PENDING"
 _BOOKABILITY_REASON_APPROVAL_REJECTED = "APPROVAL_REJECTED"
+_BOOKABILITY_REASON_ALREADY_BOOKED = "QUOTE_ALREADY_BOOKED"
+_BOOKABILITY_REASON_REVOKED = "QUOTE_REVOKED"
 _OUTBOX_AGGREGATE_QUOTE = "quote"
 _OUTBOX_AGGREGATE_RATE_TABLE = "rate_table"
 _OUTBOX_AGGREGATE_SURCHARGE_RULE = "surcharge_rule"
@@ -41,6 +45,7 @@ _QUOTE_CREATED_EVENT = "quote.created"
 _QUOTE_EXPIRED_EVENT = "quote.expired"
 _QUOTE_APPROVED_EVENT = "quote.approved"
 _QUOTE_REJECTED_EVENT = "quote.rejected"
+_QUOTE_REVOKED_EVENT = "quote.revoked"
 _RATE_UPDATED_EVENT = "rate.updated"
 _SURCHARGE_UPDATED_EVENT = "surcharge.updated"
 _OUTBOX_EVENT_VERSION = 1
@@ -147,6 +152,20 @@ class RepriceQuoteRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     trigger: str = Field(min_length=1, max_length=64)
+
+
+class QuoteRevocationRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    reason: str = Field(min_length=1, max_length=240)
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str) -> str:
+        reason = value.strip()
+        if not reason:
+            raise ValueError("reason is required")
+        return reason
 
 
 class ValidateRateCoverageRequest(BaseModel):
@@ -559,14 +578,19 @@ def _enqueue_quote_event(
     quote: Quote,
     event_type: str,
     occurred_at: datetime | None = None,
+    payload_extra: dict[str, object] | None = None,
 ) -> None:
+    payload = _build_quote_event_payload(quote)
+    if payload_extra is not None:
+        payload.update(payload_extra)
+
     db.add(
         OutboxEvent(
             aggregate_type=_OUTBOX_AGGREGATE_QUOTE,
             aggregate_id=quote.id,
             event_type=event_type,
             event_version=_OUTBOX_EVENT_VERSION,
-            payload=_build_quote_event_payload(quote),
+            payload=payload,
             occurred_at=_normalize_utc(occurred_at or datetime.now(timezone.utc)),
         )
     )
@@ -620,6 +644,21 @@ def _sync_quote_lifecycle(quote: Quote, db: Session) -> Quote:
     return quote
 
 
+def _quote_revocation_conflict_detail(quote: Quote) -> str:
+    if quote.lifecycle_state == QuoteLifecycleState.PENDING_APPROVAL:
+        return "Pending approval quotes cannot be revoked"
+    if quote.lifecycle_state == QuoteLifecycleState.EXPIRED:
+        return "Expired quotes cannot be revoked"
+    if quote.lifecycle_state == QuoteLifecycleState.REJECTED:
+        return "Rejected quotes cannot be revoked"
+    if quote.lifecycle_state == QuoteLifecycleState.BOOKED:
+        return "Booked quotes cannot be revoked"
+    if quote.lifecycle_state == QuoteLifecycleState.VOID:
+        return "Revoked quotes cannot be revoked again"
+
+    return "Only active or approved quotes can be revoked"
+
+
 def _serialize_bookability(quote: Quote) -> dict[str, object]:
     if quote.lifecycle_state == QuoteLifecycleState.PENDING_APPROVAL:
         return {
@@ -637,6 +676,26 @@ def _serialize_bookability(quote: Quote) -> dict[str, object]:
             "bookable": False,
             "status": _QUOTE_STATUS_REJECTED,
             "reason": _BOOKABILITY_REASON_APPROVAL_REJECTED,
+            "expired": False,
+            "validUntil": quote.valid_until.isoformat(),
+        }
+
+    if quote.lifecycle_state == QuoteLifecycleState.BOOKED:
+        return {
+            "quoteId": quote.quote_reference,
+            "bookable": False,
+            "status": _QUOTE_STATUS_BOOKED,
+            "reason": _BOOKABILITY_REASON_ALREADY_BOOKED,
+            "expired": False,
+            "validUntil": quote.valid_until.isoformat(),
+        }
+
+    if quote.lifecycle_state == QuoteLifecycleState.VOID:
+        return {
+            "quoteId": quote.quote_reference,
+            "bookable": False,
+            "status": _QUOTE_STATUS_VOID,
+            "reason": _BOOKABILITY_REASON_REVOKED,
             "expired": False,
             "validUntil": quote.valid_until.isoformat(),
         }
@@ -2191,6 +2250,38 @@ def create_quote_approval_decision(
         quote=quote,
         event_type=_QUOTE_APPROVED_EVENT if payload.decision == ApprovalDecision.APPROVE else _QUOTE_REJECTED_EVENT,
         occurred_at=decided_at,
+    )
+    db.commit()
+    db.refresh(quote)
+    return _serialize_quote(quote)
+
+
+@app.post("/quotes/{quote_id}/revocations")
+def revoke_quote(
+    quote_id: str,
+    payload: QuoteRevocationRequest,
+    actor: str = Depends(_require_actor),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    quote = _sync_quote_lifecycle(_get_quote_or_404(quote_id, db), db)
+    if quote.lifecycle_state not in {QuoteLifecycleState.ISSUED, QuoteLifecycleState.APPROVED}:
+        raise HTTPException(status_code=409, detail=_quote_revocation_conflict_detail(quote))
+
+    revoked_at = _normalize_utc(datetime.now(timezone.utc))
+    quote.lifecycle_state = QuoteLifecycleState.VOID
+    db.add(quote)
+    _enqueue_quote_event(
+        db,
+        quote=quote,
+        event_type=_QUOTE_REVOKED_EVENT,
+        occurred_at=revoked_at,
+        payload_extra={
+            "revocation": {
+                "actor": actor,
+                "reason": payload.reason,
+                "revokedAt": revoked_at.isoformat(),
+            }
+        },
     )
     db.commit()
     db.refresh(quote)

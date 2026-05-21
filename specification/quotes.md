@@ -20,6 +20,7 @@ Provides a quoted price that can be referenced when placing a booking.
 | POST | /quotes | Request a new quote |
 | POST | /quotes/{id}/reprice | Reprice a stored quote and persist variance against the original |
 | POST | /quotes/{id}/approval-decisions | Approve or reject a quote currently held for manual approval |
+| POST | /quotes/{id}/revocations | Void an issued or approved quote so it can no longer be booked |
 | POST | /quotes/coverage/validate | Validate rate coverage for a route, departure date, and equipment selection |
 | POST | /quotes/equipment-availability/plan | Check a requested equipment mix against an Equipments-style availability snapshot and return substitution suggestions |
 | GET | /quotes/{id} | Retrieve a quote by internal ID or public quote reference |
@@ -61,7 +62,7 @@ Protected operational routes require these scopes:
 | Scope | Required for |
 |-------|--------------|
 | `quotes:approve` | `POST /quotes/{id}/approval-decisions` |
-| `quotes:admin` | All `/admin/*` routes and `POST /quotes/{id}/reprice` |
+| `quotes:admin` | All `/admin/*` routes, `POST /quotes/{id}/reprice`, and `POST /quotes/{id}/revocations` |
 
 When a protected request includes both a valid bearer token and `X-Actor`, the
 service records `X-Actor` as the business actor for audit compatibility. When
@@ -97,7 +98,8 @@ source, not production identity-provider behavior.
 
 Quotes keeps the service-specific scopes already documented:
 
-- `quotes:admin` for all `/admin/*` routes and `POST /quotes/{id}/reprice`
+- `quotes:admin` for all `/admin/*` routes, `POST /quotes/{id}/reprice`, and
+  `POST /quotes/{id}/revocations`
 - `quotes:approve` for `POST /quotes/{id}/approval-decisions`
 
 Public quote request/read endpoints remain unauthenticated. Callers must not
@@ -339,6 +341,46 @@ Example response:
 }
 ```
 
+### POST /quotes/{id}/revocations - Request Body
+```json
+{
+  "reason": "Customer requested replacement quote after scope changed."
+}
+```
+
+### POST /quotes/{id}/revocations - Response
+```json
+{
+  "id": "53c362b2-1229-4ea5-a24a-9891fb1f509d",
+  "quoteReference": "QTE-2026-00108",
+  "lifecycleState": "VOID",
+  "pricingBasis": "PUBLIC_TARIFF",
+  "pricingProvenance": {
+    "pricingBasis": "PUBLIC_TARIFF",
+    "referenceDataVersion": "seed-2026-04-01",
+    "sourceCurrency": "USD",
+    "responseCurrency": "USD"
+  },
+  "sourceTotalAmount": 1960.00,
+  "totalAmount": 1960.00,
+  "validUntil": "2026-04-07T23:59:59Z"
+}
+```
+
+- The `{id}` path parameter accepts either the stored quote UUID or the public
+  `quoteReference`.
+- The endpoint requires a bearer token with `quotes:admin`.
+- `X-Actor` is optional audit metadata; when it is absent, the token subject is
+  recorded as the revoking actor.
+- Only `ISSUED` and `APPROVED` quotes that are unexpired and not booked can be
+  revoked.
+- Expired, rejected, already void/revoked, booked, or pending-approval quotes
+  return `409` without writing a `quote.revoked` event.
+- Successful revocation changes the quote lifecycle to `VOID`, preserves the
+  stored pricing/provenance snapshots, and appends a durable `quote.revoked`
+  outbox event with quote identifiers, actor, reason, lifecycle state,
+  commercial snapshot, and pricing provenance.
+
 ### POST /quotes/coverage/validate - Request Body
 ```json
 {
@@ -554,6 +596,19 @@ Response statuses:
 }
 ```
 
+Revoked quotes return:
+
+```json
+{
+  "quoteId": "QTE-2026-00108",
+  "bookable": false,
+  "status": "VOID",
+  "reason": "QUOTE_REVOKED",
+  "expired": false,
+  "validUntil": "2026-04-07T23:59:59Z"
+}
+```
+
 ### POST /admin/rate-tables - Request Body
 ```json
 {
@@ -635,6 +690,17 @@ Response statuses:
 - The `{id}` path parameter accepts either the stored quote UUID or the public `quoteReference`.
 - This endpoint accepts an approval decision for quotes currently in `PENDING_APPROVAL` and returns `409` for quotes in any other lifecycle state.
 - Decisions require a bearer token with `quotes:approve`, persist the approver decision snapshot on the quote, and append either a quote-approved or quote-rejected outbox event. `X-Actor` is optional audit metadata; when it is absent, the token subject is recorded as the actor.
+
+### POST /quotes/{id}/revocations
+- The `{id}` path parameter accepts either the stored quote UUID or the public `quoteReference`.
+- This endpoint requires a bearer token with `quotes:admin`.
+- The request carries a short `reason` string that is persisted in the
+  `quote.revoked` outbox event with the revoking actor.
+- Revocation is allowed only for unexpired `ISSUED` or `APPROVED` quotes that
+  have not been booked. Expired, rejected, void/revoked, booked, and
+  pending-approval quotes return `409`.
+- Revoked quotes return `bookable=false`, `status=VOID`, and
+  `reason=QUOTE_REVOKED` from `GET /quotes/{id}/bookability`.
 
 ### POST /quotes/{id}/reprice
 - The `{id}` path parameter accepts either the stored quote UUID or the public `quoteReference`.
@@ -778,7 +844,7 @@ Expected result:
 |-------|------|-------|
 | id | UUID | Internal primary key |
 | quoteReference | string | Human-readable (QTE-YYYY-NNNNN) |
-| lifecycleState | enum | `ISSUED`, `BOOKED`, `EXPIRED`, `VOID` |
+| lifecycleState | enum | `ISSUED`, `PENDING_APPROVAL`, `APPROVED`, `REJECTED`, `BOOKED`, `EXPIRED`, `VOID` |
 | scheduleId | UUID | |
 | scheduleSnapshot | JSON object | Stored schedule facts used for later validation |
 | equipment | JSON array | type + quantity |
@@ -800,7 +866,7 @@ Expected result:
 | id | UUID | Internal primary key |
 | aggregateType | string | Currently `quote` |
 | aggregateId | UUID | Internal quote ID |
-| eventType | string | Versioned lifecycle event name such as `quote.created` or `quote.expired` |
+| eventType | string | Versioned lifecycle event name such as `quote.created`, `quote.expired`, or `quote.revoked` |
 | eventVersion | integer | Payload contract version |
 | payload | JSON object | Event body including quote identifiers, lifecycle state, schedule snapshot, pricing provenance, and commercial totals |
 | occurredAt | timestamp | When the lifecycle event occurred |
@@ -889,7 +955,7 @@ Expected result:
 - Quote lifecycle state is persisted on the quote row and synchronized with `validUntil` when a quote is read after expiry.
 - Quote reads persist the commercial mode as `pricingBasis` and return the stored `pricingProvenance` snapshot used to explain the amount later.
 - The current implementation versions seeded tariff and surcharge reference data as `seed-2026-04-01` inside `pricingProvenance.referenceDataVersion`.
-- The current implementation protects all `/admin/*` endpoints and `POST /quotes/{id}/reprice` with `quotes:admin`.
+- The current implementation protects all `/admin/*` endpoints, `POST /quotes/{id}/reprice`, and `POST /quotes/{id}/revocations` with `quotes:admin`.
 - The current implementation exposes internal admin endpoints for managed rate-table and surcharge-rule draft creation, draft update, and activation.
 - Active managed rate-table and surcharge-rule rows are the only rows used during quote pricing; drafts are inert until explicitly activated.
 - Public tariff provenance now records the active `rateVersion` and `surchargeRuleVersion` selected for the quote so later support workflows can explain which managed commercial change produced the amount.
@@ -897,7 +963,7 @@ Expected result:
 - The current implementation also publishes those managed commercial changes into `outbox_events` as stable `rate.updated` and `surcharge.updated` events, with the specific commercial action carried in the payload.
 - The current implementation exposes `POST /admin/quote-preview` so commercial operators can preview quote pricing with explicit draft rate-table and surcharge-rule versions before activation.
 - Quote lifecycle changes are written to `outbox_events` in the same transaction as the quote write that caused them.
-- The current implementation emits `quote.created` when a quote is created and `quote.expired` the first time an issued quote is observed past `validUntil`, and both payloads include the stored pricing provenance snapshot.
+- The current implementation emits `quote.created` when a quote is created, `quote.expired` the first time an issued quote is observed past `validUntil`, and `quote.revoked` when an operator voids an issued or approved quote; all quote lifecycle event payloads include the stored pricing provenance snapshot.
 - Outbox replay is checkpointed per named consumer in `outbox_consumer_checkpoints`, which lets downstream read models rebuild deterministically without a broker.
 - Schedule- and contract-change impact workflows persist their results in `impact_analysis_runs` so operators can inspect which stored quotes would need downstream attention.
 - These notes describe the present behavior of the generated code and should be folded into the business specification when they are confirmed as intended behavior.
