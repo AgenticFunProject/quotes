@@ -2046,6 +2046,7 @@ def create_quote_approval_decision(
 def reprice_quote(
     quote_id: str,
     payload: RepriceQuoteRequest,
+    _: str = Depends(_require_actor),
     db: Session = Depends(get_db),
     schedule_provider: ScheduleProvider = Depends(get_schedule_provider),
 ) -> dict[str, object]:
@@ -2305,6 +2306,7 @@ def activate_surcharge_rule(
 def list_commercial_change_events(
     resource_type: CommercialChangeResourceType | None = Query(default=None, alias="resourceType"),
     resource_id: str | None = Query(default=None, alias="resourceId"),
+    _: str = Depends(_require_actor),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     query = select(CommercialChangeEvent).order_by(CommercialChangeEvent.occurred_at.desc())
@@ -2323,6 +2325,7 @@ def list_outbox_events(
     event_type: str | None = Query(default=None, alias="eventType"),
     published: bool | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
+    _: str = Depends(_require_actor),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     query = select(OutboxEvent).order_by(OutboxEvent.occurred_at, OutboxEvent.id)
@@ -2418,7 +2421,11 @@ def create_impact_analysis(
 
 
 @app.get("/admin/impact-analyses/{run_id}")
-def get_impact_analysis(run_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
+def get_impact_analysis(
+    run_id: str,
+    _: str = Depends(_require_actor),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
     run = db.get(ImpactAnalysisRun, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="Impact analysis not found")

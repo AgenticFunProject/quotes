@@ -50,7 +50,8 @@ and seeds reference rates and surcharge rules used by `POST /quotes`.
   to bound the number of returned alternatives.
 - `POST /quotes/{quote_id}/reprice` reruns pricing for a stored quote against
   the current approved commercial data, preserves the original quote unchanged,
-  and persists a structured variance summary on the repriced result.
+  and persists a structured variance summary on the repriced result. Requires
+  `quotes:admin`.
 - `POST /quotes/coverage/validate` checks whether active public tariff data
   covers a route, departure date, and equipment selection before quote creation.
 - `GET /quotes/{quote_id}` returns the stored quote by either the internal UUID
@@ -71,20 +72,22 @@ and seeds reference rates and surcharge rules used by `POST /quotes`.
   `quotes:approve`.
 - `GET /admin/commercial-change-events` returns the managed-commercial audit
   trail for rate-table and surcharge-rule create, update, and activate flows.
+  Requires `quotes:admin`.
 - `POST /admin/rate-tables`, `PATCH /admin/rate-tables/{rate_table_id}`, and
   `POST /admin/rate-tables/{rate_table_id}/activate` manage draft and active
-  rate-table versions. Write routes require `quotes:admin`.
+  rate-table versions. Requires `quotes:admin`.
 - `POST /admin/surcharge-rules`, `PATCH /admin/surcharge-rules/{surcharge_rule_id}`,
   and `POST /admin/surcharge-rules/{surcharge_rule_id}/activate` manage draft
-  and active surcharge-rule versions. Write routes require `quotes:admin`.
+  and active surcharge-rule versions. Requires `quotes:admin`.
 - `GET /admin/outbox-events` lists durable quote and commercial outbox events
-  with aggregate, event-type, publication-state, and limit filters.
+  with aggregate, event-type, publication-state, and limit filters. Requires
+  `quotes:admin`.
 - `POST /admin/outbox-consumers/{consumerName}/replay` replays an ordered batch
   of outbox events for a named downstream consumer and advances its checkpoint.
   Requires `quotes:admin`.
 - `POST /admin/impact-analyses` records schedule- or contract-change impact
   summaries for affected quotes, and `GET /admin/impact-analyses/{run_id}`
-  reads a recorded impact-analysis run. Creation requires `quotes:admin`.
+  reads a recorded impact-analysis run. Requires `quotes:admin`.
 - `POST /admin/quote-preview` lets commercial operators evaluate draft managed
   rate-table and surcharge-rule versions against a shipment before activation.
   Requires `quotes:admin`.
@@ -114,8 +117,8 @@ the local development default.
 Required scopes:
 
 - `quotes:approve` for `POST /quotes/{quote_id}/approval-decisions`
-- `quotes:admin` for managed commercial-data writes, outbox replay, impact
-  analysis creation, and draft quote preview
+- `quotes:admin` for all `/admin/*` routes and
+  `POST /quotes/{quote_id}/reprice`
 
 `X-Actor` remains supported as audit metadata when a valid bearer token is
 present. If `X-Actor` is omitted, the token subject is recorded as the actor.
@@ -269,6 +272,7 @@ and pricing provenance used to explain how the quote was calculated.
 
 ```bash
 curl -X POST http://localhost:8000/quotes/<quote-uuid>/reprice \
+  -H 'Authorization: Bearer <quotes-admin-token>' \
   -H 'Content-Type: application/json' \
   -d '{
     "trigger": "COMMERCIAL_REFRESH"

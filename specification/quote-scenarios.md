@@ -6,6 +6,54 @@ integration or deployment boundary scenarios guarded by `tests/test_documentatio
 Every scenario must describe a concrete actor, request path or input, and
 observable response status or payload.
 
+## Contract Coverage Matrix
+
+This matrix is the rebuild gate for the scenario catalog. Each scenario must
+point at at least one automated check that exercises the service behavior or
+guards the documented integration/deployment boundary.
+
+| Scenario | Executable coverage |
+|---|---|
+| Create a quote on a seeded peak-season lane | `tests/test_quotes_api.py::test_scenario_peak_season_quote_returns_the_documented_commercial_payload` |
+| Retrieve a stored quote | `tests/test_quotes_api.py::test_scenario_quote_lookup_accepts_uuid_and_quote_reference` |
+| Validate whether a stored quote can still be booked | `tests/test_quotes_api.py::test_scenario_booking_can_validate_quote_bookability` |
+| Validate rate coverage before requesting a quote | `tests/test_quotes_api.py::test_scenario_route_coverage_validation_distinguishes_quoteable_lanes` |
+| Persist quote lifecycle events in the outbox | `tests/test_quotes_api.py::test_scenario_quote_lifecycle_events_are_written_to_the_outbox` |
+| Request a quote for a seeded schedule without an effective rate | `tests/test_quotes_api.py::test_scenario_known_schedule_without_rate_returns_a_commercial_validation_error` |
+| Apply customer contract pricing with surcharge waivers | `tests/test_quotes_api.py::test_scenario_contract_pricing_uses_customer_context_and_deterministic_precedence` |
+| Prefer account contract pricing over customer pricing | `tests/test_quotes_api.py::test_scenario_contract_pricing_uses_customer_context_and_deterministic_precedence` |
+| Create, update, and activate a managed rate-table version | `tests/test_quotes_api.py::test_admin_rate_table_draft_can_be_updated_and_activated` |
+| Create, update, and activate a managed surcharge-rule version | `tests/test_quotes_api.py::test_admin_surcharge_rule_draft_can_be_updated_and_activated` |
+| Require platform bearer authorization for commercial admin changes | `tests/test_quotes_api.py::test_admin_requires_platform_bearer_token_for_managed_commercial_changes`<br>`tests/test_quotes_api.py::test_admin_read_routes_require_platform_bearer_token` |
+| Require platform bearer authorization for quote approval decisions | `tests/test_quotes_api.py::test_quote_approval_decision_requires_platform_bearer_token`<br>`tests/test_quotes_api.py::test_quote_approval_decision_rejects_token_without_approval_scope` |
+| Check Equipments service connectivity | `tests/test_quotes_api.py::test_admin_equipments_connection_reports_successful_health_response`<br>`tests/test_quotes_api.py::test_admin_equipments_connection_reports_failed_health_response` |
+| Record an audit trail for managed commercial changes | `tests/test_quotes_api.py::test_admin_rate_table_changes_are_recorded_in_audit_trail` |
+| Publish managed commercial changes to the outbox | `tests/test_quotes_api.py::test_admin_rate_table_changes_are_published_to_outbox` |
+| Replay outbox events for a named downstream consumer | `tests/test_quotes_api.py::test_admin_outbox_replay_advances_named_consumer_checkpoint` |
+| Analyze quote impact for schedule or contract changes | `tests/test_quotes_api.py::test_admin_impact_analysis_persists_schedule_and_contract_results` |
+| Preview quote pricing with draft managed commercial data | `tests/test_quotes_api.py::test_admin_quote_preview_can_use_draft_rate_and_surcharge_versions` |
+| Return a quote in a requested display currency | `tests/test_quotes_api.py::test_scenario_requested_currency_quotes_include_fx_provenance` |
+| Use approved market pricing when the client hints MARKET | `tests/test_quotes_api.py::test_create_quote_market_hint_uses_approved_market_rate_and_persists_trace` |
+| Fall back from MARKET to contract or tariff pricing when market coverage is missing | `tests/test_quotes_api.py::test_create_quote_market_hint_falls_back_to_contract_when_market_is_unavailable` |
+| Explain why a quote used market or fallback pricing | `tests/test_quotes_api.py::test_create_quote_market_hint_uses_approved_market_rate_and_persists_trace` |
+| Reprice an existing quote and explain the commercial variance | `tests/test_quotes_api.py::test_reprice_existing_quote_preserves_original_and_reports_structured_variance`<br>`tests/test_quotes_api.py::test_reprice_quote_requires_admin_scope` |
+| Return multiple commercial options for one quote request | `tests/test_quotes_api.py::test_create_quote_can_return_ordered_alternative_pricing_options` |
+| Bound alternative options on quote creation | `tests/test_quotes_api.py::test_create_quote_can_limit_ordered_alternative_pricing_options`<br>`tests/test_quotes_api.py::test_create_quote_rejects_invalid_max_alternative_options` |
+| Hold a quote for manual approval when commercial guardrails are exceeded | `tests/test_quotes_api.py::test_create_quote_holds_market_quote_for_approval_when_market_risk_guardrails_are_exceeded` |
+| Approve a previously held quote without changing the reviewed commercial snapshot | `tests/test_quotes_api.py::test_quote_approval_decision_approves_pending_quote_without_repricing` |
+| Reject a previously held quote and preserve the review trail | `tests/test_quotes_api.py::test_quote_approval_decision_can_reject_pending_quote` |
+| Derive quote validity from a customer-specific policy | `tests/test_quotes_api.py::test_scenario_derive_quote_validity_from_customer_specific_policy` |
+| Derive shorter quote validity from high-volatility market pricing | `tests/test_quotes_api.py::test_market_pricing_can_use_a_shorter_high_volatility_validity_policy` |
+| Explain why similar quotes received different validity windows | `tests/test_quotes_api.py::test_scenario_derive_quote_validity_from_customer_specific_policy`<br>`tests/test_quotes_api.py::test_market_pricing_can_use_a_shorter_high_volatility_validity_policy` |
+| Accept Users-issued Quotes-audience platform tokens for protected operations | `tests/test_documentation.py::test_quotes_spec_contains_2026_05_19_auth_rbac_deployment_plan` |
+| Accept gateway-issued Quotes-audience platform tokens for protected operations | `tests/test_documentation.py::test_quotes_spec_contains_2026_05_19_auth_rbac_deployment_plan` |
+| Reject missing or invalid protected-route bearer tokens | `tests/test_quotes_api.py::test_admin_requires_platform_bearer_token_for_managed_commercial_changes`<br>`tests/test_quotes_api.py::test_admin_rejects_invalid_protected_route_bearer_tokens` |
+| Reject valid tokens without the required Quotes scope | `tests/test_quotes_api.py::test_admin_rejects_token_without_admin_scope`<br>`tests/test_quotes_api.py::test_quote_approval_decision_rejects_token_without_approval_scope` |
+| Resolve role=admin compatibility before implementation | `tests/test_documentation.py::test_quotes_spec_contains_2026_05_19_auth_rbac_deployment_plan` |
+| Keep web-page bearer propagation inside the gateway boundary | `tests/test_documentation.py::test_quotes_spec_contains_2026_05_19_auth_rbac_deployment_plan` |
+| Verify Azure platform auth settings before deployment sign-off | `tests/test_azure_auth_deployment.py::test_azure_workflows_supply_platform_auth_from_github_secret_material` |
+| Keep Booking on public quote validation and Equipments on diagnostics | `tests/test_documentation.py::test_quote_scenarios_cover_2026_05_19_auth_rbac_deployment_boundaries` |
+
 ## Scenario: Create a quote on a seeded peak-season lane
 
 Given the service has the seeded schedule and reference pricing data
@@ -81,8 +129,8 @@ And the stored quote provenance records the selected `surchargeRuleVersion`
 
 ## Scenario: Require platform bearer authorization for commercial admin changes
 
-Given the service exposes internal managed-commercial-data admin endpoints
-When a client attempts to create a managed rate or surcharge change without a bearer token
+Given the service exposes internal `/admin/*` routes and quote repricing
+When a client attempts to call an admin read, admin write, admin replay, diagnostic, quote preview, impact-analysis, or reprice route without a bearer token
 Then the API rejects the request with `401`
 And when the bearer token is valid but lacks `quotes:admin`
 Then the API rejects the request with `403`
@@ -113,28 +161,28 @@ And the API never accepts a caller-supplied target URL for this diagnostic check
 ## Scenario: Record an audit trail for managed commercial changes
 
 Given a commercial operator creates, edits, and activates a managed rate-table version
-When support calls `GET /admin/commercial-change-events` for that rate table
+When support calls `GET /admin/commercial-change-events` for that rate table with `quotes:admin`
 Then the API returns the recorded `CREATED`, `UPDATED`, and `ACTIVATED` events
 And each event includes the actor, managed version, and post-change snapshot
 
 ## Scenario: Publish managed commercial changes to the outbox
 
 Given a commercial operator creates, edits, and activates a managed rate-table version
-When an integration consumer calls `GET /admin/outbox-events` for rate-table changes
+When an integration consumer calls `GET /admin/outbox-events` for rate-table changes with `quotes:admin`
 Then the service returns stable `rate.updated` events for each managed change
 And each payload includes the commercial action, actor, resource version, and post-change snapshot
 
 ## Scenario: Replay outbox events for a named downstream consumer
 
 Given the service stores quote lifecycle and managed commercial events in the outbox
-When a downstream consumer replays events with its named checkpoint
+When a downstream consumer with `quotes:admin` replays events with its named checkpoint
 Then the API returns the next ordered batch of matching events
 And the consumer checkpoint advances so the next replay can resume without rereading old events
 
 ## Scenario: Analyze quote impact for schedule or contract changes
 
 Given the service stores quotes with schedule and contract provenance
-When an operator posts to `POST /admin/impact-analyses` for a schedule or contract change
+When an operator with `quotes:admin` posts to `POST /admin/impact-analyses` for a schedule or contract change
 Then the service persists a summary of the affected quotes
 And the summary reports each affected quote's identifiers, lifecycle state, and current bookability
 
@@ -179,7 +227,7 @@ And the explainability payload matches the stored pricing provenance used at quo
 Given a quote has been stored from an earlier commercial snapshot
 And the stored quote records its original pricing basis, FX snapshot, and optimization trace
 And newer approved commercial data is now active for the same shipment request
-When an operator requests a reprice for the same shipment inputs
+When an operator with `quotes:admin` requests a reprice for the same shipment inputs
 Then the service preserves the original quote unchanged and stores a distinct repriced result
 And the repriced quote keeps a durable link back to the original quote identifier and quote reference
 And the repriced response reports the structured variance across base rate, surcharges, FX, and optimization inputs
@@ -188,13 +236,12 @@ And support can later read both the original and repriced provenance snapshots w
 
 ## Scenario: Return multiple commercial options for one quote request
 
-Given more than one eligible service option can satisfy the same shipment request
-And the service has a configured ranking policy for primary and alternative options
+Given more than one eligible pricing basis can satisfy the same shipment request
+And the client requests alternative commercial options
 When a client posts to `POST /quotes` with alternative options enabled and a bounded option count
 Then the API returns a primary priced option and an ordered set of alternative quote options
 And each option includes its own bookable commercial provenance snapshot
-And each option exposes stable ranking metadata so the client can explain why it is primary, cheapest, fastest, or otherwise preferred
-And the response includes a stable option identifier that Booking can use to select one option later without repricing the full request
+And alternatives are ordered deterministically by total source amount and pricing-basis precedence
 
 ## Scenario: Bound alternative options on quote creation
 
@@ -207,12 +254,12 @@ And `maxAlternativeOptions` without `includeAlternativeOptions=true` does not ad
 
 ## Scenario: Hold a quote for manual approval when commercial guardrails are exceeded
 
-Given a priced quote violates an approval guardrail such as margin or waiver policy
+Given a market-priced quote violates a configured market-risk approval guardrail
 When the client posts to `POST /quotes` for that shipment
 Then the service stores the quote in a pending approval state instead of issuing it directly
 And the stored quote records the exact approval reasons that must be reviewed
 And the quote is not bookable while it remains pending approval
-And a durable audit record captures the breached guardrail inputs and policy version that caused the hold
+And the quote-created outbox event captures the pending lifecycle state and approval reasons
 
 ## Scenario: Approve a previously held quote without changing the reviewed commercial snapshot
 

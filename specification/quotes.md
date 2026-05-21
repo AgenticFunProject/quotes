@@ -11,7 +11,7 @@ Provides a quoted price that can be referenced when placing a booking.
 - Persist durable quote lifecycle events for downstream consumers through an outbox table
 - Return itemised price breakdown
 - Provide internal admin workflows for managed rate-table and surcharge-rule changes
-- Require platform bearer authorization for protected operational writes while keeping public quote request/read behavior unauthenticated
+- Require platform bearer authorization for protected operational routes while keeping public quote request/read behavior unauthenticated
 
 ## API Endpoints
 
@@ -55,12 +55,12 @@ Public quote request and read endpoints remain unauthenticated so the customer
 portal and Booking-facing lookup flows continue to work while the API gateway
 contract evolves.
 
-Protected operational writes require these scopes:
+Protected operational routes require these scopes:
 
 | Scope | Required for |
 |-------|--------------|
 | `quotes:approve` | `POST /quotes/{id}/approval-decisions` |
-| `quotes:admin` | Managed commercial writes, outbox replay, impact analysis creation, draft quote preview, and service connectivity diagnostics under `/admin` |
+| `quotes:admin` | All `/admin/*` routes and `POST /quotes/{id}/reprice` |
 
 When a protected request includes both a valid bearer token and `X-Actor`, the
 service records `X-Actor` as the business actor for audit compatibility. When
@@ -96,8 +96,7 @@ source, not production identity-provider behavior.
 
 Quotes keeps the service-specific scopes already documented:
 
-- `quotes:admin` for managed commercial writes, outbox replay, impact analysis
-  creation, draft quote preview, and service connectivity diagnostics
+- `quotes:admin` for all `/admin/*` routes and `POST /quotes/{id}/reprice`
 - `quotes:approve` for `POST /quotes/{id}/approval-decisions`
 
 Public quote request/read endpoints remain unauthenticated. Callers must not
@@ -559,7 +558,12 @@ Example response:
 ### POST /quotes/{id}/approval-decisions
 - The `{id}` path parameter accepts either the stored quote UUID or the public `quoteReference`.
 - This endpoint accepts an approval decision for quotes currently in `PENDING_APPROVAL` and returns `409` for quotes in any other lifecycle state.
-- Decisions require an actor header, persist the approver decision snapshot on the quote, and append either a quote-approved or quote-rejected outbox event.
+- Decisions require a bearer token with `quotes:approve`, persist the approver decision snapshot on the quote, and append either a quote-approved or quote-rejected outbox event. `X-Actor` is optional audit metadata; when it is absent, the token subject is recorded as the actor.
+
+### POST /quotes/{id}/reprice
+- The `{id}` path parameter accepts either the stored quote UUID or the public `quoteReference`.
+- This endpoint requires a bearer token with `quotes:admin`.
+- Repricing preserves the original quote unchanged and persists a distinct quote record with a durable link back to the source quote.
 
 ### POST /quotes/coverage/validate
 - This endpoint accepts direct route attributes instead of a `scheduleId` so clients can validate commercial data coverage before attempting a quote request.
@@ -574,7 +578,8 @@ Example response:
 - `pricingProvenance.currencyConversion` records the persisted FX provider, rate, observed timestamp, reference-data version, and conversion level used for reproducibility.
 
 ### Admin managed commercial data endpoints
-- All `/admin/*` commercial data endpoints require the `X-Actor` request header so the service can persist who created, updated, or activated the change.
+- All `/admin/*` endpoints require a bearer token with `quotes:admin`.
+- `X-Actor` is optional audit metadata for write operations; when it is absent, the token subject is recorded as the actor.
 - `POST /admin/rate-tables` and `POST /admin/surcharge-rules` create draft versions with `isActive=false`.
 - `PATCH /admin/rate-tables/{id}` and `PATCH /admin/surcharge-rules/{id}` only allow draft edits. Active managed rows are immutable; clients must create a new draft version instead.
 - `POST /admin/rate-tables/{id}/activate` and `POST /admin/surcharge-rules/{id}/activate` promote the selected draft version and deactivate overlapping active versions for the same commercial scope.
@@ -801,6 +806,7 @@ Expected result:
 - Quote lifecycle state is persisted on the quote row and synchronized with `validUntil` when a quote is read after expiry.
 - Quote reads persist the commercial mode as `pricingBasis` and return the stored `pricingProvenance` snapshot used to explain the amount later.
 - The current implementation versions seeded tariff and surcharge reference data as `seed-2026-04-01` inside `pricingProvenance.referenceDataVersion`.
+- The current implementation protects all `/admin/*` endpoints and `POST /quotes/{id}/reprice` with `quotes:admin`.
 - The current implementation exposes internal admin endpoints for managed rate-table and surcharge-rule draft creation, draft update, and activation.
 - Active managed rate-table and surcharge-rule rows are the only rows used during quote pricing; drafts are inert until explicitly activated.
 - Public tariff provenance now records the active `rateVersion` and `surchargeRuleVersion` selected for the quote so later support workflows can explain which managed commercial change produced the amount.

@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -79,6 +80,28 @@ def _scenario_sections(markdown: str) -> dict[str, str]:
         next_heading = markdown.find(f"\n{SCENARIO_PREFIX}", start + len(marker))
         sections[heading] = markdown[start:] if next_heading == -1 else markdown[start:next_heading]
     return sections
+
+
+def _contract_coverage_matrix(markdown: str) -> dict[str, list[str]]:
+    matrix = {}
+    section = _section(markdown, "Contract Coverage Matrix")
+    for line in section.splitlines():
+        if not line.startswith("| "):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) < 2 or cells[0] == "Scenario" or set(cells[0]) == {"-"}:
+            continue
+        refs = [ref.strip().strip("`") for ref in cells[1].split("<br>") if ref.strip()]
+        matrix[cells[0]] = refs
+    return matrix
+
+
+def _test_functions_by_file() -> dict[str, set[str]]:
+    tests_by_file = {}
+    for path in (REPO_ROOT / "tests").glob("test_*.py"):
+        contents = path.read_text()
+        tests_by_file[f"tests/{path.name}"] = set(re.findall(r"^def (test_[a-zA-Z0-9_]+)\(", contents, re.MULTILINE))
+    return tests_by_file
 
 
 def test_readme_current_api_surface_lists_implemented_support_endpoints() -> None:
@@ -247,6 +270,21 @@ def test_quote_scenario_catalog_contains_only_quote_behavior_scenarios() -> None
     scenarios = (REPO_ROOT / "specification" / "quote-scenarios.md").read_text()
 
     assert _scenario_headings(scenarios) == EXPECTED_QUOTE_SCENARIOS
+
+
+def test_quote_scenario_catalog_has_executable_contract_coverage_matrix() -> None:
+    scenarios = (REPO_ROOT / "specification" / "quote-scenarios.md").read_text()
+    coverage = _contract_coverage_matrix(scenarios)
+    tests_by_file = _test_functions_by_file()
+
+    assert list(coverage) == EXPECTED_QUOTE_SCENARIOS
+    for scenario_name, refs in coverage.items():
+        assert refs, scenario_name
+        for ref in refs:
+            file_name, separator, test_name = ref.partition("::")
+            assert separator == "::", f"{scenario_name}: {ref}"
+            assert file_name in tests_by_file, f"{scenario_name}: {ref}"
+            assert test_name in tests_by_file[file_name], f"{scenario_name}: {ref}"
 
 
 def test_quote_scenario_sections_have_concrete_gherkin_shape() -> None:

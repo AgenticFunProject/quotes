@@ -1327,6 +1327,7 @@ def test_reprice_existing_quote_preserves_original_and_reports_structured_varian
 
     reprice_response = test_client.post(
         f"/quotes/{original_response.json()['id']}/reprice",
+        headers=_auth_headers("pricing.ops@quotes", [_SCOPE_QUOTES_ADMIN]),
         json={"trigger": "COMMERCIAL_REFRESH"},
     )
 
@@ -1436,6 +1437,26 @@ def test_reprice_existing_quote_preserves_original_and_reports_structured_varian
     assert repriced_quote.variance_summary["direction"] == "HIGHER"
 
 
+def test_reprice_quote_requires_admin_scope(client) -> None:
+    test_client, session_factory = client
+    original_quote = _seed_quote(session_factory)
+
+    missing_token_response = test_client.post(
+        f"/quotes/{original_quote.id}/reprice",
+        json={"trigger": "COMMERCIAL_REFRESH"},
+    )
+    wrong_scope_response = test_client.post(
+        f"/quotes/{original_quote.id}/reprice",
+        headers=_auth_headers("pricing.ops@quotes", [_SCOPE_QUOTES_APPROVE]),
+        json={"trigger": "COMMERCIAL_REFRESH"},
+    )
+
+    assert missing_token_response.status_code == 401
+    assert missing_token_response.json() == {"detail": "missing bearer token"}
+    assert wrong_scope_response.status_code == 403
+    assert wrong_scope_response.json() == {"detail": f"missing required scope {_SCOPE_QUOTES_ADMIN}"}
+
+
 def test_admin_rate_table_draft_can_be_updated_and_activated(client) -> None:
     test_client, session_factory = client
 
@@ -1539,6 +1560,7 @@ def test_admin_rate_table_changes_are_recorded_in_audit_trail(client) -> None:
 
     audit_response = test_client.get(
         "/admin/commercial-change-events",
+        headers=_auth_headers("support@quotes", [_SCOPE_QUOTES_ADMIN]),
         params={"resourceType": "RATE_TABLE", "resourceId": rate_table_id},
     )
 
@@ -1595,6 +1617,7 @@ def test_admin_rate_table_changes_are_published_to_outbox(client) -> None:
 
     outbox_response = test_client.get(
         "/admin/outbox-events",
+        headers=_auth_headers("integration@quotes", [_SCOPE_QUOTES_ADMIN]),
         params={"aggregateType": "rate_table", "eventType": "rate.updated"},
     )
 
@@ -1925,7 +1948,10 @@ def test_admin_impact_analysis_persists_schedule_and_contract_results(client) ->
     assert contract_response.json()["summary"]["affectedQuotes"][0]["quoteId"] == contract_quote_response.json()["id"]
     assert contract_response.json()["summary"]["affectedQuotes"][0]["contractId"] == "7c9cc0a4-bd6d-4e6f-9c1c-e5c3a1300001"
 
-    get_response = test_client.get(f"/admin/impact-analyses/{contract_response.json()['id']}")
+    get_response = test_client.get(
+        f"/admin/impact-analyses/{contract_response.json()['id']}",
+        headers=_auth_headers("ops@quotes", [_SCOPE_QUOTES_ADMIN]),
+    )
     assert get_response.status_code == 200
     assert get_response.json()["summary"]["affectedCount"] == 1
 
@@ -1935,6 +1961,19 @@ def test_admin_impact_analysis_persists_schedule_and_contract_results(client) ->
     assert len(stored_runs) == 2
     assert stored_runs[0].summary["affectedCount"] == 2
     assert stored_runs[1].summary["affectedCount"] == 1
+
+
+def test_admin_read_routes_require_platform_bearer_token(client) -> None:
+    test_client, _ = client
+
+    for path in [
+        "/admin/commercial-change-events",
+        "/admin/outbox-events",
+        "/admin/impact-analyses/missing-run",
+    ]:
+        response = test_client.get(path)
+        assert response.status_code == 401, path
+        assert response.json() == {"detail": "missing bearer token"}
 
 
 def test_admin_requires_platform_bearer_token_for_managed_commercial_changes(client) -> None:
@@ -1966,6 +2005,32 @@ def test_admin_requires_platform_bearer_token_for_managed_commercial_changes(cli
 
     assert preview_response.status_code == 401
     assert preview_response.json() == {"detail": "missing bearer token"}
+
+
+@pytest.mark.parametrize(
+    ("authorization", "detail"),
+    [
+        ("not-a-bearer-token", "invalid authorization header"),
+        ("Bearer not-a-jwt", "invalid bearer token"),
+        (f"Bearer {_bearer_token('ops@quotes', [_SCOPE_QUOTES_ADMIN], issuer='wrong-issuer')}", "bearer token issuer is invalid"),
+        (f"Bearer {_bearer_token('ops@quotes', [_SCOPE_QUOTES_ADMIN], audience='equipments-service')}", "bearer token audience is invalid"),
+        (f"Bearer {_bearer_token('ops@quotes', [_SCOPE_QUOTES_ADMIN], expires_in_seconds=-60)}", "bearer token is expired"),
+    ],
+)
+def test_admin_rejects_invalid_protected_route_bearer_tokens(
+    client,
+    authorization: str,
+    detail: str,
+) -> None:
+    test_client, _ = client
+
+    response = test_client.get(
+        "/admin/service-connections/equipments",
+        headers={"Authorization": authorization},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": detail}
 
 
 def test_admin_rejects_token_without_admin_scope(client) -> None:
