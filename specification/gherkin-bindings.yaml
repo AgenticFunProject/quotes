@@ -56,24 +56,17 @@ fixtures:
   repricing_original_quote_request:
     scheduleId: df62a7d2-a45e-4d4d-b3cb-b4af65435274
     equipment:
-      - type: 20FT
+      - type: 40FT
         quantity: 1
     cargoWeightKg: 18000
     currency: EUR
   repricing_rate_table_request:
     originPort: NLRTM
     destinationPort: USNYC
-    equipmentType: 20FT
-    baseRateUsd: 1110
+    equipmentType: 40FT
+    baseRateUsd: 1510
     validFrom: "2026-04-01"
     validTo: "2026-12-31"
-  repricing_surcharge_rule_request:
-    surchargeType: PORT_CONGESTION
-    description: Port Congestion Surcharge - Destination USNYC
-    amountUsd: 210
-    currency: USD
-    portCode: USNYC
-    portScope: DESTINATION
   quote_reprice_request:
     trigger: COMMERCIAL_REFRESH
   alternative_options_quote_request:
@@ -522,7 +515,6 @@ scenarios:
     fixtures:
       - repricing_original_quote_request
       - repricing_rate_table_request
-      - repricing_surcharge_rule_request
       - quote_reprice_request
     actions:
       - name: create_original_quote
@@ -545,19 +537,6 @@ scenarios:
         path: /admin/rate-tables/{rate_table_id}/activate
         auth: admin
         actor: pricing.manager@quotes
-      - name: create_repricing_surcharge_rule
-        method: POST
-        path: /admin/surcharge-rules
-        auth: admin
-        actor: pricing.ops@quotes
-        body_fixture: repricing_surcharge_rule_request
-        save:
-          surcharge_rule_id: $.id
-      - name: activate_repricing_surcharge_rule
-        method: POST
-        path: /admin/surcharge-rules/{surcharge_rule_id}/activate
-        auth: admin
-        actor: pricing.manager@quotes
       - name: reprice_quote
         method: POST
         path: /quotes/{original_quote_id}/reprice
@@ -578,10 +557,6 @@ scenarios:
       - action: create_repricing_rate_table
         status: 201
       - action: activate_repricing_rate_table
-        status: 200
-      - action: create_repricing_surcharge_rule
-        status: 201
-      - action: activate_repricing_surcharge_rule
         status: 200
       - action: reprice_quote
         status: 201

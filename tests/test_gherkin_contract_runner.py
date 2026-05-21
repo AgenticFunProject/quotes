@@ -143,6 +143,26 @@ def test_public_lifecycle_bindings_dry_run_without_service() -> None:
         assert f"DRY-RUN {scenario}" in result.stdout
 
 
+def test_repricing_binding_is_isolated_from_alternative_option_quotes() -> None:
+    document = yaml.safe_load(BINDINGS.read_text())
+    fixtures = document["fixtures"]
+    repricing_binding = document["scenarios"]["Reprice an existing quote and explain the commercial variance"]
+    repricing_quote = fixtures["repricing_original_quote_request"]
+    repricing_equipment = {item["type"] for item in repricing_quote["equipment"]}
+    alternative_quotes = [
+        fixture
+        for fixture in fixtures.values()
+        if isinstance(fixture, dict)
+        and fixture.get("scheduleId") == repricing_quote["scheduleId"]
+        and fixture.get("includeAlternativeOptions") is True
+    ]
+    alternative_equipment = {item["type"] for quote in alternative_quotes for item in quote["equipment"]}
+
+    assert repricing_equipment.isdisjoint(alternative_equipment)
+    assert fixtures["repricing_rate_table_request"]["equipmentType"] not in alternative_equipment
+    assert all(action["path"] != "/admin/surcharge-rules" for action in repricing_binding["actions"])
+
+
 def test_smoke_create_quote_assertions_match_created_response() -> None:
     document = yaml.safe_load(BINDINGS.read_text())
     scenarios = document["scenarios"]
