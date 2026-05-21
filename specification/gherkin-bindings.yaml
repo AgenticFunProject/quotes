@@ -1,0 +1,455 @@
+version: 1
+profiles:
+  local:
+    base_url_env: QUOTES_CONTRACT_BASE_URL
+    timeout_seconds: 10
+    tokens:
+      admin: QUOTES_CONTRACT_ADMIN_TOKEN
+      approve: QUOTES_CONTRACT_APPROVER_TOKEN
+  azure:
+    base_url_env: QUOTES_CONTRACT_AZURE_BASE_URL
+    timeout_seconds: 20
+    tokens:
+      admin: QUOTES_CONTRACT_AZURE_ADMIN_TOKEN
+      approve: QUOTES_CONTRACT_AZURE_APPROVER_TOKEN
+fixtures:
+  peak_season_quote_request:
+    scheduleId: df62a7d2-a45e-4d4d-b3cb-b4af65435274
+    equipment:
+      - type: 20FT
+        quantity: 1
+    cargoWeightKg: 18000
+  quote_revocation_request:
+    reason: Customer requested a corrected quote.
+scenarios:
+  "Create a quote on a seeded peak-season lane":
+    binding: smoke.create_peak_season_quote
+    status: executable
+    group: smoke
+    profiles:
+      - local
+      - azure
+    fixtures:
+      - peak_season_quote_request
+    actions:
+      - name: create_quote
+        method: POST
+        path: /quotes
+        body_fixture: peak_season_quote_request
+        save:
+          quote_id: $.id
+          quote_reference: $.quoteReference
+    assertions:
+      - action: create_quote
+        status: 200
+      - action: create_quote
+        json_field: $.id
+      - action: create_quote
+        json_field: $.quoteReference
+      - action: create_quote
+        json_field: $.pricingProvenance
+  "Retrieve a stored quote":
+    binding: smoke.retrieve_stored_quote
+    status: executable
+    group: smoke
+    profiles:
+      - local
+      - azure
+    fixtures:
+      - peak_season_quote_request
+    actions:
+      - name: create_quote
+        method: POST
+        path: /quotes
+        body_fixture: peak_season_quote_request
+        save:
+          quote_id: $.id
+          quote_reference: $.quoteReference
+      - name: retrieve_by_id
+        method: GET
+        path: /quotes/{quote_id}
+      - name: retrieve_by_reference
+        method: GET
+        path: /quotes/reference/{quote_reference}
+    assertions:
+      - action: create_quote
+        status: 200
+      - action: retrieve_by_id
+        status: 200
+      - action: retrieve_by_id
+        json_field: $.pricingProvenance
+      - action: retrieve_by_reference
+        status: 200
+      - action: retrieve_by_reference
+        json_field: $.quoteReference
+  "Validate whether a stored quote can still be booked":
+    binding: smoke.validate_stored_quote_bookability
+    status: executable
+    group: smoke
+    profiles:
+      - local
+      - azure
+    fixtures:
+      - peak_season_quote_request
+    actions:
+      - name: create_quote
+        method: POST
+        path: /quotes
+        body_fixture: peak_season_quote_request
+        save:
+          quote_id: $.id
+      - name: check_bookability
+        method: GET
+        path: /quotes/{quote_id}/bookability
+    assertions:
+      - action: create_quote
+        status: 200
+      - action: check_bookability
+        status: 200
+      - action: check_bookability
+        path: $.bookable
+        json_equals: true
+      - action: check_bookability
+        path: $.status
+        json_equals: ACTIVE
+  "Validate rate coverage before requesting a quote":
+    binding: planned.validate_rate_coverage_before_quote
+    status: planned
+    group: quote-readiness
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Plan equipment availability with explicit substitution suggestions":
+    binding: planned.plan_equipment_availability
+    status: planned
+    group: quote-readiness
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Persist quote lifecycle events in the outbox":
+    binding: planned.persist_quote_lifecycle_events
+    status: planned
+    group: lifecycle
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Revoke an issued quote and block booking reuse":
+    binding: smoke.revoke_quote_blocks_booking_reuse
+    status: executable
+    group: smoke
+    profiles:
+      - local
+      - azure
+    fixtures:
+      - peak_season_quote_request
+      - quote_revocation_request
+    actions:
+      - name: create_quote
+        method: POST
+        path: /quotes
+        body_fixture: peak_season_quote_request
+        save:
+          quote_id: $.id
+      - name: revoke_quote
+        method: POST
+        path: /quotes/{quote_id}/revocations
+        auth: admin
+        actor: ops@quotes
+        body_fixture: quote_revocation_request
+      - name: check_bookability
+        method: GET
+        path: /quotes/{quote_id}/bookability
+    assertions:
+      - action: create_quote
+        status: 200
+      - action: revoke_quote
+        status: 200
+      - action: revoke_quote
+        path: $.lifecycleState
+        json_equals: VOID
+      - action: check_bookability
+        status: 200
+      - action: check_bookability
+        path: $.bookable
+        json_equals: false
+      - action: check_bookability
+        path: $.status
+        json_equals: VOID
+      - action: check_bookability
+        path: $.reason
+        json_equals: QUOTE_REVOKED
+  "Request a quote for a seeded schedule without an effective rate":
+    binding: planned.request_quote_without_effective_rate
+    status: planned
+    group: quote-readiness
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Apply customer contract pricing with surcharge waivers":
+    binding: planned.apply_customer_contract_pricing
+    status: planned
+    group: pricing
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Prefer account contract pricing over customer pricing":
+    binding: planned.prefer_account_contract_pricing
+    status: planned
+    group: pricing
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Create, update, and activate a managed rate-table version":
+    binding: planned.manage_rate_table_version
+    status: planned
+    group: admin-commercial
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Create, update, and activate a managed surcharge-rule version":
+    binding: planned.manage_surcharge_rule_version
+    status: planned
+    group: admin-commercial
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Require platform bearer authorization for commercial admin changes":
+    binding: planned.require_admin_authorization
+    status: planned
+    group: auth
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Require platform bearer authorization for quote approval decisions":
+    binding: planned.require_approval_authorization
+    status: planned
+    group: auth
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Check Equipments service connectivity":
+    binding: planned.check_equipments_connectivity
+    status: planned
+    group: diagnostics
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Record an audit trail for managed commercial changes":
+    binding: planned.record_commercial_audit_trail
+    status: planned
+    group: admin-commercial
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Publish managed commercial changes to the outbox":
+    binding: planned.publish_commercial_changes_to_outbox
+    status: planned
+    group: admin-commercial
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Replay outbox events for a named downstream consumer":
+    binding: planned.replay_outbox_events
+    status: planned
+    group: admin-commercial
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Analyze quote impact for schedule or contract changes":
+    binding: planned.analyze_quote_impact
+    status: planned
+    group: admin-commercial
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Preview quote pricing with draft managed commercial data":
+    binding: planned.preview_quote_pricing
+    status: planned
+    group: admin-commercial
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Return a quote in a requested display currency":
+    binding: planned.return_requested_display_currency
+    status: planned
+    group: pricing
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Use approved market pricing when the client hints MARKET":
+    binding: planned.use_approved_market_pricing
+    status: planned
+    group: pricing
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Fall back from MARKET to contract or tariff pricing when market coverage is missing":
+    binding: planned.fall_back_from_market_pricing
+    status: planned
+    group: pricing
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Explain why a quote used market or fallback pricing":
+    binding: planned.explain_pricing_basis
+    status: planned
+    group: pricing
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Reprice an existing quote and explain the commercial variance":
+    binding: planned.reprice_existing_quote
+    status: planned
+    group: pricing
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Return multiple commercial options for one quote request":
+    binding: planned.return_multiple_commercial_options
+    status: planned
+    group: pricing
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Bound alternative options on quote creation":
+    binding: planned.bound_alternative_options
+    status: planned
+    group: pricing
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Hold a quote for manual approval when commercial guardrails are exceeded":
+    binding: planned.hold_quote_for_manual_approval
+    status: planned
+    group: approval
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Approve a previously held quote without changing the reviewed commercial snapshot":
+    binding: planned.approve_held_quote
+    status: planned
+    group: approval
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Reject a previously held quote and preserve the review trail":
+    binding: planned.reject_held_quote
+    status: planned
+    group: approval
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Derive quote validity from a customer-specific policy":
+    binding: planned.derive_customer_specific_validity
+    status: planned
+    group: validity
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Derive shorter quote validity from high-volatility market pricing":
+    binding: planned.derive_market_validity
+    status: planned
+    group: validity
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Explain why similar quotes received different validity windows":
+    binding: planned.explain_validity_differences
+    status: planned
+    group: validity
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Accept Users-issued Quotes-audience platform tokens for protected operations":
+    binding: planned.accept_users_issued_tokens
+    status: planned
+    group: auth
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Accept gateway-issued Quotes-audience platform tokens for protected operations":
+    binding: planned.accept_gateway_issued_tokens
+    status: planned
+    group: auth
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Reject missing or invalid protected-route bearer tokens":
+    binding: planned.reject_missing_or_invalid_tokens
+    status: planned
+    group: auth
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Reject valid tokens without the required Quotes scope":
+    binding: planned.reject_tokens_without_required_scope
+    status: planned
+    group: auth
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Resolve role=admin compatibility before implementation":
+    binding: planned.resolve_role_admin_compatibility
+    status: planned
+    group: auth
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Keep web-page bearer propagation inside the gateway boundary":
+    binding: planned.keep_gateway_bearer_boundary
+    status: planned
+    group: auth
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Verify Azure platform auth settings before deployment sign-off":
+    binding: planned.verify_azure_auth_settings
+    status: planned
+    group: deployment
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []
+  "Keep Booking on public quote validation and Equipments on diagnostics":
+    binding: planned.keep_booking_and_equipments_boundaries
+    status: planned
+    group: integration-boundary
+    profiles: []
+    fixtures: []
+    actions: []
+    assertions: []

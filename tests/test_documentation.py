@@ -1,6 +1,8 @@
 from pathlib import Path
 import re
 
+import yaml
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCENARIO_PREFIX = "## Scenario: "
@@ -58,6 +60,12 @@ FORBIDDEN_SCENARIO_TERMS = [
     "unverified responsibilities",
     "assumptions or gaps",
     "documentation expectations",
+]
+FORBIDDEN_SCENARIO_PATTERNS = [
+    re.compile(r"`?(GET|POST|PATCH|PUT|DELETE)\s+/", re.IGNORECASE),
+    re.compile(r"`/[A-Za-z0-9_{]"),
+    re.compile(r"\b(JSONPath|pytest|FastAPI)\b", re.IGNORECASE),
+    re.compile(r"`(?:[1-5][0-9][0-9])`|\b(?:200|201|400|401|403|404|409|422|500)\b"),
 ]
 
 
@@ -130,7 +138,9 @@ def test_readme_project_structure_mentions_current_modules_and_tests() -> None:
         "app/schedules.py",
         "tests/test_seed.py",
         "scripts/verify.sh",
+        "scripts/gherkin_contract.py",
         "scripts/verify_gherkin_contract.py",
+        "specification/gherkin-bindings.yaml",
         "specification/quotes.md",
         "specification/quote-scenarios.md",
     ]:
@@ -193,11 +203,13 @@ def test_specs_document_equipments_connectivity_diagnostic() -> None:
     spec = (REPO_ROOT / "specification" / "quotes.md").read_text()
     scenarios = (REPO_ROOT / "specification" / "quote-scenarios.md").read_text()
 
-    for text in [readme, spec, scenarios]:
+    for text in [readme, spec]:
         assert "/admin/service-connections/equipments" in text
         assert "EQUIPMENTS_SERVICE_URL" in text
         assert "quotes:admin" in text
 
+    assert "EQUIPMENTS_SERVICE_URL" in scenarios
+    assert "quotes:admin" in scenarios
     assert "not_configured" in spec
     assert "unhealthy" in spec
     assert "Check Equipments service connectivity" in scenarios
@@ -208,8 +220,8 @@ def test_specs_document_equipment_availability_planning_boundary() -> None:
     spec = (REPO_ROOT / "specification" / "quotes.md").read_text()
     scenarios = (REPO_ROOT / "specification" / "quote-scenarios.md").read_text()
 
+    assert "/quotes/equipment-availability/plan" in spec
     for text in [spec, scenarios]:
-        assert "/quotes/equipment-availability/plan" in text
         assert "40HC" in text
         assert "40FT_HC" in text
 
@@ -306,16 +318,25 @@ def test_quote_scenario_catalog_contains_only_quote_behavior_scenarios() -> None
 def test_quote_scenario_catalog_has_executable_contract_coverage_matrix() -> None:
     scenarios = (REPO_ROOT / "specification" / "quote-scenarios.md").read_text()
     coverage = _contract_coverage_matrix(scenarios)
-    tests_by_file = _test_functions_by_file()
+    binding_document = yaml.safe_load((REPO_ROOT / "specification" / "gherkin-bindings.yaml").read_text())
+    binding_scenarios = binding_document["scenarios"]
 
     assert list(coverage) == EXPECTED_QUOTE_SCENARIOS
+    assert list(binding_scenarios) == EXPECTED_QUOTE_SCENARIOS
     for scenario_name, refs in coverage.items():
-        assert refs, scenario_name
-        for ref in refs:
-            file_name, separator, test_name = ref.partition("::")
-            assert separator == "::", f"{scenario_name}: {ref}"
-            assert file_name in tests_by_file, f"{scenario_name}: {ref}"
-            assert test_name in tests_by_file[file_name], f"{scenario_name}: {ref}"
+        assert refs == [binding_scenarios[scenario_name]["binding"]]
+
+    executable = [
+        scenario_name
+        for scenario_name, binding in binding_scenarios.items()
+        if binding["status"] == "executable"
+    ]
+    assert executable == [
+        "Create a quote on a seeded peak-season lane",
+        "Retrieve a stored quote",
+        "Validate whether a stored quote can still be booked",
+        "Revoke an issued quote and block booking reuse",
+    ]
 
 
 def test_quote_scenario_sections_have_concrete_gherkin_shape() -> None:
@@ -327,6 +348,8 @@ def test_quote_scenario_sections_have_concrete_gherkin_shape() -> None:
         assert "\nThen " in scenario, scenario_name
         for forbidden_term in FORBIDDEN_SCENARIO_TERMS:
             assert forbidden_term not in scenario, scenario_name
+        for forbidden_pattern in FORBIDDEN_SCENARIO_PATTERNS:
+            assert not forbidden_pattern.search(scenario), scenario_name
 
 
 def test_quotes_spec_keeps_scenario_catalog_focused_on_quote_behavior() -> None:

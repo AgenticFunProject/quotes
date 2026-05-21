@@ -1,0 +1,434 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass
+import json
+import os
+from pathlib import Path
+import re
+import sys
+from typing import Any
+from urllib import error, request
+
+import yaml
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_SPEC_PATH = REPO_ROOT / "specification" / "quote-scenarios.md"
+DEFAULT_BINDINGS_PATH = REPO_ROOT / "specification" / "gherkin-bindings.yaml"
+SCENARIO_PREFIX = "## Scenario: "
+STEP_PREFIXES = ("Given ", "When ", "Then ", "And ", "But ")
+REQUIRED_STEP_PREFIXES = ("Given ", "When ", "Then ")
+EXECUTABLE_STATUS = "executable"
+PLANNED_STATUS = "planned"
+VALID_STATUSES = {EXECUTABLE_STATUS, PLANNED_STATUS}
+FORBIDDEN_EXECUTABLE_STEP_PATTERNS = [
+    re.compile(r"`?(GET|POST|PATCH|PUT|DELETE)\s+/", re.IGNORECASE),
+    re.compile(r"`/[A-Za-z0-9_{]"),
+    re.compile(r"\b(JSONPath|pytest|FastAPI)\b", re.IGNORECASE),
+    re.compile(r"`(?:[1-5][0-9][0-9])`|\b(?:200|201|400|401|403|404|409|422|500)\b"),
+]
+
+
+class ContractError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class Scenario:
+    name: str
+    section: str
+
+    @property
+    def steps(self) -> list[str]:
+        return [line.strip() for line in self.section.splitlines() if line.startswith(STEP_PREFIXES)]
+
+
+@dataclass(frozen=True)
+class Contract:
+    scenarios: list[Scenario]
+    profiles: dict[str, Any]
+    fixtures: dict[str, Any]
+    bindings: dict[str, dict[str, Any]]
+
+    @property
+    def executable_bindings(self) -> dict[str, dict[str, Any]]:
+        return {
+            scenario.name: self.bindings[scenario.name]
+            for scenario in self.scenarios
+            if self.bindings.get(scenario.name, {}).get("status") == EXECUTABLE_STATUS
+        }
+
+
+def scenario_sections(markdown: str) -> list[Scenario]:
+    names = [line.removeprefix(SCENARIO_PREFIX) for line in markdown.splitlines() if line.startswith(SCENARIO_PREFIX)]
+    scenarios: list[Scenario] = []
+    for name in names:
+        marker = f"{SCENARIO_PREFIX}{name}"
+        start = markdown.index(marker)
+        next_heading = markdown.find(f"\n{SCENARIO_PREFIX}", start + len(marker))
+        section = markdown[start:] if next_heading == -1 else markdown[start:next_heading]
+        scenarios.append(Scenario(name=name, section=section))
+    return scenarios
+
+
+def load_contract(spec_path: Path, bindings_path: Path) -> Contract:
+    markdown = spec_path.read_text()
+    raw_bindings = yaml.safe_load(bindings_path.read_text())
+    if not isinstance(raw_bindings, dict):
+        raise ContractError("binding document must be a mapping")
+
+    profiles = _mapping(raw_bindings.get("profiles"), "profiles")
+    fixtures = _mapping(raw_bindings.get("fixtures"), "fixtures")
+    bindings = _mapping(raw_bindings.get("scenarios"), "scenarios")
+    return Contract(
+        scenarios=scenario_sections(markdown),
+        profiles=profiles,
+        fixtures=fixtures,
+        bindings=bindings,
+    )
+
+
+def validate_contract(contract: Contract) -> list[str]:
+    errors: list[str] = []
+    scenario_names = [scenario.name for scenario in contract.scenarios]
+    binding_names = list(contract.bindings)
+
+    if not scenario_names:
+        errors.append("no scenario headings found")
+    if binding_names != scenario_names:
+        errors.append("binding scenarios must match Markdown scenario headings exactly and in order")
+        missing = [name for name in scenario_names if name not in contract.bindings]
+        extra = [name for name in binding_names if name not in scenario_names]
+        if missing:
+            errors.append(f"missing bindings: {', '.join(missing)}")
+        if extra:
+            errors.append(f"extra bindings: {', '.join(extra)}")
+
+    for scenario in contract.scenarios:
+        binding = contract.bindings.get(scenario.name)
+        if not isinstance(binding, dict):
+            errors.append(f"{scenario.name}: binding must be a mapping")
+            continue
+
+        for prefix in REQUIRED_STEP_PREFIXES:
+            if not any(step.startswith(prefix) for step in scenario.steps):
+                errors.append(f"{scenario.name}: missing {prefix.strip()} step")
+
+        binding_id = binding.get("binding")
+        if not isinstance(binding_id, str) or not binding_id:
+            errors.append(f"{scenario.name}: binding id is required")
+
+        status = binding.get("status")
+        if status not in VALID_STATUSES:
+            errors.append(f"{scenario.name}: status must be one of {sorted(VALID_STATUSES)}")
+
+        group = binding.get("group")
+        if not isinstance(group, str) or not group:
+            errors.append(f"{scenario.name}: group is required")
+
+        for profile in _string_list(binding.get("profiles"), scenario.name, "profiles", errors):
+            if profile not in contract.profiles:
+                errors.append(f"{scenario.name}: unknown profile {profile!r}")
+
+        for fixture in _string_list(binding.get("fixtures"), scenario.name, "fixtures", errors):
+            if fixture not in contract.fixtures:
+                errors.append(f"{scenario.name}: unknown fixture {fixture!r}")
+
+        actions = binding.get("actions")
+        assertions = binding.get("assertions")
+        if status == EXECUTABLE_STATUS:
+            if not isinstance(actions, list) or not actions:
+                errors.append(f"{scenario.name}: executable binding requires actions")
+            if not isinstance(assertions, list) or not assertions:
+                errors.append(f"{scenario.name}: executable binding requires assertions")
+            _validate_business_steps(scenario, errors)
+            _validate_action_references(scenario.name, actions, assertions, contract, errors)
+
+    return errors
+
+
+def print_validation_summary(contract: Contract) -> None:
+    print(
+        f"gherkin-contract: verified {len(contract.scenarios)} scenarios, "
+        f"{len(contract.executable_bindings)} executable bindings"
+    )
+    for scenario_name, binding in contract.executable_bindings.items():
+        print(f"- {binding['binding']}: {scenario_name}")
+
+
+def run_dry_run(contract: Contract, scenario_names: list[str], profile: str, selection_label: str) -> None:
+    print(f"dry-run: {profile} {selection_label}")
+    for scenario_name in scenario_names:
+        binding = contract.bindings[scenario_name]
+        print(f"DRY-RUN {scenario_name}")
+        for action in binding.get("actions", []):
+            method = action.get("method", "GET")
+            path = action.get("path", "")
+            print(f"  - {method} {path}")
+
+
+def run_live(contract: Contract, scenario_names: list[str], profile: str) -> None:
+    profile_config = contract.profiles[profile]
+    base_url_env = _required_string(profile_config.get("base_url_env"), f"profile {profile}.base_url_env")
+    base_url = os.environ.get(base_url_env, "").rstrip("/")
+    if not base_url:
+        raise ContractError(f"profile {profile!r} requires environment variable {base_url_env}")
+
+    timeout = float(profile_config.get("timeout_seconds", 10))
+    tokens = profile_config.get("tokens", {})
+    if not isinstance(tokens, dict):
+        raise ContractError(f"profile {profile}.tokens must be a mapping")
+
+    for scenario_name in scenario_names:
+        binding = contract.bindings[scenario_name]
+        state: dict[str, Any] = {}
+        responses: dict[str, tuple[int, Any]] = {}
+        print(f"RUN {scenario_name}")
+        for action in binding.get("actions", []):
+            status, payload = _execute_action(action, contract.fixtures, tokens, base_url, timeout, state)
+            responses[_required_string(action.get("name"), f"{scenario_name}.actions[].name")] = (status, payload)
+            print(f"  - {action['name']}: {status}")
+        _assert_responses(scenario_name, binding.get("assertions", []), responses)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run black-box quote Gherkin contracts")
+    parser.add_argument("--spec", type=Path, default=DEFAULT_SPEC_PATH)
+    parser.add_argument("--bindings", type=Path, default=DEFAULT_BINDINGS_PATH)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    subparsers.add_parser("list", help="List Markdown scenarios and binding status")
+    subparsers.add_parser("validate", help="Validate Markdown scenario to binding coverage")
+
+    run_parser = subparsers.add_parser("run", help="Run a selected scenario or binding group")
+    run_parser.add_argument("--profile", required=True)
+    run_parser.add_argument("--scenario")
+    run_parser.add_argument("--group")
+    run_parser.add_argument("--dry-run", action="store_true")
+
+    args = parser.parse_args(_normalize_source_args(argv if argv is not None else sys.argv[1:]))
+
+    try:
+        contract = load_contract(args.spec, args.bindings)
+        errors = validate_contract(contract)
+        if errors:
+            for validation_error in errors:
+                print(f"gherkin-contract: {validation_error}", file=sys.stderr)
+            return 1
+
+        if args.command == "list":
+            print(
+                f"gherkin-contract: {len(contract.scenarios)} scenarios "
+                f"({len(contract.executable_bindings)} executable bindings)"
+            )
+            for scenario in contract.scenarios:
+                binding = contract.bindings[scenario.name]
+                print(f"- [{binding['status']}] {binding['binding']}: {scenario.name}")
+            return 0
+
+        if args.command == "validate":
+            print_validation_summary(contract)
+            return 0
+
+        scenario_names, selection_label = _select_scenarios(contract, args.scenario, args.group)
+        if args.profile not in contract.profiles:
+            raise ContractError(f"unknown profile: {args.profile}")
+        if args.dry_run:
+            run_dry_run(contract, scenario_names, args.profile, selection_label)
+        else:
+            run_live(contract, scenario_names, args.profile)
+        return 0
+    except (ContractError, OSError, yaml.YAMLError) as exception:
+        print(f"gherkin-contract: {exception}", file=sys.stderr)
+        return 1
+
+
+def _mapping(value: Any, name: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ContractError(f"{name} must be a mapping")
+    return value
+
+
+def _normalize_source_args(argv: list[str]) -> list[str]:
+    normalized: list[str] = []
+    source_args: list[str] = []
+    commands = {"list", "validate", "run"}
+    saw_command = False
+    index = 0
+    while index < len(argv):
+        value = argv[index]
+        if saw_command and value in {"--spec", "--bindings"} and index + 1 < len(argv):
+            source_args.extend([value, argv[index + 1]])
+            index += 2
+            continue
+        if value in commands:
+            saw_command = True
+        normalized.append(value)
+        index += 1
+    return source_args + normalized
+
+
+def _string_list(value: Any, scenario_name: str, field: str, errors: list[str]) -> list[str]:
+    if not isinstance(value, list):
+        errors.append(f"{scenario_name}: {field} must be a list")
+        return []
+    strings = [item for item in value if isinstance(item, str)]
+    if len(strings) != len(value):
+        errors.append(f"{scenario_name}: {field} must contain only strings")
+    return strings
+
+
+def _required_string(value: Any, name: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ContractError(f"{name} is required")
+    return value
+
+
+def _validate_business_steps(scenario: Scenario, errors: list[str]) -> None:
+    for step in scenario.steps:
+        for pattern in FORBIDDEN_EXECUTABLE_STEP_PATTERNS:
+            if pattern.search(step):
+                errors.append(f"{scenario.name}: executable scenario step is not business-readable: {step}")
+                break
+
+
+def _validate_action_references(
+    scenario_name: str,
+    actions: Any,
+    assertions: Any,
+    contract: Contract,
+    errors: list[str],
+) -> None:
+    if not isinstance(actions, list) or not isinstance(assertions, list):
+        return
+    action_names: set[str] = set()
+    for action in actions:
+        if not isinstance(action, dict):
+            errors.append(f"{scenario_name}: action must be a mapping")
+            continue
+        action_name = action.get("name")
+        if not isinstance(action_name, str) or not action_name:
+            errors.append(f"{scenario_name}: action name is required")
+        else:
+            action_names.add(action_name)
+        body_fixture = action.get("body_fixture")
+        if body_fixture is not None and body_fixture not in contract.fixtures:
+            errors.append(f"{scenario_name}: unknown action body fixture {body_fixture!r}")
+
+    for assertion in assertions:
+        if not isinstance(assertion, dict):
+            errors.append(f"{scenario_name}: assertion must be a mapping")
+            continue
+        action_name = assertion.get("action")
+        if action_name not in action_names:
+            errors.append(f"{scenario_name}: assertion references unknown action {action_name!r}")
+
+
+def _select_scenarios(contract: Contract, scenario_name: str | None, group: str | None) -> tuple[list[str], str]:
+    if bool(scenario_name) == bool(group):
+        raise ContractError("choose exactly one of --scenario or --group")
+    if scenario_name:
+        if scenario_name not in contract.bindings:
+            raise ContractError(f"unknown scenario: {scenario_name}")
+        binding = contract.bindings[scenario_name]
+        if binding.get("status") != EXECUTABLE_STATUS:
+            raise ContractError(f"scenario is not executable: {scenario_name}")
+        return [scenario_name], scenario_name
+
+    selected = [
+        scenario.name
+        for scenario in contract.scenarios
+        if contract.bindings[scenario.name].get("group") == group
+        and contract.bindings[scenario.name].get("status") == EXECUTABLE_STATUS
+    ]
+    if not selected:
+        raise ContractError(f"group has no executable scenarios: {group}")
+    return selected, group or ""
+
+
+def _execute_action(
+    action: dict[str, Any],
+    fixtures: dict[str, Any],
+    token_envs: dict[str, Any],
+    base_url: str,
+    timeout: float,
+    state: dict[str, Any],
+) -> tuple[int, Any]:
+    method = _required_string(action.get("method"), "action.method")
+    path = _required_string(action.get("path"), "action.path").format(**state)
+    url = f"{base_url}{path}"
+    body = None
+    headers = {"Accept": "application/json"}
+
+    body_fixture = action.get("body_fixture")
+    if body_fixture:
+        body = json.dumps(fixtures[body_fixture]).encode()
+        headers["Content-Type"] = "application/json"
+
+    auth_name = action.get("auth")
+    if auth_name:
+        token_env = _required_string(token_envs.get(auth_name), f"token env for {auth_name}")
+        token = os.environ.get(token_env)
+        if not token:
+            raise ContractError(f"auth {auth_name!r} requires environment variable {token_env}")
+        headers["Authorization"] = f"Bearer {token}"
+
+    if actor := action.get("actor"):
+        headers["X-Actor"] = str(actor)
+
+    http_request = request.Request(url=url, data=body, method=method, headers=headers)
+    try:
+        with request.urlopen(http_request, timeout=timeout) as response:
+            status = response.getcode()
+            payload = _decode_json(response.read())
+    except error.HTTPError as exception:
+        status = exception.code
+        payload = _decode_json(exception.read())
+
+    for variable, pointer in action.get("save", {}).items():
+        state[variable] = _json_path(payload, pointer)
+
+    return status, payload
+
+
+def _assert_responses(scenario_name: str, assertions: list[dict[str, Any]], responses: dict[str, tuple[int, Any]]) -> None:
+    for assertion in assertions:
+        action_name = _required_string(assertion.get("action"), f"{scenario_name}.assertions[].action")
+        status, payload = responses[action_name]
+        if "status" in assertion and status != assertion["status"]:
+            raise ContractError(f"{scenario_name}: {action_name} returned {status}, expected {assertion['status']}")
+        if "json_field" in assertion:
+            _json_path(payload, assertion["json_field"])
+        if "json_equals" in assertion:
+            expected = assertion["json_equals"]
+            actual = _json_path(payload, _required_string(assertion.get("path"), f"{scenario_name}.assertions[].path"))
+            if actual != expected:
+                raise ContractError(f"{scenario_name}: {action_name} {assertion['path']} was {actual!r}, expected {expected!r}")
+
+
+def _decode_json(body: bytes) -> Any:
+    if not body:
+        return None
+    try:
+        return json.loads(body.decode())
+    except json.JSONDecodeError:
+        return body.decode(errors="replace")
+
+
+def _json_path(document: Any, pointer: Any) -> Any:
+    path = _required_string(pointer, "json path")
+    if not path.startswith("$."):
+        raise ContractError(f"unsupported json path: {path}")
+    value = document
+    for part in path[2:].split("."):
+        if isinstance(value, dict) and part in value:
+            value = value[part]
+        else:
+            raise ContractError(f"json path not found: {path}")
+    return value
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

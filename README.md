@@ -350,6 +350,7 @@ merge-gate automation. It bootstraps `.venv` if needed and then runs:
 
 ```bash
 .venv/bin/python scripts/verify_gherkin_contract.py
+.venv/bin/python scripts/gherkin_contract.py run --profile local --group smoke --dry-run
 .venv/bin/python -m pytest tests -q
 ```
 
@@ -464,9 +465,11 @@ quotes/
 │   └── surcharges.py    # Surcharge matching and calculation logic
 ├── scripts/
 │   ├── bootstrap-venv.sh # Local virtualenv bootstrap
+│   ├── gherkin_contract.py # scripts/gherkin_contract.py: black-box scenario runner
 │   ├── verify.sh        # scripts/verify.sh: local verification wrapper
-│   └── verify_gherkin_contract.py # scripts/verify_gherkin_contract.py: scenario-to-test contract verifier
+│   └── verify_gherkin_contract.py # scripts/verify_gherkin_contract.py: binding coverage verifier
 ├── specification/
+│   ├── gherkin-bindings.yaml # specification/gherkin-bindings.yaml: binding, fixture, and profile layer
 │   ├── quotes.md        # specification/quotes.md: API and behavior spec
 │   ├── quote-scenarios.md # specification/quote-scenarios.md: scenario catalog
 │   ├── roadmap.md       # Delivery roadmap
