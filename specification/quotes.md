@@ -21,6 +21,7 @@ Provides a quoted price that can be referenced when placing a booking.
 | POST | /quotes/{id}/reprice | Reprice a stored quote and persist variance against the original |
 | POST | /quotes/{id}/approval-decisions | Approve or reject a quote currently held for manual approval |
 | POST | /quotes/coverage/validate | Validate rate coverage for a route, departure date, and equipment selection |
+| POST | /quotes/equipment-availability/plan | Check a requested equipment mix against an Equipments-style availability snapshot and return substitution suggestions |
 | GET | /quotes/{id} | Retrieve a quote by internal ID or public quote reference |
 | GET | /quotes/{id}/explain | Return stored pricing explainability for a quote |
 | GET | /quotes/{id}/bookability | Validate whether a stored quote is still usable for booking |
@@ -377,6 +378,81 @@ Example response:
 }
 ```
 
+### POST /quotes/equipment-availability/plan - Request Body
+```json
+{
+  "depotCode": "CNSHA-01",
+  "equipment": [
+    { "type": "40FT", "quantity": 2 }
+  ],
+  "availability": [
+    { "equipmentType": "40FT", "availableCount": 1, "depotCode": "CNSHA-01" },
+    { "equipmentType": "40FT_HC", "availableCount": 3, "depotCode": "CNSHA-01" }
+  ],
+  "substitutions": [
+    {
+      "requestedType": "40FT",
+      "substituteType": "40FT_HC",
+      "priority": 1,
+      "reason": "High-cube unit is acceptable for standard 40-foot dry demand"
+    }
+  ]
+}
+```
+
+- This endpoint is a quote-planning helper for the Booking and Equipments
+  business boundary discovered from the sibling repositories.
+- The `availability` array intentionally uses the Equipments `GET /availability`
+  response shape: `equipmentType`, `availableCount`, and `depotCode`.
+- The endpoint does not reserve equipment, mutate quote state, or call
+  Equipments. Callers provide the availability snapshot they want Quotes to
+  evaluate.
+- `substitutions` is an explicit policy input. Quotes does not infer hidden
+  compatibility rules from equipment names.
+- If `depotCode` is supplied, only availability rows for that depot contribute
+  to the plan.
+- The request accepts both the Quotes internal high-cube code `40FT_HC` and the
+  Equipments/Booking external code `40HC`; responses use the Quotes canonical
+  code `40FT_HC`.
+
+### POST /quotes/equipment-availability/plan - Response
+```json
+{
+  "status": "AVAILABLE_WITH_SUBSTITUTIONS",
+  "available": true,
+  "depotCode": "CNSHA-01",
+  "equipment": [
+    {
+      "type": "40FT",
+      "requestedQuantity": 2,
+      "availableCount": 1,
+      "directCoveredQuantity": 1,
+      "shortageQuantity": 1,
+      "status": "SHORTAGE"
+    }
+  ],
+  "substitutions": [
+    {
+      "requestedType": "40FT",
+      "substituteType": "40FT_HC",
+      "priority": 1,
+      "reason": "High-cube unit is acceptable for standard 40-foot dry demand",
+      "availableCount": 3,
+      "quantityCovered": 1
+    }
+  ],
+  "uncoveredEquipment": []
+}
+```
+
+Response statuses:
+
+| Status | Meaning |
+|--------|---------|
+| `AVAILABLE` | Every requested equipment line is directly covered by the supplied availability snapshot |
+| `AVAILABLE_WITH_SUBSTITUTIONS` | Direct stock is short, but explicit substitution policy rows cover the remaining shortage |
+| `SHORTAGE` | Neither direct stock nor explicit substitutions fully cover the request |
+
 ### GET /quotes/{id} - Response
 ```json
 {
@@ -569,6 +645,13 @@ Example response:
 - This endpoint accepts direct route attributes instead of a `scheduleId` so clients can validate commercial data coverage before attempting a quote request.
 - `covered` is `true` only when every requested equipment selection has an effective public tariff rate for the submitted route and departure date.
 - `uncoveredEquipment` lists the equipment types that would fail commercial quote creation because no effective base rate exists.
+
+### POST /quotes/equipment-availability/plan
+- This endpoint evaluates operational equipment availability separately from commercial rate coverage.
+- It is stateless: it accepts the requested equipment, a caller-supplied availability snapshot in Equipments style, and optional substitution policy rows; then returns a deterministic plan.
+- It does not create quotes, reserve equipment, mark quotes bookable, or replace Booking's final reservation check.
+- Availability rows are consumed per equipment type, so the same available substitute units cannot satisfy multiple shortages in one response.
+- `40HC` is accepted as an inbound alias for `40FT_HC` to align with the Equipments and Booking API vocabulary while preserving the current Quotes canonical equipment code.
 
 ### Multi-currency quote behavior
 - Base freight, contracts, and surcharges are currently governed in `USD`.

@@ -50,6 +50,12 @@ _MAX_ALTERNATIVE_OPTIONS = 10
 _MARKET_APPROVAL_CAPACITY_PRESSURE_THRESHOLD = 0.85
 _MARKET_APPROVAL_UTILIZATION_THRESHOLD = 0.9
 _MARKET_APPROVAL_SEASONALITY_THRESHOLD = 0.75
+_EQUIPMENT_AVAILABILITY_STATUS_AVAILABLE = "AVAILABLE"
+_EQUIPMENT_AVAILABILITY_STATUS_AVAILABLE_WITH_SUBSTITUTIONS = "AVAILABLE_WITH_SUBSTITUTIONS"
+_EQUIPMENT_AVAILABILITY_STATUS_SHORTAGE = "SHORTAGE"
+_EQUIPMENT_TYPE_ALIASES = {
+    "40HC": EquipmentType.FORTY_FT_HC.value,
+}
 _ALTERNATIVE_PRICING_ORDER = {
     PricingBasis.CONTRACT: 0,
     PricingBasis.PUBLIC_TARIFF: 1,
@@ -96,9 +102,21 @@ class ResolvedFxRate:
     reference_data_version: str
 
 
+def _normalize_equipment_type_value(value: object) -> object:
+    if isinstance(value, str):
+        return _EQUIPMENT_TYPE_ALIASES.get(value.upper(), value)
+
+    return value
+
+
 class QuoteEquipmentRequest(BaseModel):
     type: EquipmentType
     quantity: int = Field(gt=0)
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def normalize_type(cls, value: object) -> object:
+        return _normalize_equipment_type_value(value)
 
 
 class CreateQuoteRequest(BaseModel):
@@ -138,6 +156,43 @@ class ValidateRateCoverageRequest(BaseModel):
     destination_port: str = Field(alias="destinationPort", min_length=1)
     departure_date: date = Field(alias="departureDate")
     equipment: list[QuoteEquipmentRequest] = Field(min_length=1)
+
+
+class EquipmentAvailabilitySnapshotItem(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    equipment_type: EquipmentType = Field(alias="equipmentType")
+    available_count: int = Field(alias="availableCount", ge=0)
+    depot_code: str | None = Field(default=None, alias="depotCode", min_length=1)
+
+    @field_validator("equipment_type", mode="before")
+    @classmethod
+    def normalize_equipment_type(cls, value: object) -> object:
+        return _normalize_equipment_type_value(value)
+
+
+class EquipmentSubstitutionPolicyRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    requested_type: EquipmentType = Field(alias="requestedType")
+    substitute_type: EquipmentType = Field(alias="substituteType")
+    priority: int = Field(ge=1)
+    reason: str = Field(min_length=1)
+    active: bool = Field(default=True, alias="isActive")
+
+    @field_validator("requested_type", "substitute_type", mode="before")
+    @classmethod
+    def normalize_equipment_types(cls, value: object) -> object:
+        return _normalize_equipment_type_value(value)
+
+
+class PlanEquipmentAvailabilityRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    equipment: list[QuoteEquipmentRequest] = Field(min_length=1)
+    availability: list[EquipmentAvailabilitySnapshotItem] = Field(default_factory=list)
+    substitutions: list[EquipmentSubstitutionPolicyRequest] = Field(default_factory=list)
+    depot_code: str | None = Field(default=None, alias="depotCode", min_length=1)
 
 
 class AdminRateTableRequest(BaseModel):
@@ -1615,6 +1670,106 @@ def _serialize_rate_coverage(
     }
 
 
+def _availability_by_type(payload: PlanEquipmentAvailabilityRequest) -> dict[EquipmentType, int]:
+    availability: dict[EquipmentType, int] = {}
+    for item in payload.availability:
+        if payload.depot_code is not None and item.depot_code != payload.depot_code:
+            continue
+        availability[item.equipment_type] = availability.get(item.equipment_type, 0) + item.available_count
+
+    return availability
+
+
+def _plan_equipment_availability(payload: PlanEquipmentAvailabilityRequest) -> dict[str, object]:
+    availability = _availability_by_type(payload)
+    remaining_availability = dict(availability)
+    equipment_rows: list[dict[str, object]] = []
+    shortages: list[dict[str, object]] = []
+
+    for item in payload.equipment:
+        available_count = remaining_availability.get(item.type, 0)
+        direct_covered_quantity = min(item.quantity, available_count)
+        shortage_quantity = item.quantity - direct_covered_quantity
+        remaining_availability[item.type] = available_count - direct_covered_quantity
+
+        if shortage_quantity > 0:
+            shortages.append({"type": item.type, "quantity": shortage_quantity})
+
+        equipment_rows.append(
+            {
+                "type": item.type.value,
+                "requestedQuantity": item.quantity,
+                "availableCount": available_count,
+                "directCoveredQuantity": direct_covered_quantity,
+                "shortageQuantity": shortage_quantity,
+                "status": _EQUIPMENT_AVAILABILITY_STATUS_SHORTAGE
+                if shortage_quantity > 0
+                else _EQUIPMENT_AVAILABILITY_STATUS_AVAILABLE,
+            }
+        )
+
+    substitutions: list[dict[str, object]] = []
+    uncovered_equipment: list[dict[str, object]] = []
+    for shortage in shortages:
+        requested_type = shortage["type"]
+        remaining_shortage = int(shortage["quantity"])
+        policies = sorted(
+            (
+                policy
+                for policy in payload.substitutions
+                if policy.active and policy.requested_type == requested_type
+            ),
+            key=lambda policy: (policy.priority, policy.substitute_type.value),
+        )
+
+        for policy in policies:
+            if remaining_shortage <= 0:
+                break
+
+            available_count = remaining_availability.get(policy.substitute_type, 0)
+            if available_count <= 0:
+                continue
+
+            quantity_covered = min(remaining_shortage, available_count)
+            remaining_availability[policy.substitute_type] = available_count - quantity_covered
+            remaining_shortage -= quantity_covered
+            substitutions.append(
+                {
+                    "requestedType": requested_type.value,
+                    "substituteType": policy.substitute_type.value,
+                    "priority": policy.priority,
+                    "reason": policy.reason,
+                    "availableCount": available_count,
+                    "quantityCovered": quantity_covered,
+                }
+            )
+
+        if remaining_shortage > 0:
+            uncovered_equipment.append(
+                {
+                    "type": requested_type.value,
+                    "shortageQuantity": remaining_shortage,
+                }
+            )
+
+    has_direct_shortage = any(row["shortageQuantity"] > 0 for row in equipment_rows)
+    if uncovered_equipment:
+        status = _EQUIPMENT_AVAILABILITY_STATUS_SHORTAGE
+    elif has_direct_shortage:
+        status = _EQUIPMENT_AVAILABILITY_STATUS_AVAILABLE_WITH_SUBSTITUTIONS
+    else:
+        status = _EQUIPMENT_AVAILABILITY_STATUS_AVAILABLE
+
+    return {
+        "status": status,
+        "available": status != _EQUIPMENT_AVAILABILITY_STATUS_SHORTAGE,
+        "depotCode": payload.depot_code,
+        "equipment": equipment_rows,
+        "substitutions": substitutions,
+        "uncoveredEquipment": uncovered_equipment,
+    }
+
+
 def _build_pricing_provenance(
     *,
     payload: CreateQuoteRequest,
@@ -2518,6 +2673,11 @@ def validate_quote_rate_coverage(
             equipment_types={item.type for item in payload.equipment},
         ),
     )
+
+
+@app.post("/quotes/equipment-availability/plan")
+def plan_quote_equipment_availability(payload: PlanEquipmentAvailabilityRequest) -> dict[str, object]:
+    return _plan_equipment_availability(payload)
 
 
 @app.get("/quotes/{quote_id}")

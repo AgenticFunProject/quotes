@@ -11,6 +11,7 @@ EXPECTED_QUOTE_SCENARIOS = [
     "Retrieve a stored quote",
     "Validate whether a stored quote can still be booked",
     "Validate rate coverage before requesting a quote",
+    "Plan equipment availability with explicit substitution suggestions",
     "Persist quote lifecycle events in the outbox",
     "Request a quote for a seeded schedule without an effective rate",
     "Apply customer contract pricing with surcharge waivers",
@@ -110,6 +111,7 @@ def test_readme_current_api_surface_lists_implemented_support_endpoints() -> Non
 
     for endpoint in [
         "POST /quotes/coverage/validate",
+        "POST /quotes/equipment-availability/plan",
         "GET /quotes/{quote_id}/explain",
         "POST /quotes/{quote_id}/approval-decisions",
         "GET /admin/outbox-events",
@@ -149,6 +151,7 @@ def test_spec_endpoint_table_includes_current_workflow_routes() -> None:
 
     for path in [
         "/quotes/{id}/approval-decisions",
+        "/quotes/equipment-availability/plan",
         "/admin/service-connections/equipments",
         "/admin/outbox-events",
         "/admin/outbox-consumers/{consumerName}/replay",
@@ -196,6 +199,22 @@ def test_specs_document_equipments_connectivity_diagnostic() -> None:
     assert "not_configured" in spec
     assert "unhealthy" in spec
     assert "Check Equipments service connectivity" in scenarios
+
+
+def test_specs_document_equipment_availability_planning_boundary() -> None:
+    readme = (REPO_ROOT / "README.md").read_text()
+    spec = (REPO_ROOT / "specification" / "quotes.md").read_text()
+    scenarios = (REPO_ROOT / "specification" / "quote-scenarios.md").read_text()
+
+    for text in [spec, scenarios]:
+        assert "/quotes/equipment-availability/plan" in text
+        assert "40HC" in text
+        assert "40FT_HC" in text
+
+    assert "/quotes/equipment-availability/plan" in readme
+    assert "does not reserve equipment" in spec
+    assert "caller-supplied availability snapshot" in spec
+    assert "Plan equipment availability with explicit substitution suggestions" in scenarios
 
 
 def test_system_architecture_documents_current_repositories_and_azure_deployment() -> None:

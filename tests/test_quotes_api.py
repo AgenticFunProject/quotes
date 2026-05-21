@@ -2541,6 +2541,137 @@ def test_validate_quote_rate_coverage_reports_missing_equipment_rates(client) ->
     }
 
 
+def test_scenario_equipment_availability_plan_reports_direct_stock(client) -> None:
+    test_client, _ = client
+
+    response = test_client.post(
+        "/quotes/equipment-availability/plan",
+        json={
+            "depotCode": "CNSHA-01",
+            "equipment": [{"type": "20FT", "quantity": 2}],
+            "availability": [
+                {"equipmentType": "20FT", "availableCount": 3, "depotCode": "CNSHA-01"},
+                {"equipmentType": "20FT", "availableCount": 99, "depotCode": "NLRTM-01"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "AVAILABLE",
+        "available": True,
+        "depotCode": "CNSHA-01",
+        "equipment": [
+            {
+                "type": "20FT",
+                "requestedQuantity": 2,
+                "availableCount": 3,
+                "directCoveredQuantity": 2,
+                "shortageQuantity": 0,
+                "status": "AVAILABLE",
+            }
+        ],
+        "substitutions": [],
+        "uncoveredEquipment": [],
+    }
+
+
+def test_scenario_equipment_availability_plan_suggests_substitutions_for_shortage(client) -> None:
+    test_client, _ = client
+
+    response = test_client.post(
+        "/quotes/equipment-availability/plan",
+        json={
+            "depotCode": "CNSHA-01",
+            "equipment": [{"type": "40FT", "quantity": 2}],
+            "availability": [
+                {"equipmentType": "40FT", "availableCount": 1, "depotCode": "CNSHA-01"},
+                {"equipmentType": "40HC", "availableCount": 3, "depotCode": "CNSHA-01"},
+            ],
+            "substitutions": [
+                {
+                    "requestedType": "40FT",
+                    "substituteType": "40HC",
+                    "priority": 1,
+                    "reason": "High-cube unit is acceptable for standard 40-foot dry demand",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "AVAILABLE_WITH_SUBSTITUTIONS",
+        "available": True,
+        "depotCode": "CNSHA-01",
+        "equipment": [
+            {
+                "type": "40FT",
+                "requestedQuantity": 2,
+                "availableCount": 1,
+                "directCoveredQuantity": 1,
+                "shortageQuantity": 1,
+                "status": "SHORTAGE",
+            }
+        ],
+        "substitutions": [
+            {
+                "requestedType": "40FT",
+                "substituteType": "40FT_HC",
+                "priority": 1,
+                "reason": "High-cube unit is acceptable for standard 40-foot dry demand",
+                "availableCount": 3,
+                "quantityCovered": 1,
+            }
+        ],
+        "uncoveredEquipment": [],
+    }
+
+
+def test_equipment_availability_plan_reports_uncovered_shortage_without_active_policy(client) -> None:
+    test_client, _ = client
+
+    response = test_client.post(
+        "/quotes/equipment-availability/plan",
+        json={
+            "depotCode": "CNSHA-01",
+            "equipment": [{"type": "40FT", "quantity": 3}],
+            "availability": [
+                {"equipmentType": "40FT", "availableCount": 1, "depotCode": "CNSHA-01"},
+                {"equipmentType": "40HC", "availableCount": 5, "depotCode": "CNSHA-01"},
+            ],
+            "substitutions": [
+                {
+                    "requestedType": "40FT",
+                    "substituteType": "40HC",
+                    "priority": 1,
+                    "reason": "Inactive substitution policy is ignored",
+                    "isActive": False,
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "SHORTAGE",
+        "available": False,
+        "depotCode": "CNSHA-01",
+        "equipment": [
+            {
+                "type": "40FT",
+                "requestedQuantity": 3,
+                "availableCount": 1,
+                "directCoveredQuantity": 1,
+                "shortageQuantity": 2,
+                "status": "SHORTAGE",
+            }
+        ],
+        "substitutions": [],
+        "uncoveredEquipment": [{"type": "40FT", "shortageQuantity": 2}],
+    }
+
+
 def test_scenario_peak_season_quote_returns_the_documented_commercial_payload(client) -> None:
     test_client, _ = client
 

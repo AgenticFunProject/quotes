@@ -18,6 +18,7 @@ guards the documented integration/deployment boundary.
 | Retrieve a stored quote | `tests/test_quotes_api.py::test_scenario_quote_lookup_accepts_uuid_and_quote_reference` |
 | Validate whether a stored quote can still be booked | `tests/test_quotes_api.py::test_scenario_booking_can_validate_quote_bookability` |
 | Validate rate coverage before requesting a quote | `tests/test_quotes_api.py::test_scenario_route_coverage_validation_distinguishes_quoteable_lanes` |
+| Plan equipment availability with explicit substitution suggestions | `tests/test_quotes_api.py::test_scenario_equipment_availability_plan_reports_direct_stock`<br>`tests/test_quotes_api.py::test_scenario_equipment_availability_plan_suggests_substitutions_for_shortage` |
 | Persist quote lifecycle events in the outbox | `tests/test_quotes_api.py::test_scenario_quote_lifecycle_events_are_written_to_the_outbox` |
 | Request a quote for a seeded schedule without an effective rate | `tests/test_quotes_api.py::test_scenario_known_schedule_without_rate_returns_a_commercial_validation_error` |
 | Apply customer contract pricing with surcharge waivers | `tests/test_quotes_api.py::test_scenario_contract_pricing_uses_customer_context_and_deterministic_precedence` |
@@ -84,6 +85,16 @@ Given the service stores seeded public tariff coverage by trade lane and equipme
 When a client validates route, departure date, and equipment selection before pricing
 Then the API explains whether the requested combination is commercially covered
 And the response identifies which equipment selections are uncovered when no effective rate exists
+
+## Scenario: Plan equipment availability with explicit substitution suggestions
+
+Given Booking rejects unavailable equipment during booking creation
+And Equipments publishes availability counts by equipment type and depot
+When a client posts to `POST /quotes/equipment-availability/plan` with requested equipment, an Equipments-style availability snapshot, and explicit substitution policy rows
+Then the API reports whether the requested equipment is directly available, available through substitutions, or still short
+And the API returns ordered substitution suggestions only from the supplied policy rows
+And the API accepts the Equipments high-cube code `40HC` while returning the Quotes canonical code `40FT_HC`
+And the API does not reserve equipment or create a quote
 
 ## Scenario: Persist quote lifecycle events in the outbox
 

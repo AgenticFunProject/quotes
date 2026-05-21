@@ -54,6 +54,11 @@ and seeds reference rates and surcharge rules used by `POST /quotes`.
   `quotes:admin`.
 - `POST /quotes/coverage/validate` checks whether active public tariff data
   covers a route, departure date, and equipment selection before quote creation.
+- `POST /quotes/equipment-availability/plan` checks a requested equipment mix
+  against a caller-supplied Equipments-style availability snapshot and explicit
+  substitution policy rows. It returns direct availability, substitution
+  suggestions, or remaining shortages without reserving equipment or creating a
+  quote.
 - `GET /quotes/{quote_id}` returns the stored quote by either the internal UUID
   or the public `quoteReference` returned from `POST /quotes`, including the
   stored schedule snapshot, pricing basis, and pricing provenance used to
