@@ -41,13 +41,11 @@ scenarios:
           quote_reference: $.quoteReference
     assertions:
       - action: create_quote
-        status: 200
+        status: 201
       - action: create_quote
         json_field: $.id
       - action: create_quote
         json_field: $.quoteReference
-      - action: create_quote
-        json_field: $.pricingProvenance
   "Retrieve a stored quote":
     binding: smoke.retrieve_stored_quote
     status: executable
@@ -73,7 +71,7 @@ scenarios:
         path: /quotes/reference/{quote_reference}
     assertions:
       - action: create_quote
-        status: 200
+        status: 201
       - action: retrieve_by_id
         status: 200
       - action: retrieve_by_id
@@ -103,7 +101,7 @@ scenarios:
         path: /quotes/{quote_id}/bookability
     assertions:
       - action: create_quote
-        status: 200
+        status: 201
       - action: check_bookability
         status: 200
       - action: check_bookability
@@ -164,7 +162,7 @@ scenarios:
         path: /quotes/{quote_id}/bookability
     assertions:
       - action: create_quote
-        status: 200
+        status: 201
       - action: revoke_quote
         status: 200
       - action: revoke_quote

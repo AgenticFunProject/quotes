@@ -65,7 +65,10 @@ FORBIDDEN_SCENARIO_PATTERNS = [
     re.compile(r"`?(GET|POST|PATCH|PUT|DELETE)\s+/", re.IGNORECASE),
     re.compile(r"`/[A-Za-z0-9_{]"),
     re.compile(r"\b(JSONPath|pytest|FastAPI)\b", re.IGNORECASE),
-    re.compile(r"`(?:[1-5][0-9][0-9])`|\b(?:200|201|400|401|403|404|409|422|500)\b"),
+    re.compile(
+        r"`(?:[1-5][0-9][0-9]|[1-5]xx)`|\b(?:[1-5]xx|200|201|400|401|403|404|409|422|500)\b",
+        re.IGNORECASE,
+    ),
 ]
 
 

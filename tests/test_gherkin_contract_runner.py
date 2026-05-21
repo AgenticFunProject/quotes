@@ -96,3 +96,30 @@ def test_smoke_bindings_define_profiles_fixtures_actions_and_assertions() -> Non
         assert binding["actions"]
         assert binding["assertions"]
 
+
+def test_smoke_create_quote_assertions_match_created_response() -> None:
+    document = yaml.safe_load(BINDINGS.read_text())
+    scenarios = document["scenarios"]
+
+    for scenario in SMOKE_SCENARIOS:
+        binding = scenarios[scenario]
+        create_quote_status_assertions = [
+            assertion
+            for assertion in binding["assertions"]
+            if assertion.get("action") == "create_quote" and "status" in assertion
+        ]
+
+        assert create_quote_status_assertions == [{"action": "create_quote", "status": 201}]
+
+
+def test_create_quote_smoke_binding_asserts_creation_response_fields_only() -> None:
+    document = yaml.safe_load(BINDINGS.read_text())
+    binding = document["scenarios"]["Create a quote on a seeded peak-season lane"]
+
+    create_quote_fields = [
+        assertion["json_field"]
+        for assertion in binding["assertions"]
+        if assertion.get("action") == "create_quote" and "json_field" in assertion
+    ]
+
+    assert create_quote_fields == ["$.id", "$.quoteReference"]

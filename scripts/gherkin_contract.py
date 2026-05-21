@@ -27,7 +27,10 @@ FORBIDDEN_EXECUTABLE_STEP_PATTERNS = [
     re.compile(r"`?(GET|POST|PATCH|PUT|DELETE)\s+/", re.IGNORECASE),
     re.compile(r"`/[A-Za-z0-9_{]"),
     re.compile(r"\b(JSONPath|pytest|FastAPI)\b", re.IGNORECASE),
-    re.compile(r"`(?:[1-5][0-9][0-9])`|\b(?:200|201|400|401|403|404|409|422|500)\b"),
+    re.compile(
+        r"`(?:[1-5][0-9][0-9]|[1-5]xx)`|\b(?:[1-5]xx|200|201|400|401|403|404|409|422|500)\b",
+        re.IGNORECASE,
+    ),
 ]
 
 
@@ -115,6 +118,7 @@ def validate_contract(contract: Contract) -> list[str]:
         for prefix in REQUIRED_STEP_PREFIXES:
             if not any(step.startswith(prefix) for step in scenario.steps):
                 errors.append(f"{scenario.name}: missing {prefix.strip()} step")
+        _validate_business_steps(scenario, errors)
 
         binding_id = binding.get("binding")
         if not isinstance(binding_id, str) or not binding_id:
@@ -143,7 +147,6 @@ def validate_contract(contract: Contract) -> list[str]:
                 errors.append(f"{scenario.name}: executable binding requires actions")
             if not isinstance(assertions, list) or not assertions:
                 errors.append(f"{scenario.name}: executable binding requires assertions")
-            _validate_business_steps(scenario, errors)
             _validate_action_references(scenario.name, actions, assertions, contract, errors)
 
     return errors
