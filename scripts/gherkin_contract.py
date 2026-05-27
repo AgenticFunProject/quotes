@@ -15,9 +15,10 @@ import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_SPEC_PATH = REPO_ROOT / "specification" / "quote-scenarios.md"
+DEFAULT_FEATURES_PATH = REPO_ROOT / "specification" / "features"
 DEFAULT_BINDINGS_PATH = REPO_ROOT / "specification" / "gherkin-bindings.yaml"
-SCENARIO_PREFIX = "## Scenario: "
+FEATURE_PREFIX = "Feature:"
+SCENARIO_PREFIX = "Scenario:"
 STEP_PREFIXES = ("Given ", "When ", "Then ", "And ", "But ")
 REQUIRED_STEP_PREFIXES = ("Given ", "When ", "Then ")
 EXECUTABLE_STATUS = "executable"
@@ -64,20 +65,19 @@ class Contract:
         }
 
 
-def scenario_sections(markdown: str) -> list[Scenario]:
-    names = [line.removeprefix(SCENARIO_PREFIX) for line in markdown.splitlines() if line.startswith(SCENARIO_PREFIX)]
+def feature_scenarios(features_path: Path) -> list[Scenario]:
     scenarios: list[Scenario] = []
-    for name in names:
-        marker = f"{SCENARIO_PREFIX}{name}"
-        start = markdown.index(marker)
-        next_heading = markdown.find(f"\n{SCENARIO_PREFIX}", start + len(marker))
-        section = markdown[start:] if next_heading == -1 else markdown[start:next_heading]
-        scenarios.append(Scenario(name=name, section=section))
+    seen_names: set[str] = set()
+    for feature_file in _feature_files(features_path):
+        for scenario in _parse_feature_file(feature_file):
+            if scenario.name in seen_names:
+                raise ContractError(f"duplicate scenario name: {scenario.name}")
+            seen_names.add(scenario.name)
+            scenarios.append(scenario)
     return scenarios
 
 
-def load_contract(spec_path: Path, bindings_path: Path) -> Contract:
-    markdown = spec_path.read_text()
+def load_contract(features_path: Path, bindings_path: Path) -> Contract:
     raw_bindings = yaml.safe_load(bindings_path.read_text())
     if not isinstance(raw_bindings, dict):
         raise ContractError("binding document must be a mapping")
@@ -86,11 +86,65 @@ def load_contract(spec_path: Path, bindings_path: Path) -> Contract:
     fixtures = _mapping(raw_bindings.get("fixtures"), "fixtures")
     bindings = _mapping(raw_bindings.get("scenarios"), "scenarios")
     return Contract(
-        scenarios=scenario_sections(markdown),
+        scenarios=feature_scenarios(features_path),
         profiles=profiles,
         fixtures=fixtures,
         bindings=bindings,
     )
+
+
+def _feature_files(features_path: Path) -> list[Path]:
+    if features_path.is_file():
+        if features_path.suffix != ".feature":
+            raise ContractError(f"feature path must be a .feature file or directory: {features_path}")
+        return [features_path]
+    if features_path.is_dir():
+        feature_files = sorted(features_path.rglob("*.feature"))
+        if feature_files:
+            return feature_files
+        raise ContractError(f"no .feature files found in {features_path}")
+    raise ContractError(f"feature path does not exist: {features_path}")
+
+
+def _parse_feature_file(feature_file: Path) -> list[Scenario]:
+    scenarios: list[Scenario] = []
+    feature_seen = False
+    current_name: str | None = None
+    current_lines: list[str] = []
+
+    def flush_current() -> None:
+        if current_name is not None:
+            scenarios.append(Scenario(name=current_name, section="\n".join(current_lines)))
+
+    for line_number, raw_line in enumerate(feature_file.read_text().splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#") or line.startswith("@"):
+            continue
+        if line.startswith(FEATURE_PREFIX):
+            if feature_seen:
+                raise ContractError(f"{feature_file}:{line_number}: duplicate Feature heading")
+            feature_seen = True
+            continue
+        if line.startswith(SCENARIO_PREFIX):
+            if not feature_seen:
+                raise ContractError(f"{feature_file}:{line_number}: Scenario appears before Feature")
+            flush_current()
+            name = line.removeprefix(SCENARIO_PREFIX).strip()
+            if not name:
+                raise ContractError(f"{feature_file}:{line_number}: Scenario name is required")
+            current_name = name
+            current_lines = [f"{SCENARIO_PREFIX} {name}"]
+            continue
+        if current_name is not None:
+            current_lines.append(line)
+            continue
+        if not feature_seen:
+            raise ContractError(f"{feature_file}:{line_number}: expected Feature heading")
+
+    if not feature_seen:
+        raise ContractError(f"{feature_file}: missing Feature heading")
+    flush_current()
+    return scenarios
 
 
 def validate_contract(contract: Contract) -> list[str]:
@@ -99,9 +153,9 @@ def validate_contract(contract: Contract) -> list[str]:
     binding_names = list(contract.bindings)
 
     if not scenario_names:
-        errors.append("no scenario headings found")
+        errors.append("no scenarios found in feature files")
     if binding_names != scenario_names:
-        errors.append("binding scenarios must match Markdown scenario headings exactly and in order")
+        errors.append("binding scenarios must match feature scenarios exactly and in order")
         missing = [name for name in scenario_names if name not in contract.bindings]
         extra = [name for name in binding_names if name not in scenario_names]
         if missing:
@@ -210,12 +264,12 @@ def run_live(contract: Contract, scenario_names: list[str], profile: str) -> Non
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run black-box quote Gherkin contracts")
-    parser.add_argument("--spec", type=Path, default=DEFAULT_SPEC_PATH)
+    parser.add_argument("--features", type=Path, default=DEFAULT_FEATURES_PATH)
     parser.add_argument("--bindings", type=Path, default=DEFAULT_BINDINGS_PATH)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser("list", help="List Markdown scenarios and binding status")
-    subparsers.add_parser("validate", help="Validate Markdown scenario to binding coverage")
+    subparsers.add_parser("list", help="List feature scenarios and binding status")
+    subparsers.add_parser("validate", help="Validate feature scenario to binding coverage")
 
     run_parser = subparsers.add_parser("run", help="Run a selected scenario or binding group")
     run_parser.add_argument("--profile", required=True)
@@ -226,7 +280,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(_normalize_source_args(argv if argv is not None else sys.argv[1:]))
 
     try:
-        contract = load_contract(args.spec, args.bindings)
+        contract = load_contract(args.features, args.bindings)
         errors = validate_contract(contract)
         if errors:
             for validation_error in errors:
@@ -274,7 +328,7 @@ def _normalize_source_args(argv: list[str]) -> list[str]:
     index = 0
     while index < len(argv):
         value = argv[index]
-        if saw_command and value in {"--spec", "--bindings"} and index + 1 < len(argv):
+        if saw_command and value in {"--features", "--bindings"} and index + 1 < len(argv):
             source_args.extend([value, argv[index + 1]])
             index += 2
             continue

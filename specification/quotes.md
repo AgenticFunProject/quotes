@@ -941,7 +941,8 @@ Expected result:
 - System-level repository boundaries, town topology, and architecture-state assumptions are tracked separately in `specification/system-architecture.md` so the service contract and the broader workspace model can evolve without drifting apart.
 
 ## Executable Scenarios
-- Human-readable scenarios for quote service behavior and documented integration boundaries live in `specification/quote-scenarios.md`.
+- Human-readable Gherkin scenarios for quote service behavior and documented integration boundaries live in `specification/features/quotes.feature`.
+- The scenario-to-binding coverage matrix lives in `specification/quote-scenarios.md` and is checked against the feature file and binding YAML.
 - Matching executable service coverage lives in `tests/test_quotes_api.py`; documentation-only boundary guardrails live in `tests/test_documentation.py`.
 - Repository landscape and broader architecture-state notes live in `specification/system-architecture.md`, not in the quote scenario catalog.
 

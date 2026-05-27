@@ -15,7 +15,7 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 from gherkin_contract import ContractError, _assert_responses, load_contract, run_live  # noqa: E402
 
 RUNNER = REPO_ROOT / "scripts" / "gherkin_contract.py"
-SPEC = REPO_ROOT / "specification" / "quote-scenarios.md"
+FEATURES = REPO_ROOT / "specification" / "features"
 BINDINGS = REPO_ROOT / "specification" / "gherkin-bindings.yaml"
 
 SMOKE_SCENARIOS = [
@@ -71,8 +71,10 @@ def test_contract_runner_has_no_service_or_pytest_imports() -> None:
     assert imports.isdisjoint(forbidden_roots)
 
 
-def test_contract_cli_lists_scenarios_from_markdown() -> None:
-    result = _run_contract_command("list", "--spec", str(SPEC), "--bindings", str(BINDINGS))
+def test_contract_cli_lists_scenarios_from_feature_files() -> None:
+    assert sorted(path.name for path in FEATURES.glob("*.feature")) == ["quotes.feature"]
+
+    result = _run_contract_command("list", "--features", str(FEATURES), "--bindings", str(BINDINGS))
 
     assert result.returncode == 0, result.stderr
     for scenario in SMOKE_SCENARIOS:
@@ -81,7 +83,7 @@ def test_contract_cli_lists_scenarios_from_markdown() -> None:
 
 
 def test_contract_cli_validates_binding_coverage() -> None:
-    result = _run_contract_command("validate", "--spec", str(SPEC), "--bindings", str(BINDINGS))
+    result = _run_contract_command("validate", "--features", str(FEATURES), "--bindings", str(BINDINGS))
 
     assert result.returncode == 0, result.stderr
     assert "gherkin-contract: verified 41 scenarios" in result.stdout
@@ -93,8 +95,8 @@ def test_contract_cli_validates_binding_coverage() -> None:
 def test_contract_cli_dry_runs_smoke_group_without_service() -> None:
     result = _run_contract_command(
         "run",
-        "--spec",
-        str(SPEC),
+        "--features",
+        str(FEATURES),
         "--bindings",
         str(BINDINGS),
         "--profile",
@@ -141,8 +143,8 @@ def test_public_lifecycle_bindings_dry_run_without_service() -> None:
     for scenario in PUBLIC_LIFECYCLE_SCENARIOS:
         result = _run_contract_command(
             "run",
-            "--spec",
-            str(SPEC),
+            "--features",
+            str(FEATURES),
             "--bindings",
             str(BINDINGS),
             "--profile",
@@ -159,8 +161,8 @@ def test_public_lifecycle_bindings_dry_run_without_service() -> None:
 def test_lifecycle_env_gate_reports_env_name_not_description() -> None:
     result = _run_contract_command(
         "run",
-        "--spec",
-        str(SPEC),
+        "--features",
+        str(FEATURES),
         "--bindings",
         str(BINDINGS),
         "--profile",
@@ -238,8 +240,8 @@ def test_commercial_admin_groups_dry_run_without_service() -> None:
     for group in ["admin-commercial", "auth", "diagnostics"]:
         result = _run_contract_command(
             "run",
-            "--spec",
-            str(SPEC),
+            "--features",
+            str(FEATURES),
             "--bindings",
             str(BINDINGS),
             "--profile",
@@ -256,8 +258,8 @@ def test_commercial_admin_groups_dry_run_without_service() -> None:
 def test_azure_profile_resolves_auth_gates_to_azure_token_env_names() -> None:
     result = _run_contract_command(
         "run",
-        "--spec",
-        str(SPEC),
+        "--features",
+        str(FEATURES),
         "--bindings",
         str(BINDINGS),
         "--profile",
@@ -281,7 +283,7 @@ def test_azure_live_run_uses_azure_token_env_gates(monkeypatch, capsys) -> None:
     monkeypatch.setenv("QUOTES_CONTRACT_AZURE_ADMIN_TOKEN", "azure-admin")
     monkeypatch.setenv("QUOTES_CONTRACT_AZURE_APPROVER_TOKEN", "azure-approve")
 
-    contract = load_contract(SPEC, BINDINGS)
+    contract = load_contract(FEATURES, BINDINGS)
     scenario_name = "Require platform bearer authorization for commercial admin changes"
     responses = {
         "reject_missing_token": (401, {}),
@@ -307,8 +309,8 @@ def test_azure_live_run_uses_azure_token_env_gates(monkeypatch, capsys) -> None:
 def test_diagnostics_binding_reports_external_profile_gate() -> None:
     result = _run_contract_command(
         "run",
-        "--spec",
-        str(SPEC),
+        "--features",
+        str(FEATURES),
         "--bindings",
         str(BINDINGS),
         "--profile",

@@ -5,7 +5,8 @@ import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SCENARIO_PREFIX = "## Scenario: "
+FEATURES_DIR = REPO_ROOT / "specification" / "features"
+SCENARIO_PREFIX = "Scenario: "
 
 
 EXPECTED_QUOTE_SCENARIOS = [
@@ -81,17 +82,24 @@ def _section(markdown: str, heading: str) -> str:
     return markdown[start:next_heading]
 
 
-def _scenario_headings(markdown: str) -> list[str]:
-    return [line.removeprefix(SCENARIO_PREFIX) for line in markdown.splitlines() if line.startswith(SCENARIO_PREFIX)]
+def _feature_text() -> str:
+    return "\n".join(path.read_text() for path in sorted(FEATURES_DIR.glob("*.feature")))
 
 
-def _scenario_sections(markdown: str) -> dict[str, str]:
+def _scenario_headings() -> list[str]:
+    return [
+        line.strip().removeprefix(SCENARIO_PREFIX).strip()
+        for line in _feature_text().splitlines()
+        if line.strip().startswith(SCENARIO_PREFIX)
+    ]
+
+
+def _scenario_sections() -> dict[str, str]:
     sections = {}
-    for heading in _scenario_headings(markdown):
-        marker = f"{SCENARIO_PREFIX}{heading}"
-        start = markdown.index(marker)
-        next_heading = markdown.find(f"\n{SCENARIO_PREFIX}", start + len(marker))
-        sections[heading] = markdown[start:] if next_heading == -1 else markdown[start:next_heading]
+    for match in re.finditer(r"(?ms)^\s*Scenario: (.+?)\n(.*?)(?=^\s*Scenario: |\Z)", _feature_text()):
+        heading = match.group(1).strip()
+        body = "\n".join(line.strip() for line in match.group(2).splitlines() if line.strip())
+        sections[heading] = f"Scenario: {heading}\n{body}"
     return sections
 
 
@@ -144,6 +152,7 @@ def test_readme_project_structure_mentions_current_modules_and_tests() -> None:
         "scripts/gherkin_contract.py",
         "scripts/verify_gherkin_contract.py",
         "specification/gherkin-bindings.yaml",
+        "specification/features/quotes.feature",
         "specification/quotes.md",
         "specification/quote-scenarios.md",
     ]:
@@ -178,7 +187,7 @@ def test_spec_endpoint_table_includes_current_workflow_routes() -> None:
 
 def test_specs_document_bounded_alternative_options_as_current_behavior() -> None:
     spec = (REPO_ROOT / "specification" / "quotes.md").read_text()
-    scenarios = (REPO_ROOT / "specification" / "quote-scenarios.md").read_text()
+    scenarios = _feature_text()
 
     assert "includeAlternativeOptions" in spec
     assert "maxAlternativeOptions" in spec
@@ -189,7 +198,7 @@ def test_specs_document_bounded_alternative_options_as_current_behavior() -> Non
 def test_specs_document_platform_bearer_auth_for_protected_operations() -> None:
     readme = (REPO_ROOT / "README.md").read_text()
     spec = (REPO_ROOT / "specification" / "quotes.md").read_text()
-    scenarios = (REPO_ROOT / "specification" / "quote-scenarios.md").read_text()
+    scenarios = _feature_text()
 
     for text in [readme, spec, scenarios]:
         assert "quotes:admin" in text
@@ -204,7 +213,7 @@ def test_specs_document_platform_bearer_auth_for_protected_operations() -> None:
 def test_specs_document_equipments_connectivity_diagnostic() -> None:
     readme = (REPO_ROOT / "README.md").read_text()
     spec = (REPO_ROOT / "specification" / "quotes.md").read_text()
-    scenarios = (REPO_ROOT / "specification" / "quote-scenarios.md").read_text()
+    scenarios = _feature_text()
 
     for text in [readme, spec]:
         assert "/admin/service-connections/equipments" in text
@@ -221,7 +230,7 @@ def test_specs_document_equipments_connectivity_diagnostic() -> None:
 def test_specs_document_equipment_availability_planning_boundary() -> None:
     readme = (REPO_ROOT / "README.md").read_text()
     spec = (REPO_ROOT / "specification" / "quotes.md").read_text()
-    scenarios = (REPO_ROOT / "specification" / "quote-scenarios.md").read_text()
+    scenarios = _feature_text()
 
     assert "/quotes/equipment-availability/plan" in spec
     for text in [spec, scenarios]:
@@ -297,7 +306,7 @@ def test_quotes_spec_contains_2026_05_19_auth_rbac_deployment_plan() -> None:
 
 
 def test_quote_scenarios_cover_2026_05_19_auth_rbac_deployment_boundaries() -> None:
-    scenarios = (REPO_ROOT / "specification" / "quote-scenarios.md").read_text()
+    scenarios = _feature_text()
 
     for scenario_name in [
         "Accept Users-issued Quotes-audience platform tokens for protected operations",
@@ -309,21 +318,20 @@ def test_quote_scenarios_cover_2026_05_19_auth_rbac_deployment_boundaries() -> N
         "Verify Azure platform auth settings before deployment sign-off",
         "Keep Booking on public quote validation and Equipments on diagnostics",
     ]:
-        assert f"## Scenario: {scenario_name}" in scenarios
+        assert f"Scenario: {scenario_name}" in scenarios
 
 
 def test_quote_scenario_catalog_contains_only_quote_behavior_scenarios() -> None:
-    scenarios = (REPO_ROOT / "specification" / "quote-scenarios.md").read_text()
-
-    assert _scenario_headings(scenarios) == EXPECTED_QUOTE_SCENARIOS
+    assert _scenario_headings() == EXPECTED_QUOTE_SCENARIOS
 
 
-def test_quote_scenario_catalog_has_executable_contract_coverage_matrix() -> None:
+def test_quote_scenario_catalog_has_synced_contract_coverage_matrix() -> None:
     scenarios = (REPO_ROOT / "specification" / "quote-scenarios.md").read_text()
     coverage = _contract_coverage_matrix(scenarios)
     binding_document = yaml.safe_load((REPO_ROOT / "specification" / "gherkin-bindings.yaml").read_text())
     binding_scenarios = binding_document["scenarios"]
 
+    assert _scenario_headings() == EXPECTED_QUOTE_SCENARIOS
     assert list(coverage) == EXPECTED_QUOTE_SCENARIOS
     assert list(binding_scenarios) == EXPECTED_QUOTE_SCENARIOS
     for scenario_name, refs in coverage.items():
@@ -359,9 +367,7 @@ def test_quote_scenario_catalog_has_executable_contract_coverage_matrix() -> Non
 
 
 def test_quote_scenario_sections_have_concrete_gherkin_shape() -> None:
-    scenarios = (REPO_ROOT / "specification" / "quote-scenarios.md").read_text()
-
-    for scenario_name, scenario in _scenario_sections(scenarios).items():
+    for scenario_name, scenario in _scenario_sections().items():
         assert "\nGiven " in scenario, scenario_name
         assert "\nWhen " in scenario, scenario_name
         assert "\nThen " in scenario, scenario_name

@@ -3,11 +3,17 @@ from __future__ import annotations
 
 import sys
 
-from gherkin_contract import DEFAULT_BINDINGS_PATH, DEFAULT_SPEC_PATH, load_contract, print_validation_summary, validate_contract
+from gherkin_contract import (
+    DEFAULT_BINDINGS_PATH,
+    DEFAULT_FEATURES_PATH,
+    load_contract,
+    print_validation_summary,
+    validate_contract,
+)
 
 
 def main() -> int:
-    contract = load_contract(DEFAULT_SPEC_PATH, DEFAULT_BINDINGS_PATH)
+    contract = load_contract(DEFAULT_FEATURES_PATH, DEFAULT_BINDINGS_PATH)
     errors = validate_contract(contract)
     if errors:
         for error in errors:
