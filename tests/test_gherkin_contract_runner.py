@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+import re
 import subprocess
 import sys
 from unittest.mock import patch
@@ -47,6 +48,22 @@ COMMERCIAL_ADMIN_SCENARIOS = [
 EXECUTABLE_SCENARIOS = [*SMOKE_SCENARIOS, *PUBLIC_LIFECYCLE_SCENARIOS, *COMMERCIAL_ADMIN_SCENARIOS]
 
 
+def _scenario_file_name(index: int, scenario_name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", scenario_name.lower()).strip("-")
+    return f"{index:03d}-{slug}.feature"
+
+
+def _feature_scenario_names(feature_file: Path) -> list[str]:
+    names: list[str] = []
+    for raw_line in feature_file.read_text().splitlines():
+        line = raw_line.strip()
+        if line.startswith("Scenario Outline:"):
+            names.append(line.removeprefix("Scenario Outline:").strip())
+        elif line.startswith("Scenario:"):
+            names.append(line.removeprefix("Scenario:").strip())
+    return names
+
+
 def _run_contract_command(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(RUNNER), *args],
@@ -71,8 +88,38 @@ def test_contract_runner_has_no_service_or_pytest_imports() -> None:
     assert imports.isdisjoint(forbidden_roots)
 
 
+def test_feature_catalog_uses_one_scenario_per_file_in_binding_order() -> None:
+    document = yaml.safe_load(BINDINGS.read_text())
+    binding_scenarios = list(document["scenarios"])
+    feature_files = sorted(FEATURES.glob("*.feature"))
+
+    assert [path.name for path in feature_files] == [
+        _scenario_file_name(index, scenario)
+        for index, scenario in enumerate(binding_scenarios, start=1)
+    ]
+
+    actual_scenarios: list[str] = []
+    for feature_file in feature_files:
+        feature_count = sum(
+            1
+            for raw_line in feature_file.read_text().splitlines()
+            if raw_line.strip().startswith("Feature:")
+        )
+        assert feature_count == 1, f"{feature_file.name} must contain exactly one Feature heading"
+
+        scenarios = _feature_scenario_names(feature_file)
+        assert len(scenarios) == 1, f"{feature_file.name} must contain exactly one scenario"
+        actual_scenarios.extend(scenarios)
+
+    assert actual_scenarios == binding_scenarios
+
+
 def test_contract_cli_lists_scenarios_from_feature_files() -> None:
-    assert sorted(path.name for path in FEATURES.glob("*.feature")) == ["quotes.feature"]
+    document = yaml.safe_load(BINDINGS.read_text())
+    assert sorted(path.name for path in FEATURES.glob("*.feature")) == [
+        _scenario_file_name(index, scenario)
+        for index, scenario in enumerate(document["scenarios"], start=1)
+    ]
 
     result = _run_contract_command("list", "--features", str(FEATURES), "--bindings", str(BINDINGS))
 

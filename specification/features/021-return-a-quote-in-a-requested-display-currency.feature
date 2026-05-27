@@ -1,0 +1,10 @@
+Feature: Quote service contract scenarios
+  Quotes exposes public quote workflows, protected operator workflows,
+  and documented integration boundaries as business-readable contracts.
+
+  Scenario: Return a quote in a requested display currency
+    Given the service stores governed FX data for supported quote currencies
+    When a client requests a quote with `currency` set to `EUR`
+    Then the API keeps the commercial source basis in `USD`
+    And the response exposes the persisted FX snapshot and rounding policy used for conversion
+    And the stored quote provenance records both the source total and the display-currency total deterministically

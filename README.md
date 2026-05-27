@@ -33,7 +33,7 @@ Planning docs for the next iterations live under `specification/`:
 
 - `specification/roadmap.md` for phased feature and architecture work
 - `specification/adr-001-eventing-strategy.md` for the eventing decision record
-- `specification/features/quotes.feature` for the Gherkin scenario source of truth
+- `specification/features/` for the one-scenario-per-file Gherkin source of truth
 - `specification/quote-scenarios.md` for the scenario-to-binding coverage matrix
 - `specification/quotes.md#2026-05-19-cross-repo-authrbac-deployment-plan`
   for the current cross-repo auth/RBAC/deployment plan
@@ -473,7 +473,7 @@ quotes/
 ├── specification/
 │   ├── gherkin-bindings.yaml # specification/gherkin-bindings.yaml: binding, fixture, and profile layer
 │   ├── features/
-│   │   └── quotes.feature # specification/features/quotes.feature: Gherkin scenario source
+│   │   └── 001-...feature # specification/features/: one scenario per Gherkin file
 │   ├── quotes.md        # specification/quotes.md: API and behavior spec
 │   ├── quote-scenarios.md # specification/quote-scenarios.md: scenario binding coverage matrix
 │   ├── roadmap.md       # Delivery roadmap

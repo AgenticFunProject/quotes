@@ -18,7 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FEATURES_PATH = REPO_ROOT / "specification" / "features"
 DEFAULT_BINDINGS_PATH = REPO_ROOT / "specification" / "gherkin-bindings.yaml"
 FEATURE_PREFIX = "Feature:"
-SCENARIO_PREFIX = "Scenario:"
+SCENARIO_PREFIXES = ("Scenario:", "Scenario Outline:")
 STEP_PREFIXES = ("Given ", "When ", "Then ", "And ", "But ")
 REQUIRED_STEP_PREFIXES = ("Given ", "When ", "Then ")
 EXECUTABLE_STATUS = "executable"
@@ -125,15 +125,16 @@ def _parse_feature_file(feature_file: Path) -> list[Scenario]:
                 raise ContractError(f"{feature_file}:{line_number}: duplicate Feature heading")
             feature_seen = True
             continue
-        if line.startswith(SCENARIO_PREFIX):
+        scenario_prefix = next((prefix for prefix in SCENARIO_PREFIXES if line.startswith(prefix)), None)
+        if scenario_prefix:
             if not feature_seen:
                 raise ContractError(f"{feature_file}:{line_number}: Scenario appears before Feature")
             flush_current()
-            name = line.removeprefix(SCENARIO_PREFIX).strip()
+            name = line.removeprefix(scenario_prefix).strip()
             if not name:
                 raise ContractError(f"{feature_file}:{line_number}: Scenario name is required")
             current_name = name
-            current_lines = [f"{SCENARIO_PREFIX} {name}"]
+            current_lines = [f"{scenario_prefix} {name}"]
             continue
         if current_name is not None:
             current_lines.append(line)
@@ -144,6 +145,8 @@ def _parse_feature_file(feature_file: Path) -> list[Scenario]:
     if not feature_seen:
         raise ContractError(f"{feature_file}: missing Feature heading")
     flush_current()
+    if len(scenarios) != 1:
+        raise ContractError(f"{feature_file}: expected exactly one scenario, found {len(scenarios)}")
     return scenarios
 
 

@@ -152,7 +152,7 @@ def test_readme_project_structure_mentions_current_modules_and_tests() -> None:
         "scripts/gherkin_contract.py",
         "scripts/verify_gherkin_contract.py",
         "specification/gherkin-bindings.yaml",
-        "specification/features/quotes.feature",
+        "specification/features/",
         "specification/quotes.md",
         "specification/quote-scenarios.md",
     ]:
