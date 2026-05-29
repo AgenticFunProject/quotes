@@ -24,11 +24,12 @@ Audit inputs:
 - `tests/test_quotes_api.py`
 - `tests/test_gherkin_contract_runner.py`
 
-The current 41-scenario catalog covers the business contract surface documented for Quotes. `GET /health` is intentionally excluded from the Gherkin catalog because it is a generic readiness probe covered by `tests/test_health.py`, not a quote business workflow.
+The current 44-scenario catalog covers the business contract surface documented for Quotes. `GET /health` is intentionally excluded from the Gherkin catalog because it is a generic readiness probe covered by `tests/test_health.py`, not a quote business workflow.
 
 | Product surface | Contract coverage |
 |---|---|
 | Public quote creation, quote read by ID/reference, bookability, revocation, and lifecycle outbox behavior | `Create a quote on a seeded peak-season lane`; `Retrieve a stored quote`; `Validate whether a stored quote can still be booked`; `Revoke an issued quote and block booking reuse`; `Persist quote lifecycle events in the outbox` |
+| Customer operations for replay safety, quote portfolio history, and lifecycle audit views | `Replay a quote request with an idempotency key`; `List stored quotes for a customer portfolio`; `Read a quote lifecycle timeline` |
 | Rate coverage and equipment availability planning | `Validate rate coverage before requesting a quote`; `Plan equipment availability with explicit substitution suggestions`; `Request a quote for a seeded schedule without an effective rate` |
 | Customer/account contract, market pricing, currency, repricing, pricing explainability, alternatives, validity, and manual approval workflows | Pricing and validity scenarios 9-33 in the matrix below |
 | Protected-route platform bearer behavior, cross-repo token source decisions, gateway boundary, Azure auth settings, and downstream integration boundaries | Auth and integration-boundary scenarios 34-41 in the matrix below |
@@ -84,3 +85,6 @@ dry-run, and run against configured service profiles.
 | Keep web-page bearer propagation inside the gateway boundary | `docs.keep_gateway_bearer_boundary` |
 | Verify Azure platform auth settings before deployment sign-off | `deployment.verify_azure_auth_settings` |
 | Keep Booking on public quote validation and Equipments on diagnostics | `docs.keep_booking_and_equipments_boundaries` |
+| Replay a quote request with an idempotency key | `customer_operations.replay_quote_request_with_idempotency_key` |
+| List stored quotes for a customer portfolio | `customer_operations.list_customer_quote_portfolio` |
+| Read a quote lifecycle timeline | `customer_operations.read_quote_lifecycle_timeline` |

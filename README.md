@@ -49,7 +49,13 @@ and seeds reference rates and surcharge rules used by `POST /quotes`.
   response with line items and a validity window derived from the matched quote
   validity policy. Set `includeAlternativeOptions=true` to include alternative
   priced options, and use optional `maxAlternativeOptions` from `1` through `10`
-  to bound the number of returned alternatives.
+  to bound the number of returned alternatives. Send `Idempotency-Key` when a
+  caller needs safe request replay; a repeated key returns the original quote
+  instead of creating another quote or lifecycle event.
+- `GET /quotes` lists stored quotes for customer-support and portal history
+  flows. Optional filters include `customerId`, `accountId`, `scheduleId`,
+  `lifecycleState`, and `pricingBasis`, with bounded `limit` and `offset`
+  pagination.
 - `POST /quotes/{quote_id}/reprice` reruns pricing for a stored quote against
   the current approved commercial data, preserves the original quote unchanged,
   and persists a structured variance summary on the repriced result. Requires
@@ -77,6 +83,8 @@ and seeds reference rates and surcharge rules used by `POST /quotes`.
 - `GET /quotes/{quote_id}/bookability` returns whether a stored quote is still
   within its validity window and therefore usable by Booking. Revoked quotes
   return `bookable=false`, `status=VOID`, and `reason=QUOTE_REVOKED`.
+- `GET /quotes/{quote_id}/timeline` returns the quote's current lifecycle state
+  and ordered business lifecycle events for customer-service audit views.
 - `POST /quotes/{quote_id}/approval-decisions` approves or rejects quotes that
   are currently held in the pending-approval lifecycle state and writes the
   corresponding outbox event. Requires a platform bearer token with

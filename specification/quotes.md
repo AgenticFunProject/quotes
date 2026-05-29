@@ -18,6 +18,7 @@ Provides a quoted price that can be referenced when placing a booking.
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | /quotes | Request a new quote |
+| GET | /quotes | List stored quotes with customer, account, schedule, lifecycle, and pricing filters |
 | POST | /quotes/{id}/reprice | Reprice a stored quote and persist variance against the original |
 | POST | /quotes/{id}/approval-decisions | Approve or reject a quote currently held for manual approval |
 | POST | /quotes/{id}/revocations | Void an issued or approved quote so it can no longer be booked |
@@ -26,6 +27,7 @@ Provides a quoted price that can be referenced when placing a booking.
 | GET | /quotes/{id} | Retrieve a quote by internal ID or public quote reference |
 | GET | /quotes/{id}/explain | Return stored pricing explainability for a quote |
 | GET | /quotes/{id}/bookability | Validate whether a stored quote is still usable for booking |
+| GET | /quotes/{id}/timeline | Return ordered lifecycle activity for customer-service audit views |
 | GET | /quotes/reference/{quoteReference} | Retrieve a quote by human-readable quote reference |
 | POST | /admin/rate-tables | Create a draft managed rate-table version |
 | PATCH | /admin/rate-tables/{id} | Update a draft managed rate-table version |
@@ -240,6 +242,10 @@ Example response:
 - `pricingModeHint` is optional and can be `AUTO`, `PUBLIC_TARIFF`, `CONTRACT`, or `MARKET`.
 - `includeAlternativeOptions` is optional and defaults to `false`; when `true`, the response includes a primary option plus ordered alternatives.
 - `maxAlternativeOptions` is optional, accepts values from `1` through `10`, and only bounds the ordered alternatives returned when `includeAlternativeOptions=true`.
+- `Idempotency-Key` is an optional request header for public quote creation. When
+  a key is supplied, the first successful request stores it on the quote and a
+  later replay with the same key returns the original quote instead of creating
+  another quote or `quote.created` event.
 - When both are present, account-specific contracts take precedence over customer-level contracts.
 - If no matching contract covers the request, the service falls back to `PUBLIC_TARIFF` pricing.
 - `pricingModeHint=MARKET` asks the service to use approved market-rate snapshots when they fully cover the request; otherwise the service falls back to contract or public tariff pricing and persists that fallback decision.
@@ -272,6 +278,48 @@ Example response:
   ],
   "sourceTotalAmount": 4350.00,
   "totalAmount": 4002.00
+}
+```
+
+When `Idempotency-Key` is supplied, the first response includes
+`idempotencyKey` and `idempotentReplay: false`. A replay response returns the
+same quote identifiers and commercial amounts with `idempotentReplay: true`.
+
+### GET /quotes - Query Parameters
+
+Stored quote search is public read behavior for customer-support and portal
+history flows. Supported filters:
+
+| Query parameter | Meaning |
+|-----------------|---------|
+| `customerId` | Return only quotes for one customer |
+| `accountId` | Return only quotes for one account |
+| `scheduleId` | Return only quotes for one schedule |
+| `lifecycleState` | Return only quotes in a lifecycle state such as `ISSUED`, `APPROVED`, `VOID`, or `EXPIRED` |
+| `pricingBasis` | Return only quotes priced through `PUBLIC_TARIFF`, `CONTRACT`, `MARKET`, or `HYBRID` |
+| `limit` | Page size, default `50`, maximum `100` |
+| `offset` | Zero-based page offset, default `0` |
+
+Results are ordered by newest quote first and use the same quote payload shape
+as `GET /quotes/{id}`.
+
+### GET /quotes - Response
+
+```json
+{
+  "quotes": [
+    {
+      "id": "53c362b2-1229-4ea5-a24a-9891fb1f509d",
+      "quoteReference": "QTE-2026-00108",
+      "customerId": "cust-acme",
+      "lifecycleState": "ISSUED",
+      "pricingBasis": "CONTRACT",
+      "totalAmount": 930.00
+    }
+  ],
+  "count": 1,
+  "limit": 50,
+  "offset": 0
 }
 ```
 
@@ -609,6 +657,35 @@ Revoked quotes return:
 }
 ```
 
+### GET /quotes/{id}/timeline - Response
+
+The `{id}` path parameter accepts either the stored quote UUID or the public
+`quoteReference`. The response is a business timeline built from durable quote
+lifecycle events, ordered from oldest to newest.
+
+```json
+{
+  "quoteId": "53c362b2-1229-4ea5-a24a-9891fb1f509d",
+  "quoteReference": "QTE-2026-00108",
+  "lifecycleState": "VOID",
+  "validUntil": "2026-04-07T23:59:59Z",
+  "events": [
+    {
+      "eventType": "quote.created",
+      "occurredAt": "2026-04-01T09:30:00Z",
+      "lifecycleState": "ISSUED"
+    },
+    {
+      "eventType": "quote.revoked",
+      "occurredAt": "2026-04-02T12:15:00Z",
+      "lifecycleState": "VOID",
+      "actor": "ops@quotes",
+      "reason": "Customer requested a corrected quote."
+    }
+  ]
+}
+```
+
 ### POST /admin/rate-tables - Request Body
 ```json
 {
@@ -682,9 +759,21 @@ Revoked quotes return:
 - The `{id}` path parameter accepts either the stored quote UUID or the public `quoteReference`.
 - This endpoint is the primary lookup path used by the current implementation.
 
+### GET /quotes
+- This endpoint returns stored quote payloads ordered newest first.
+- Supported filters are `customerId`, `accountId`, `scheduleId`,
+  `lifecycleState`, and `pricingBasis`.
+- `limit` defaults to `50` and is capped at `100`; `offset` defaults to `0`.
+- This endpoint is public read behavior like quote lookup and bookability.
+
 ### GET /quotes/{id}/explain
 - The `{id}` path parameter accepts either the stored quote UUID or the public `quoteReference`.
 - This endpoint returns the stored pricing basis, selected market source when present, persisted optimization trace, and the full stored pricing provenance used to create the quote.
+
+### GET /quotes/{id}/timeline
+- The `{id}` path parameter accepts either the stored quote UUID or the public `quoteReference`.
+- This endpoint returns the current lifecycle state and ordered quote lifecycle
+  events without exposing admin outbox replay controls.
 
 ### POST /quotes/{id}/approval-decisions
 - The `{id}` path parameter accepts either the stored quote UUID or the public `quoteReference`.
@@ -948,9 +1037,12 @@ Expected result:
 
 ## Current Implementation Notes
 - `POST /quotes` returns the commercial quote payload: `id`, `quoteReference`, `validUntil`, `currency`, `lineItems`, and `totalAmount`.
+- `POST /quotes` accepts `Idempotency-Key` for safe public request replay and returns the original quote with replay metadata when a key is reused.
+- `GET /quotes` lists stored quotes with customer, account, schedule, lifecycle, pricing, limit, and offset filters, ordered newest first.
 - `GET /quotes/{id}` accepts either the internal quote UUID or the human-readable `quoteReference` returned during quote creation and returns the stored record, including both identifiers.
 - `GET /quotes/reference/{quoteReference}` remains available as an explicit business-facing lookup path for the human-readable quote reference.
 - `GET /quotes/{id}/bookability` accepts the same identifiers as quote lookup and returns Booking-focused validation fields: `bookable`, `status`, `reason`, `expired`, and `validUntil`.
+- `GET /quotes/{id}/timeline` accepts either quote identifier and returns ordered quote lifecycle events for customer-service audit views.
 - Quote references are generated sequentially within the current UTC year using the `QTE-YYYY-NNNNN` format.
 - A schedule lookup and a quoteable lane are not the same thing in the current implementation: a known `scheduleId` can still return `400` when no effective base rate exists for the route, equipment, and departure date.
 - Quote lifecycle state is persisted on the quote row and synchronized with `validUntil` when a quote is read after expiry.

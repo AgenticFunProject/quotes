@@ -55,11 +55,17 @@ AUTH_DEPLOYMENT_BOUNDARY_SCENARIOS = [
     "Verify Azure platform auth settings before deployment sign-off",
     "Keep Booking on public quote validation and Equipments on diagnostics",
 ]
+CUSTOMER_OPERATIONS_SCENARIOS = [
+    "Replay a quote request with an idempotency key",
+    "List stored quotes for a customer portfolio",
+    "Read a quote lifecycle timeline",
+]
 EXECUTABLE_SCENARIOS = [
     *SMOKE_SCENARIOS,
     *PUBLIC_LIFECYCLE_SCENARIOS,
     *COMMERCIAL_ADMIN_SCENARIOS,
     *AUTH_DEPLOYMENT_BOUNDARY_SCENARIOS,
+    *CUSTOMER_OPERATIONS_SCENARIOS,
 ]
 
 
@@ -141,15 +147,15 @@ def test_contract_cli_lists_scenarios_from_feature_files() -> None:
     assert result.returncode == 0, result.stderr
     for scenario in SMOKE_SCENARIOS:
         assert scenario in result.stdout
-    assert "41 scenarios" in result.stdout
+    assert "44 scenarios" in result.stdout
 
 
 def test_contract_cli_validates_binding_coverage() -> None:
     result = _run_contract_command("validate", "--features", str(FEATURES), "--bindings", str(BINDINGS))
 
     assert result.returncode == 0, result.stderr
-    assert "gherkin-contract: verified 41 scenarios" in result.stdout
-    assert "28 executable bindings" in result.stdout
+    assert "gherkin-contract: verified 44 scenarios" in result.stdout
+    assert "31 executable bindings" in result.stdout
     for scenario in EXECUTABLE_SCENARIOS:
         assert scenario in result.stdout
 
@@ -436,6 +442,52 @@ def test_auth_deployment_boundary_dry_runs_show_profile_gates() -> None:
     )
 
     assert "QUOTES_CONTRACT_AZURE_AUTH_SETTINGS_VERIFIED" in azure_result.stdout
+
+
+def test_customer_operations_bindings_define_executable_black_box_steps() -> None:
+    document = yaml.safe_load(BINDINGS.read_text())
+    scenarios = document["scenarios"]
+
+    for scenario in CUSTOMER_OPERATIONS_SCENARIOS:
+        binding = scenarios[scenario]
+        assert binding["status"] == "executable"
+        assert binding["group"] == "customer-operations"
+        assert "local" in binding["profiles"]
+        assert binding["actions"]
+        assert binding["assertions"]
+
+
+def test_customer_operations_group_dry_runs_without_service() -> None:
+    result = _run_contract_command(
+        "run",
+        "--features",
+        str(FEATURES),
+        "--bindings",
+        str(BINDINGS),
+        "--profile",
+        "local",
+        "--group",
+        "customer-operations",
+        "--dry-run",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "dry-run: local customer-operations" in result.stdout
+    for scenario in CUSTOMER_OPERATIONS_SCENARIOS:
+        assert f"DRY-RUN {scenario}" in result.stdout
+
+
+def test_idempotency_binding_sends_replay_key_as_a_request_header() -> None:
+    document = yaml.safe_load(BINDINGS.read_text())
+    binding = document["scenarios"]["Replay a quote request with an idempotency key"]
+    quote_actions = [
+        action
+        for action in binding["actions"]
+        if action["name"] in {"create_quote", "replay_quote"}
+    ]
+
+    assert quote_actions
+    assert all(action["headers"] == {"Idempotency-Key": "{idempotency_key}"} for action in quote_actions)
 
 
 def test_azure_auth_settings_live_run_gates_when_signoff_env_is_absent(monkeypatch, capsys) -> None:

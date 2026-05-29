@@ -405,6 +405,9 @@ def _validate_action_references(
             action_names.add(action_name)
         if action.get("auth") and action.get("authorization"):
             errors.append(f"{scenario_name}: action cannot define both auth and authorization")
+        headers = action.get("headers")
+        if headers is not None and not isinstance(headers, dict):
+            errors.append(f"{scenario_name}: action headers must be a mapping")
         body_fixture = action.get("body_fixture")
         if body_fixture is not None and body_fixture not in contract.fixtures:
             errors.append(f"{scenario_name}: unknown action body fixture {body_fixture!r}")
@@ -488,6 +491,9 @@ def _execute_action(
 
     if actor := action.get("actor"):
         headers["X-Actor"] = str(actor)
+
+    for header_name, header_value in _mapping(action.get("headers", {}), "action.headers").items():
+        headers[str(header_name)] = str(_render_templates(header_value, state))
 
     http_request = request.Request(url=url, data=body, method=method, headers=headers)
     try:

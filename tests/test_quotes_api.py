@@ -569,6 +569,189 @@ def test_create_quote_increments_quote_reference_sequence(client) -> None:
     assert second_response.json()["quoteReference"].endswith("-00002")
 
 
+def test_create_quote_replays_idempotency_key_without_duplicate_quote_or_event(client) -> None:
+    test_client, session_factory = client
+    request_body = {
+        "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+        "customerId": "cust-acme",
+        "equipment": [{"type": "20FT", "quantity": 1}],
+        "cargoWeightKg": 18000,
+    }
+    headers = {"Idempotency-Key": "quote-replay-cust-acme-001"}
+
+    first_response = test_client.post("/quotes", json=request_body, headers=headers)
+    replay_response = test_client.post("/quotes", json=request_body, headers=headers)
+
+    assert first_response.status_code == 201
+    assert replay_response.status_code == 200
+    assert first_response.json()["id"] == replay_response.json()["id"]
+    assert first_response.json()["quoteReference"] == replay_response.json()["quoteReference"]
+    assert first_response.json()["idempotencyKey"] == "quote-replay-cust-acme-001"
+    assert first_response.json()["idempotentReplay"] is False
+    assert replay_response.json()["idempotencyKey"] == "quote-replay-cust-acme-001"
+    assert replay_response.json()["idempotentReplay"] is True
+
+    with session_factory() as session:
+        quote_count = session.scalar(select(func.count()).select_from(Quote))
+        stored_quote = session.scalar(select(Quote).where(Quote.id == first_response.json()["id"]))
+        created_event_count = session.scalar(
+            select(func.count()).select_from(OutboxEvent).where(
+                OutboxEvent.aggregate_id == first_response.json()["id"],
+                OutboxEvent.event_type == "quote.created",
+            )
+        )
+
+    assert quote_count == 1
+    assert stored_quote is not None
+    assert stored_quote.idempotency_key == "quote-replay-cust-acme-001"
+    assert created_event_count == 1
+
+
+def test_create_quote_rejects_blank_idempotency_key(client) -> None:
+    test_client, _ = client
+
+    response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+        headers={"Idempotency-Key": "   "},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Idempotency-Key must not be blank"}
+
+
+def test_list_quotes_filters_customer_portfolio_and_orders_newest_first(client) -> None:
+    test_client, _ = client
+
+    first_customer_response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "customerId": "cust-acme",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+    second_customer_response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "7a59721c-cd5d-4d9f-86a0-9aa9f7f6c47b",
+            "customerId": "cust-acme",
+            "equipment": [{"type": "40FT_HC", "quantity": 1}],
+            "cargoWeightKg": 15000,
+        },
+    )
+    other_customer_response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "customerId": "cust-other",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+
+    response = test_client.get("/quotes", params={"customerId": "cust-acme", "limit": 10})
+
+    assert first_customer_response.status_code == 201
+    assert second_customer_response.status_code == 201
+    assert other_customer_response.status_code == 201
+    assert response.status_code == 200
+    assert response.json()["count"] == 2
+    assert response.json()["limit"] == 10
+    assert response.json()["offset"] == 0
+    assert [quote["id"] for quote in response.json()["quotes"]] == [
+        second_customer_response.json()["id"],
+        first_customer_response.json()["id"],
+    ]
+    assert {quote["customerId"] for quote in response.json()["quotes"]} == {"cust-acme"}
+    assert other_customer_response.json()["id"] not in [quote["id"] for quote in response.json()["quotes"]]
+
+
+def test_list_quotes_filters_by_lifecycle_and_pricing_basis(client) -> None:
+    test_client, _ = client
+
+    public_response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+    contract_response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "customerId": "cust-acme",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+
+    response = test_client.get(
+        "/quotes",
+        params={
+            "lifecycleState": "ISSUED",
+            "pricingBasis": "CONTRACT",
+        },
+    )
+
+    assert public_response.status_code == 201
+    assert contract_response.status_code == 201
+    assert response.status_code == 200
+    assert response.json()["count"] == 1
+    assert response.json()["quotes"][0]["id"] == contract_response.json()["id"]
+    assert response.json()["quotes"][0]["pricingBasis"] == "CONTRACT"
+
+
+def test_quote_timeline_returns_ordered_lifecycle_events(client) -> None:
+    test_client, _ = client
+    create_response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+    revoke_response = test_client.post(
+        f"/quotes/{create_response.json()['id']}/revocations",
+        json={"reason": "Customer requested a corrected quote."},
+        headers=_auth_headers("ops@quotes", [_SCOPE_QUOTES_ADMIN]),
+    )
+
+    response = test_client.get(f"/quotes/{create_response.json()['quoteReference']}/timeline")
+
+    assert create_response.status_code == 201
+    assert revoke_response.status_code == 200
+    assert response.status_code == 200
+    assert response.json() == {
+        "quoteId": create_response.json()["id"],
+        "quoteReference": create_response.json()["quoteReference"],
+        "lifecycleState": "VOID",
+        "validUntil": create_response.json()["validUntil"],
+        "events": [
+            {
+                "eventType": "quote.created",
+                "occurredAt": response.json()["events"][0]["occurredAt"],
+                "lifecycleState": "ISSUED",
+            },
+            {
+                "eventType": "quote.revoked",
+                "occurredAt": response.json()["events"][1]["occurredAt"],
+                "lifecycleState": "VOID",
+                "actor": "ops@quotes",
+                "reason": "Customer requested a corrected quote.",
+            },
+        ],
+    }
+
+
 def test_create_quote_returns_404_for_unknown_schedule(client) -> None:
     test_client, _ = client
 

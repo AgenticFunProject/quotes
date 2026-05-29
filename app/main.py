@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from enum import Enum
 
-from fastapi import Depends, FastAPI, HTTPException, Header, Query
+from fastapi import Depends, FastAPI, HTTPException, Header, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
@@ -470,6 +470,15 @@ def _serialize_created_quote(quote: Quote) -> dict[str, object]:
     }
 
 
+def _serialize_created_quote_response(quote: Quote, *, idempotent_replay: bool = False) -> dict[str, object]:
+    payload = _serialize_created_quote(quote)
+    if quote.idempotency_key is not None:
+        payload["idempotencyKey"] = quote.idempotency_key
+        payload["idempotentReplay"] = idempotent_replay
+
+    return payload
+
+
 def _build_quote_event_payload(quote: Quote) -> dict[str, object]:
     source_total_amount = _quote_source_total_amount(quote)
     payload = {
@@ -544,6 +553,35 @@ def _serialize_impact_analysis(run: ImpactAnalysisRun) -> dict[str, object]:
     }
 
 
+def _serialize_quote_timeline_event(event: OutboxEvent) -> dict[str, object]:
+    payload = event.payload or {}
+    timeline_event: dict[str, object] = {
+        "eventType": event.event_type,
+        "occurredAt": event.occurred_at.isoformat(),
+    }
+
+    if lifecycle_state := payload.get("lifecycleState"):
+        timeline_event["lifecycleState"] = lifecycle_state
+
+    approval_decision = payload.get("approvalDecision")
+    if isinstance(approval_decision, dict):
+        if decision := approval_decision.get("decision"):
+            timeline_event["decision"] = decision
+        if actor := approval_decision.get("actor"):
+            timeline_event["actor"] = actor
+        if note := approval_decision.get("note"):
+            timeline_event["note"] = note
+
+    revocation = payload.get("revocation")
+    if isinstance(revocation, dict):
+        if actor := revocation.get("actor"):
+            timeline_event["actor"] = actor
+        if reason := revocation.get("reason"):
+            timeline_event["reason"] = reason
+
+    return timeline_event
+
+
 def _build_commercial_change_event_payload(
     *,
     resource_type: CommercialChangeResourceType,
@@ -610,6 +648,19 @@ def _get_quote_or_404(quote_id: str, db: Session) -> Quote:
         raise HTTPException(status_code=404, detail="Quote not found")
 
     return quote
+
+
+def _normalize_idempotency_key(value: str | None) -> str | None:
+    if value is None:
+        return None
+
+    normalized = value.strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Idempotency-Key must not be blank")
+    if len(normalized) > 128:
+        raise HTTPException(status_code=400, detail="Idempotency-Key must be 128 characters or fewer")
+
+    return normalized
 
 
 def _normalize_utc(dt: datetime) -> datetime:
@@ -2090,6 +2141,7 @@ def _create_quote_record(
     schedule_provider: ScheduleProvider,
     repriced_from_quote: Quote | None = None,
     repricing_trigger: str | None = None,
+    idempotency_key: str | None = None,
 ) -> Quote:
     schedule = _get_schedule(payload.schedule_id, schedule_provider)
     fx_rate = _resolve_fx_rate(db=db, currency=payload.currency)
@@ -2156,6 +2208,7 @@ def _create_quote_record(
         approval_reasons=approval_reasons,
         fx_snapshot=_serialize_fx_snapshot(fx_rate),
         rounding_policy=_ROUNDING_POLICY,
+        idempotency_key=idempotency_key,
         repriced_from_quote_id=None if repriced_from_quote is None else repriced_from_quote.id,
         repricing_trigger=repricing_trigger,
         line_items=line_items,
@@ -2177,11 +2230,28 @@ def _create_quote_record(
 @app.post("/quotes", status_code=201)
 def create_quote(
     payload: CreateQuoteRequest,
+    response: Response,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     db: Session = Depends(get_db),
     schedule_provider: ScheduleProvider = Depends(get_schedule_provider),
 ) -> dict[str, object]:
-    quote = _create_quote_record(payload=payload, db=db, schedule_provider=schedule_provider)
-    response = _serialize_created_quote(quote)
+    normalized_idempotency_key = _normalize_idempotency_key(idempotency_key)
+    if normalized_idempotency_key is not None:
+        existing_quote = db.scalar(select(Quote).where(Quote.idempotency_key == normalized_idempotency_key))
+        if existing_quote is not None:
+            response.status_code = 200
+            return _serialize_created_quote_response(
+                _sync_quote_lifecycle(existing_quote, db),
+                idempotent_replay=True,
+            )
+
+    quote = _create_quote_record(
+        payload=payload,
+        db=db,
+        schedule_provider=schedule_provider,
+        idempotency_key=normalized_idempotency_key,
+    )
+    serialized_response = _serialize_created_quote_response(quote)
     if payload.include_alternative_options:
         schedule = _get_schedule(payload.schedule_id, schedule_provider)
         rates_by_type = _load_rate_table(
@@ -2211,7 +2281,7 @@ def create_quote(
             valid_until=quote.valid_until,
             snapshot=quote.pricing_provenance["validityPolicy"],
         )
-        response["options"] = _serialize_quote_options(
+        serialized_response["options"] = _serialize_quote_options(
             payload=payload,
             pricing_candidates=pricing_candidates,
             primary_pricing=primary_pricing,
@@ -2220,7 +2290,7 @@ def create_quote(
             max_alternative_options=payload.max_alternative_options,
         )
 
-    return response
+    return serialized_response
 
 
 @app.post("/quotes/{quote_id}/approval-decisions")
@@ -2774,6 +2844,40 @@ def plan_quote_equipment_availability(payload: PlanEquipmentAvailabilityRequest)
     return _plan_equipment_availability(payload)
 
 
+@app.get("/quotes")
+def list_quotes(
+    customer_id: str | None = Query(default=None, alias="customerId", min_length=1),
+    account_id: str | None = Query(default=None, alias="accountId", min_length=1),
+    schedule_id: str | None = Query(default=None, alias="scheduleId", min_length=1),
+    lifecycle_state: QuoteLifecycleState | None = Query(default=None, alias="lifecycleState"),
+    pricing_basis: PricingBasis | None = Query(default=None, alias="pricingBasis"),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    query = select(Quote)
+    if customer_id is not None:
+        query = query.where(Quote.customer_id == customer_id)
+    if account_id is not None:
+        query = query.where(Quote.account_id == account_id)
+    if schedule_id is not None:
+        query = query.where(Quote.schedule_id == schedule_id)
+    if lifecycle_state is not None:
+        query = query.where(Quote.lifecycle_state == lifecycle_state)
+    if pricing_basis is not None:
+        query = query.where(Quote.pricing_basis == pricing_basis)
+
+    total_count = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    quotes = db.scalars(query.order_by(Quote.created_at.desc(), Quote.id.desc()).offset(offset).limit(limit)).all()
+
+    return {
+        "quotes": [_serialize_quote(_sync_quote_lifecycle(quote, db)) for quote in quotes],
+        "count": total_count,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
 @app.get("/quotes/{quote_id}")
 def get_quote(quote_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
     return _serialize_quote(_sync_quote_lifecycle(_get_quote_or_404(quote_id, db), db))
@@ -2782,6 +2886,27 @@ def get_quote(quote_id: str, db: Session = Depends(get_db)) -> dict[str, object]
 @app.get("/quotes/{quote_id}/explain")
 def get_quote_explainability(quote_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
     return _serialize_quote_explainability(_sync_quote_lifecycle(_get_quote_or_404(quote_id, db), db))
+
+
+@app.get("/quotes/{quote_id}/timeline")
+def get_quote_timeline(quote_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
+    quote = _sync_quote_lifecycle(_get_quote_or_404(quote_id, db), db)
+    events = db.scalars(
+        select(OutboxEvent)
+        .where(
+            OutboxEvent.aggregate_type == _OUTBOX_AGGREGATE_QUOTE,
+            OutboxEvent.aggregate_id == quote.id,
+        )
+        .order_by(OutboxEvent.occurred_at, OutboxEvent.id)
+    ).all()
+
+    return {
+        "quoteId": quote.id,
+        "quoteReference": quote.quote_reference,
+        "lifecycleState": quote.lifecycle_state.value,
+        "validUntil": quote.valid_until.isoformat(),
+        "events": [_serialize_quote_timeline_event(event) for event in events],
+    }
 
 
 @app.get("/quotes/reference/{quote_reference}")

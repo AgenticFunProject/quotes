@@ -27,6 +27,40 @@ fixtures:
       - type: 20FT
         quantity: 1
     cargoWeightKg: 18000
+  idempotent_quote_request:
+    scheduleId: df62a7d2-a45e-4d4d-b3cb-b4af65435274
+    customerId: cust-acme
+    equipment:
+      - type: 20FT
+        quantity: 1
+    cargoWeightKg: 18000
+  portfolio_first_quote_request:
+    scheduleId: df62a7d2-a45e-4d4d-b3cb-b4af65435274
+    customerId: cust-acme
+    equipment:
+      - type: 20FT
+        quantity: 1
+    cargoWeightKg: 18000
+  portfolio_second_quote_request:
+    scheduleId: 7a59721c-cd5d-4d9f-86a0-9aa9f7f6c47b
+    customerId: cust-acme
+    equipment:
+      - type: 40FT_HC
+        quantity: 1
+    cargoWeightKg: 15000
+  portfolio_other_customer_quote_request:
+    scheduleId: df62a7d2-a45e-4d4d-b3cb-b4af65435274
+    customerId: cust-other
+    equipment:
+      - type: 20FT
+        quantity: 1
+    cargoWeightKg: 18000
+  timeline_quote_request:
+    scheduleId: df62a7d2-a45e-4d4d-b3cb-b4af65435274
+    equipment:
+      - type: 20FT
+        quantity: 1
+    cargoWeightKg: 18000
   quote_revocation_request:
     reason: Customer requested a corrected quote.
   rate_coverage_request:
@@ -1469,3 +1503,164 @@ scenarios:
         text_contains: "Quotes only calls Equipments through the configured `/admin/service-connections/equipments` diagnostic today"
       - action: read_architecture_snapshot
         text_contains: "QuoteClientRestClient must not forward the caller `Authorization` header"
+  "Replay a quote request with an idempotency key":
+    binding: customer_operations.replay_quote_request_with_idempotency_key
+    status: executable
+    group: customer-operations
+    profiles:
+      - local
+      - azure
+    fixtures:
+      - idempotent_quote_request
+    requires_env:
+      idempotency_key: QUOTES_CONTRACT_IDEMPOTENCY_KEY
+    state_from_env:
+      idempotency_key: QUOTES_CONTRACT_IDEMPOTENCY_KEY
+    actions:
+      - name: create_quote
+        method: POST
+        path: /quotes
+        headers:
+          Idempotency-Key: "{idempotency_key}"
+        body_fixture: idempotent_quote_request
+        save:
+          quote_id: $.id
+          quote_reference: $.quoteReference
+      - name: replay_quote
+        method: POST
+        path: /quotes
+        headers:
+          Idempotency-Key: "{idempotency_key}"
+        body_fixture: idempotent_quote_request
+      - name: list_created_events
+        method: GET
+        path: "/admin/outbox-events?aggregateType=quote&aggregateId={quote_id}&eventType=quote.created&limit=10"
+        auth: admin
+    assertions:
+      - action: create_quote
+        status: 201
+      - action: create_quote
+        path: $.idempotentReplay
+        json_equals: false
+      - action: replay_quote
+        status: 200
+      - action: replay_quote
+        path: $.id
+        json_equals_state: quote_id
+      - action: replay_quote
+        path: $.quoteReference
+        json_equals_state: quote_reference
+      - action: replay_quote
+        path: $.idempotentReplay
+        json_equals: true
+      - action: list_created_events
+        status: 200
+      - action: list_created_events
+        path: $.events.0.aggregateId
+        json_equals_state: quote_id
+      - action: list_created_events
+        json_missing: $.events.1
+  "List stored quotes for a customer portfolio":
+    binding: customer_operations.list_customer_quote_portfolio
+    status: executable
+    group: customer-operations
+    profiles:
+      - local
+      - azure
+    fixtures:
+      - portfolio_first_quote_request
+      - portfolio_second_quote_request
+      - portfolio_other_customer_quote_request
+    actions:
+      - name: create_first_customer_quote
+        method: POST
+        path: /quotes
+        body_fixture: portfolio_first_quote_request
+        save:
+          first_quote_id: $.id
+      - name: create_second_customer_quote
+        method: POST
+        path: /quotes
+        body_fixture: portfolio_second_quote_request
+        save:
+          second_quote_id: $.id
+      - name: create_other_customer_quote
+        method: POST
+        path: /quotes
+        body_fixture: portfolio_other_customer_quote_request
+      - name: list_customer_portfolio
+        method: GET
+        path: "/quotes?customerId=cust-acme&limit=10"
+    assertions:
+      - action: create_first_customer_quote
+        status: 201
+      - action: create_second_customer_quote
+        status: 201
+      - action: create_other_customer_quote
+        status: 201
+      - action: list_customer_portfolio
+        status: 200
+      - action: list_customer_portfolio
+        path: $.quotes.0.id
+        json_equals_state: second_quote_id
+      - action: list_customer_portfolio
+        path: $.quotes.0.customerId
+        json_equals: cust-acme
+      - action: list_customer_portfolio
+        path: $.quotes.1.id
+        json_equals_state: first_quote_id
+      - action: list_customer_portfolio
+        path: $.quotes.1.customerId
+        json_equals: cust-acme
+  "Read a quote lifecycle timeline":
+    binding: customer_operations.read_quote_lifecycle_timeline
+    status: executable
+    group: customer-operations
+    profiles:
+      - local
+      - azure
+    fixtures:
+      - timeline_quote_request
+      - quote_revocation_request
+    actions:
+      - name: create_quote
+        method: POST
+        path: /quotes
+        body_fixture: timeline_quote_request
+        save:
+          quote_id: $.id
+          quote_reference: $.quoteReference
+      - name: revoke_quote
+        method: POST
+        path: /quotes/{quote_id}/revocations
+        auth: admin
+        actor: ops@quotes
+        body_fixture: quote_revocation_request
+      - name: read_timeline
+        method: GET
+        path: /quotes/{quote_reference}/timeline
+    assertions:
+      - action: create_quote
+        status: 201
+      - action: revoke_quote
+        status: 200
+      - action: read_timeline
+        status: 200
+      - action: read_timeline
+        path: $.quoteId
+        json_equals_state: quote_id
+      - action: read_timeline
+        path: $.quoteReference
+        json_equals_state: quote_reference
+      - action: read_timeline
+        path: $.lifecycleState
+        json_equals: VOID
+      - action: read_timeline
+        path: $.events.0.eventType
+        json_equals: quote.created
+      - action: read_timeline
+        path: $.events.1.eventType
+        json_equals: quote.revoked
+      - action: read_timeline
+        path: $.events.1.actor
+        json_equals: ops@quotes

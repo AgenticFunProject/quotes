@@ -51,6 +51,9 @@ EXPECTED_QUOTE_SCENARIOS = [
     "Keep web-page bearer propagation inside the gateway boundary",
     "Verify Azure platform auth settings before deployment sign-off",
     "Keep Booking on public quote validation and Equipments on diagnostics",
+    "Replay a quote request with an idempotency key",
+    "List stored quotes for a customer portfolio",
+    "Read a quote lifecycle timeline",
 ]
 
 FORBIDDEN_SCENARIO_TERMS = [
@@ -132,7 +135,9 @@ def test_readme_current_api_surface_lists_implemented_support_endpoints() -> Non
     for endpoint in [
         "POST /quotes/coverage/validate",
         "POST /quotes/equipment-availability/plan",
+        "GET /quotes",
         "GET /quotes/{quote_id}/explain",
+        "GET /quotes/{quote_id}/timeline",
         "POST /quotes/{quote_id}/approval-decisions",
         "GET /admin/outbox-events",
         "POST /admin/outbox-consumers/{consumerName}/replay",
@@ -173,8 +178,10 @@ def test_spec_endpoint_table_includes_current_workflow_routes() -> None:
     endpoints = _section(spec, "API Endpoints")
 
     for path in [
+        "/quotes | List stored quotes",
         "/quotes/{id}/approval-decisions",
         "/quotes/{id}/revocations",
+        "/quotes/{id}/timeline",
         "/quotes/equipment-availability/plan",
         "/admin/service-connections/equipments",
         "/admin/outbox-events",
@@ -371,6 +378,9 @@ def test_quote_scenario_catalog_has_synced_contract_coverage_matrix() -> None:
         "Keep web-page bearer propagation inside the gateway boundary",
         "Verify Azure platform auth settings before deployment sign-off",
         "Keep Booking on public quote validation and Equipments on diagnostics",
+        "Replay a quote request with an idempotency key",
+        "List stored quotes for a customer portfolio",
+        "Read a quote lifecycle timeline",
     ]
 
 
