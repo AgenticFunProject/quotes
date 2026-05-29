@@ -4,6 +4,6 @@ Feature: Quote service contract scenarios
 
   Scenario: Prefer account contract pricing over customer pricing
     Given both a customer contract and a narrower account contract match the same shipment
-    When a client requests a quote with both customer and account context
+    When the account requests a quote with both customer and account identity
     Then the account contract takes precedence deterministically
     And the resulting quote can differ from the customer-level contract for the same shipment inputs

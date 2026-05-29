@@ -3,7 +3,7 @@ Feature: Quote service contract scenarios
   and documented integration boundaries as business-readable contracts.
 
   Scenario: Apply customer contract pricing with surcharge waivers
-    Given the service stores seeded customer contract rules for the Rotterdam to New York lane
-    When a client requests a quote with customer context for that lane
-    Then the API prices the shipment from the matched contract instead of the public tariff
-    And the stored quote records the matched contract basis and waived surcharge types
+    Given a customer contract covers the Rotterdam to New York lane
+    When a customer requests a quote for that contract lane
+    Then the quote uses the matched customer contract instead of the public tariff
+    And the pricing explanation records the customer contract and waived surcharge types

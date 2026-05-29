@@ -342,36 +342,7 @@ def test_quote_scenario_catalog_has_synced_contract_coverage_matrix() -> None:
         for scenario_name, binding in binding_scenarios.items()
         if binding["status"] == "executable"
     ]
-    assert executable == [
-        "Create a quote on a seeded peak-season lane",
-        "Retrieve a stored quote",
-        "Validate whether a stored quote can still be booked",
-        "Validate rate coverage before requesting a quote",
-        "Plan equipment availability with explicit substitution suggestions",
-        "Persist quote lifecycle events in the outbox",
-        "Revoke an issued quote and block booking reuse",
-        "Request a quote for a seeded schedule without an effective rate",
-        "Create, update, and activate a managed rate-table version",
-        "Create, update, and activate a managed surcharge-rule version",
-        "Require platform bearer authorization for commercial admin changes",
-        "Check Equipments service connectivity",
-        "Record an audit trail for managed commercial changes",
-        "Publish managed commercial changes to the outbox",
-        "Replay outbox events for a named downstream consumer",
-        "Analyze quote impact for schedule or contract changes",
-        "Preview quote pricing with draft managed commercial data",
-        "Reprice an existing quote and explain the commercial variance",
-        "Return multiple commercial options for one quote request",
-        "Bound alternative options on quote creation",
-        "Accept Users-issued Quotes-audience platform tokens for protected operations",
-        "Accept gateway-issued Quotes-audience platform tokens for protected operations",
-        "Reject missing or invalid protected-route bearer tokens",
-        "Reject valid tokens without the required Quotes scope",
-        "Resolve role=admin compatibility before implementation",
-        "Keep web-page bearer propagation inside the gateway boundary",
-        "Verify Azure platform auth settings before deployment sign-off",
-        "Keep Booking on public quote validation and Equipments on diagnostics",
-    ]
+    assert executable == EXPECTED_QUOTE_SCENARIOS
 
 
 def test_quote_scenario_sections_have_concrete_gherkin_shape() -> None:

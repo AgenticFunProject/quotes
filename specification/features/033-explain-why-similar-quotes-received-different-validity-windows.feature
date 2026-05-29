@@ -6,5 +6,5 @@ Feature: Quote service contract scenarios
     Given one stored quote matched an account validity policy
     And another stored quote matched the high-volatility market validity policy
     When support reviews the stored quote and pricing explanation for each quote
-    Then each payload exposes the stored `pricingProvenance.validityPolicy` snapshot
-    And support can compare the policy identifier, matched inputs, and resulting `validUntil` values without recomputing current policy rules
+    Then each explanation exposes the stored validity policy snapshot
+    And support can compare the policy identifier, matched inputs, and resulting validity windows without recomputing current policy rules

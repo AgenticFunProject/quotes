@@ -8,4 +8,4 @@ Feature: Quote service contract scenarios
     Then the service stores the quote in a pending approval state instead of issuing it directly
     And the stored quote records the exact approval reasons that must be reviewed
     And the quote is not bookable while it remains pending approval
-    And the quote-created outbox event captures the pending lifecycle state and approval reasons
+    And the quote-created event captures the pending lifecycle state and approval reasons

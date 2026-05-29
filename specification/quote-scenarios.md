@@ -51,31 +51,31 @@ dry-run, and run against configured service profiles.
 | Persist quote lifecycle events in the outbox | `lifecycle.persist_quote_lifecycle_events` |
 | Revoke an issued quote and block booking reuse | `smoke.revoke_quote_blocks_booking_reuse` |
 | Request a quote for a seeded schedule without an effective rate | `readiness.request_quote_without_effective_rate` |
-| Apply customer contract pricing with surcharge waivers | `planned.apply_customer_contract_pricing` |
-| Prefer account contract pricing over customer pricing | `planned.prefer_account_contract_pricing` |
+| Apply customer contract pricing with surcharge waivers | `pricing.apply_customer_contract_pricing` |
+| Prefer account contract pricing over customer pricing | `pricing.prefer_account_contract_pricing` |
 | Create, update, and activate a managed rate-table version | `admin.manage_rate_table_version` |
 | Create, update, and activate a managed surcharge-rule version | `admin.manage_surcharge_rule_version` |
 | Require platform bearer authorization for commercial admin changes | `auth.require_admin_authorization` |
-| Require platform bearer authorization for quote approval decisions | `planned.require_approval_authorization` |
+| Require platform bearer authorization for quote approval decisions | `auth.require_approval_authorization` |
 | Check Equipments service connectivity | `diagnostics.check_equipments_connectivity` |
 | Record an audit trail for managed commercial changes | `admin.record_commercial_audit_trail` |
 | Publish managed commercial changes to the outbox | `admin.publish_commercial_changes_to_outbox` |
 | Replay outbox events for a named downstream consumer | `admin.replay_outbox_events` |
 | Analyze quote impact for schedule or contract changes | `admin.analyze_quote_impact` |
 | Preview quote pricing with draft managed commercial data | `admin.preview_quote_pricing` |
-| Return a quote in a requested display currency | `planned.return_requested_display_currency` |
-| Use approved market pricing when the client hints MARKET | `planned.use_approved_market_pricing` |
-| Fall back from MARKET to contract or tariff pricing when market coverage is missing | `planned.fall_back_from_market_pricing` |
-| Explain why a quote used market or fallback pricing | `planned.explain_pricing_basis` |
+| Return a quote in a requested display currency | `pricing.return_requested_display_currency` |
+| Use approved market pricing when the client hints MARKET | `pricing.use_approved_market_pricing` |
+| Fall back from MARKET to contract or tariff pricing when market coverage is missing | `pricing.fall_back_from_market_pricing` |
+| Explain why a quote used market or fallback pricing | `pricing.explain_pricing_basis` |
 | Reprice an existing quote and explain the commercial variance | `pricing.reprice_existing_quote` |
 | Return multiple commercial options for one quote request | `pricing.return_multiple_commercial_options` |
 | Bound alternative options on quote creation | `pricing.bound_alternative_options` |
-| Hold a quote for manual approval when commercial guardrails are exceeded | `planned.hold_quote_for_manual_approval` |
-| Approve a previously held quote without changing the reviewed commercial snapshot | `planned.approve_held_quote` |
-| Reject a previously held quote and preserve the review trail | `planned.reject_held_quote` |
-| Derive quote validity from a customer-specific policy | `planned.derive_customer_specific_validity` |
-| Derive shorter quote validity from high-volatility market pricing | `planned.derive_market_validity` |
-| Explain why similar quotes received different validity windows | `planned.explain_validity_differences` |
+| Hold a quote for manual approval when commercial guardrails are exceeded | `approval.hold_quote_for_manual_approval` |
+| Approve a previously held quote without changing the reviewed commercial snapshot | `approval.approve_held_quote` |
+| Reject a previously held quote and preserve the review trail | `approval.reject_held_quote` |
+| Derive quote validity from a customer-specific policy | `validity.derive_customer_specific_validity` |
+| Derive shorter quote validity from high-volatility market pricing | `validity.derive_market_validity` |
+| Explain why similar quotes received different validity windows | `validity.explain_validity_differences` |
 | Accept Users-issued Quotes-audience platform tokens for protected operations | `auth.accept_users_issued_tokens` |
 | Accept gateway-issued Quotes-audience platform tokens for protected operations | `auth.accept_gateway_issued_tokens` |
 | Reject missing or invalid protected-route bearer tokens | `auth.reject_missing_or_invalid_tokens` |

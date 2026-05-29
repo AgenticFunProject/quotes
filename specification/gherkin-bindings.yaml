@@ -237,8 +237,56 @@ fixtures:
     cargoWeightKg: 18000
     includeAlternativeOptions: true
     maxAlternativeOptions: 11
+  customer_contract_quote_request:
+    scheduleId: df62a7d2-a45e-4d4d-b3cb-b4af65435274
+    customerId: cust-acme
+    equipment:
+      - type: 20FT
+        quantity: 1
+    cargoWeightKg: 18000
+  account_contract_quote_request:
+    scheduleId: df62a7d2-a45e-4d4d-b3cb-b4af65435274
+    customerId: cust-acme
+    accountId: acct-acme-premium
+    equipment:
+      - type: 20FT
+        quantity: 1
+    cargoWeightKg: 18000
+  display_currency_quote_request:
+    scheduleId: df62a7d2-a45e-4d4d-b3cb-b4af65435274
+    equipment:
+      - type: 20FT
+        quantity: 1
+    cargoWeightKg: 18000
+    currency: EUR
+  market_pricing_quote_request:
+    scheduleId: df62a7d2-a45e-4d4d-b3cb-b4af65435274
+    pricingModeHint: MARKET
+    equipment:
+      - type: 20FT
+        quantity: 1
+    cargoWeightKg: 18000
+  market_fallback_quote_request:
+    scheduleId: df62a7d2-a45e-4d4d-b3cb-b4af65435274
+    customerId: cust-acme
+    pricingModeHint: MARKET
+    equipment:
+      - type: 20FT
+        quantity: 1
+    cargoWeightKg: 18000
+  high_risk_market_quote_request:
+    scheduleId: df62a7d2-a45e-4d4d-b3cb-b4af65435274
+    pricingModeHint: MARKET
+    equipment:
+      - type: 20FT
+        quantity: 1
+    cargoWeightKg: 18000
   approval_decision_request:
     decision: APPROVE
+    note: Market conditions reviewed and accepted.
+  approval_rejection_request:
+    decision: REJECT
+    note: Margin does not support this offer.
 scenarios:
   "Create a quote on a seeded peak-season lane":
     binding: smoke.create_peak_season_quote
@@ -513,21 +561,86 @@ scenarios:
         path: $.detail
         json_equals: No rate available for 20FT on selected schedule
   "Apply customer contract pricing with surcharge waivers":
-    binding: planned.apply_customer_contract_pricing
-    status: planned
+    binding: pricing.apply_customer_contract_pricing
+    status: executable
     group: pricing
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    fixtures:
+      - customer_contract_quote_request
+    actions:
+      - name: create_customer_contract_quote
+        method: POST
+        path: /quotes
+        body_fixture: customer_contract_quote_request
+        save:
+          quote_id: $.id
+      - name: explain_customer_contract_quote
+        method: GET
+        path: /quotes/{quote_id}/explain
+    assertions:
+      - action: create_customer_contract_quote
+        status: 201
+      - action: create_customer_contract_quote
+        path: $.totalAmount
+        json_equals: 930.0
+      - action: explain_customer_contract_quote
+        status: 200
+      - action: explain_customer_contract_quote
+        path: $.pricingBasis
+        json_equals: CONTRACT
+      - action: explain_customer_contract_quote
+        path: $.contractId
+        json_equals: 7c9cc0a4-bd6d-4e6f-9c1c-e5c3a1300001
+      - action: explain_customer_contract_quote
+        path: $.pricingProvenance.contract.matchType
+        json_equals: CUSTOMER
+      - action: explain_customer_contract_quote
+        path: $.pricingProvenance.contract.waivedSurchargeTypes.0
+        json_equals: PEAK_SEASON
   "Prefer account contract pricing over customer pricing":
-    binding: planned.prefer_account_contract_pricing
-    status: planned
+    binding: pricing.prefer_account_contract_pricing
+    status: executable
     group: pricing
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    fixtures:
+      - account_contract_quote_request
+    actions:
+      - name: create_account_contract_quote
+        method: POST
+        path: /quotes
+        body_fixture: account_contract_quote_request
+        save:
+          quote_id: $.id
+      - name: explain_account_contract_quote
+        method: GET
+        path: /quotes/{quote_id}/explain
+    assertions:
+      - action: create_account_contract_quote
+        status: 201
+      - action: create_account_contract_quote
+        path: $.totalAmount
+        json_equals: 800.0
+      - action: explain_account_contract_quote
+        status: 200
+      - action: explain_account_contract_quote
+        path: $.pricingBasis
+        json_equals: CONTRACT
+      - action: explain_account_contract_quote
+        path: $.contractId
+        json_equals: 7c9cc0a4-bd6d-4e6f-9c1c-e5c3a1300002
+      - action: explain_account_contract_quote
+        path: $.pricingProvenance.contract.matchType
+        json_equals: ACCOUNT
+      - action: explain_account_contract_quote
+        path: $.pricingProvenance.contract.waivedSurchargeTypes.0
+        json_equals: BAF
+      - action: explain_account_contract_quote
+        path: $.pricingProvenance.contract.waivedSurchargeTypes.1
+        json_equals: PEAK_SEASON
   "Create, update, and activate a managed rate-table version":
     binding: admin.manage_rate_table_version
     status: executable
@@ -698,13 +811,53 @@ scenarios:
         path: $.createdBy
         json_equals: pricing.ops@quotes
   "Require platform bearer authorization for quote approval decisions":
-    binding: planned.require_approval_authorization
-    status: planned
+    binding: auth.require_approval_authorization
+    status: executable
     group: auth
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    requires_env:
+      approval_quote_id: QUOTES_CONTRACT_APPROVAL_QUOTE_ID
+      admin_token: admin
+      approve_token: approve
+    state_from_env:
+      approval_quote_id: QUOTES_CONTRACT_APPROVAL_QUOTE_ID
+    fixtures:
+      - approval_decision_request
+    actions:
+      - name: reject_missing_token
+        method: POST
+        path: /quotes/{approval_quote_id}/approval-decisions
+        body_fixture: approval_decision_request
+      - name: reject_wrong_scope
+        method: POST
+        path: /quotes/{approval_quote_id}/approval-decisions
+        auth: admin
+        actor: pricing.manager@quotes
+        body_fixture: approval_decision_request
+      - name: accept_approval_token
+        method: POST
+        path: /quotes/{approval_quote_id}/approval-decisions
+        auth: approve
+        actor: pricing.manager@quotes
+        body_fixture: approval_decision_request
+    assertions:
+      - action: reject_missing_token
+        status: 401
+      - action: reject_wrong_scope
+        status: 403
+      - action: accept_approval_token
+        status: 200
+      - action: accept_approval_token
+        path: $.lifecycleState
+        json_equals: APPROVED
+      - action: accept_approval_token
+        path: $.approvalDecision.decision
+        json_equals: APPROVE
+      - action: accept_approval_token
+        path: $.approvalDecision.actor
+        json_equals: pricing.manager@quotes
   "Check Equipments service connectivity":
     binding: diagnostics.check_equipments_connectivity
     status: executable
@@ -1026,37 +1179,163 @@ scenarios:
         path: $.pricingProvenance.appliedSurchargeRules.1.surchargeRuleVersion
         json_equals: 2
   "Return a quote in a requested display currency":
-    binding: planned.return_requested_display_currency
-    status: planned
+    binding: pricing.return_requested_display_currency
+    status: executable
     group: pricing
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    fixtures:
+      - display_currency_quote_request
+    actions:
+      - name: create_display_currency_quote
+        method: POST
+        path: /quotes
+        body_fixture: display_currency_quote_request
+        save:
+          quote_id: $.id
+      - name: read_display_currency_quote
+        method: GET
+        path: /quotes/{quote_id}
+    assertions:
+      - action: create_display_currency_quote
+        status: 201
+      - action: create_display_currency_quote
+        path: $.sourceCurrency
+        json_equals: USD
+      - action: create_display_currency_quote
+        path: $.responseCurrency
+        json_equals: EUR
+      - action: create_display_currency_quote
+        path: $.sourceTotalAmount
+        json_equals: 1300.0
+      - action: create_display_currency_quote
+        path: $.totalAmount
+        json_equals: 1196.0
+      - action: read_display_currency_quote
+        status: 200
+      - action: read_display_currency_quote
+        path: $.pricingProvenance.currencyConversion.quoteCurrency
+        json_equals: EUR
+      - action: read_display_currency_quote
+        path: $.pricingProvenance.currencyConversion.rate
+        json_equals: 0.92
+      - action: read_display_currency_quote
+        path: $.pricingProvenance.currencyConversion.roundingPolicy
+        json_equals: LINE_ITEM_HALF_UP_2DP
   "Use approved market pricing when the client hints MARKET":
-    binding: planned.use_approved_market_pricing
-    status: planned
+    binding: pricing.use_approved_market_pricing
+    status: executable
     group: pricing
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    fixtures:
+      - market_pricing_quote_request
+    actions:
+      - name: create_market_quote
+        method: POST
+        path: /quotes
+        body_fixture: market_pricing_quote_request
+        save:
+          quote_id: $.id
+      - name: explain_market_quote
+        method: GET
+        path: /quotes/{quote_id}/explain
+    assertions:
+      - action: create_market_quote
+        status: 201
+      - action: create_market_quote
+        path: $.totalAmount
+        json_equals: 1435.0
+      - action: explain_market_quote
+        status: 200
+      - action: explain_market_quote
+        path: $.pricingBasis
+        json_equals: MARKET
+      - action: explain_market_quote
+        path: $.marketSource
+        json_equals: approved-spot-market-feed
+      - action: explain_market_quote
+        path: $.optimizationTrace.decision
+        json_equals: CLIENT_HINT_MARKET
+      - action: explain_market_quote
+        path: $.pricingProvenance.baseRateRules.0.marketRateSnapshotId
+        json_equals: market-nlrtm-usnyc-20ft
   "Fall back from MARKET to contract or tariff pricing when market coverage is missing":
-    binding: planned.fall_back_from_market_pricing
-    status: planned
+    binding: pricing.fall_back_from_market_pricing
+    status: executable
     group: pricing
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    requires_env:
+      market_fallback_data: QUOTES_CONTRACT_MARKET_FALLBACK_DATA_READY
+    fixtures:
+      - market_fallback_quote_request
+    actions:
+      - name: create_market_fallback_quote
+        method: POST
+        path: /quotes
+        body_fixture: market_fallback_quote_request
+        save:
+          quote_id: $.id
+      - name: explain_market_fallback_quote
+        method: GET
+        path: /quotes/{quote_id}/explain
+    assertions:
+      - action: create_market_fallback_quote
+        status: 201
+      - action: create_market_fallback_quote
+        path: $.totalAmount
+        json_equals: 930.0
+      - action: explain_market_fallback_quote
+        status: 200
+      - action: explain_market_fallback_quote
+        path: $.pricingBasis
+        json_equals: CONTRACT
+      - action: explain_market_fallback_quote
+        path: $.optimizationTrace.decision
+        json_equals: MARKET_UNAVAILABLE_FALLBACK
+      - action: explain_market_fallback_quote
+        path: $.optimizationTrace.fallbackPricingBasis
+        json_equals: CONTRACT
   "Explain why a quote used market or fallback pricing":
-    binding: planned.explain_pricing_basis
-    status: planned
+    binding: pricing.explain_pricing_basis
+    status: executable
     group: pricing
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    fixtures:
+      - market_pricing_quote_request
+    actions:
+      - name: create_explained_market_quote
+        method: POST
+        path: /quotes
+        body_fixture: market_pricing_quote_request
+        save:
+          quote_id: $.id
+      - name: explain_pricing_basis
+        method: GET
+        path: /quotes/{quote_id}/explain
+    assertions:
+      - action: create_explained_market_quote
+        status: 201
+      - action: explain_pricing_basis
+        status: 200
+      - action: explain_pricing_basis
+        path: $.pricingBasis
+        json_equals: MARKET
+      - action: explain_pricing_basis
+        path: $.marketSource
+        json_equals: approved-spot-market-feed
+      - action: explain_pricing_basis
+        path: $.optimizationTrace.selectedPricingBasis
+        json_equals: MARKET
+      - action: explain_pricing_basis
+        path: $.pricingProvenance.marketSource
+        json_equals: approved-spot-market-feed
   "Reprice an existing quote and explain the commercial variance":
     binding: pricing.reprice_existing_quote
     status: executable
@@ -1208,53 +1487,337 @@ scenarios:
       - action: reject_too_many_alternatives
         status: 422
   "Hold a quote for manual approval when commercial guardrails are exceeded":
-    binding: planned.hold_quote_for_manual_approval
-    status: planned
+    binding: approval.hold_quote_for_manual_approval
+    status: executable
     group: approval
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    requires_env:
+      high_risk_market_data: QUOTES_CONTRACT_HIGH_RISK_MARKET_DATA_READY
+      admin_token: admin
+    fixtures:
+      - high_risk_market_quote_request
+    actions:
+      - name: create_high_risk_market_quote
+        method: POST
+        path: /quotes
+        body_fixture: high_risk_market_quote_request
+        save:
+          quote_id: $.id
+      - name: check_pending_bookability
+        method: GET
+        path: /quotes/{quote_id}/bookability
+      - name: list_quote_created_event
+        method: GET
+        path: /admin/outbox-events?aggregateType=quote&aggregateId={quote_id}&eventType=quote.created
+        auth: admin
+        actor: ops@quotes
+    assertions:
+      - action: create_high_risk_market_quote
+        status: 201
+      - action: create_high_risk_market_quote
+        path: $.lifecycleState
+        json_equals: PENDING_APPROVAL
+      - action: create_high_risk_market_quote
+        path: $.approvalReasons.0.code
+        json_equals: MARKET_CAPACITY_PRESSURE_THRESHOLD_EXCEEDED
+      - action: create_high_risk_market_quote
+        path: $.approvalReasons.1.code
+        json_equals: MARKET_UTILIZATION_THRESHOLD_EXCEEDED
+      - action: create_high_risk_market_quote
+        path: $.approvalDecision
+        json_equals: null
+      - action: check_pending_bookability
+        status: 200
+      - action: check_pending_bookability
+        path: $.bookable
+        json_equals: false
+      - action: check_pending_bookability
+        path: $.status
+        json_equals: PENDING_APPROVAL
+      - action: check_pending_bookability
+        path: $.reason
+        json_equals: APPROVAL_PENDING
+      - action: list_quote_created_event
+        status: 200
+      - action: list_quote_created_event
+        path: $.events.0.payload.lifecycleState
+        json_equals: PENDING_APPROVAL
+      - action: list_quote_created_event
+        path: $.events.0.payload.approvalReasons.0.code
+        json_equals: MARKET_CAPACITY_PRESSURE_THRESHOLD_EXCEEDED
   "Approve a previously held quote without changing the reviewed commercial snapshot":
-    binding: planned.approve_held_quote
-    status: planned
+    binding: approval.approve_held_quote
+    status: executable
     group: approval
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    requires_env:
+      high_risk_market_data: QUOTES_CONTRACT_HIGH_RISK_MARKET_DATA_READY
+      approve_token: approve
+      admin_token: admin
+    fixtures:
+      - high_risk_market_quote_request
+      - approval_decision_request
+    actions:
+      - name: create_held_quote
+        method: POST
+        path: /quotes
+        body_fixture: high_risk_market_quote_request
+        save:
+          quote_id: $.id
+      - name: approve_held_quote
+        method: POST
+        path: /quotes/{quote_id}/approval-decisions
+        auth: approve
+        actor: pricing.manager@quotes
+        body_fixture: approval_decision_request
+      - name: check_approved_bookability
+        method: GET
+        path: /quotes/{quote_id}/bookability
+      - name: list_quote_approved_event
+        method: GET
+        path: /admin/outbox-events?aggregateType=quote&aggregateId={quote_id}&eventType=quote.approved
+        auth: admin
+        actor: ops@quotes
+    assertions:
+      - action: create_held_quote
+        status: 201
+      - action: create_held_quote
+        path: $.lifecycleState
+        json_equals: PENDING_APPROVAL
+      - action: approve_held_quote
+        status: 200
+      - action: approve_held_quote
+        path: $.lifecycleState
+        json_equals: APPROVED
+      - action: approve_held_quote
+        path: $.approvalDecision.decision
+        json_equals: APPROVE
+      - action: approve_held_quote
+        path: $.approvalDecision.actor
+        json_equals: pricing.manager@quotes
+      - action: approve_held_quote
+        path: $.pricingProvenance.baseRateRules.0.marketRateSnapshotId
+        json_equals: market-nlrtm-usnyc-20ft
+      - action: check_approved_bookability
+        status: 200
+      - action: check_approved_bookability
+        path: $.bookable
+        json_equals: true
+      - action: check_approved_bookability
+        path: $.status
+        json_equals: ACTIVE
+      - action: list_quote_approved_event
+        status: 200
+      - action: list_quote_approved_event
+        path: $.events.0.payload.approvalDecision.decision
+        json_equals: APPROVE
   "Reject a previously held quote and preserve the review trail":
-    binding: planned.reject_held_quote
-    status: planned
+    binding: approval.reject_held_quote
+    status: executable
     group: approval
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    requires_env:
+      high_risk_market_data: QUOTES_CONTRACT_HIGH_RISK_MARKET_DATA_READY
+      approve_token: approve
+    fixtures:
+      - high_risk_market_quote_request
+      - approval_rejection_request
+    actions:
+      - name: create_held_quote
+        method: POST
+        path: /quotes
+        body_fixture: high_risk_market_quote_request
+        save:
+          quote_id: $.id
+      - name: reject_held_quote
+        method: POST
+        path: /quotes/{quote_id}/approval-decisions
+        auth: approve
+        actor: pricing.manager@quotes
+        body_fixture: approval_rejection_request
+      - name: check_rejected_bookability
+        method: GET
+        path: /quotes/{quote_id}/bookability
+      - name: read_rejected_quote
+        method: GET
+        path: /quotes/{quote_id}
+    assertions:
+      - action: create_held_quote
+        status: 201
+      - action: create_held_quote
+        path: $.lifecycleState
+        json_equals: PENDING_APPROVAL
+      - action: reject_held_quote
+        status: 200
+      - action: reject_held_quote
+        path: $.lifecycleState
+        json_equals: REJECTED
+      - action: reject_held_quote
+        path: $.approvalDecision.decision
+        json_equals: REJECT
+      - action: reject_held_quote
+        path: $.approvalDecision.note
+        json_equals: Margin does not support this offer.
+      - action: check_rejected_bookability
+        status: 200
+      - action: check_rejected_bookability
+        path: $.bookable
+        json_equals: false
+      - action: check_rejected_bookability
+        path: $.reason
+        json_equals: APPROVAL_REJECTED
+      - action: read_rejected_quote
+        status: 200
+      - action: read_rejected_quote
+        path: $.approvalReasons.0.code
+        json_equals: MARKET_CAPACITY_PRESSURE_THRESHOLD_EXCEEDED
+      - action: read_rejected_quote
+        path: $.approvalDecision.actor
+        json_equals: pricing.manager@quotes
   "Derive quote validity from a customer-specific policy":
-    binding: planned.derive_customer_specific_validity
-    status: planned
+    binding: validity.derive_customer_specific_validity
+    status: executable
     group: validity
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    fixtures:
+      - account_contract_quote_request
+    actions:
+      - name: create_account_validity_quote
+        method: POST
+        path: /quotes
+        body_fixture: account_contract_quote_request
+        save:
+          quote_id: $.id
+      - name: explain_account_validity_quote
+        method: GET
+        path: /quotes/{quote_id}/explain
+      - name: check_account_validity_bookability
+        method: GET
+        path: /quotes/{quote_id}/bookability
+    assertions:
+      - action: create_account_validity_quote
+        status: 201
+      - action: explain_account_validity_quote
+        status: 200
+      - action: explain_account_validity_quote
+        path: $.pricingProvenance.validityPolicy.policyId
+        json_equals: validity-account-acme-premium-14d
+      - action: explain_account_validity_quote
+        path: $.pricingProvenance.validityPolicy.validityHours
+        json_equals: 336
+      - action: explain_account_validity_quote
+        path: $.pricingProvenance.validityPolicy.matchedOn.accountId
+        json_equals: acct-acme-premium
+      - action: explain_account_validity_quote
+        path: $.pricingProvenance.validityPolicy.selectionContext.pricingBasis
+        json_equals: CONTRACT
+      - action: check_account_validity_bookability
+        status: 200
+      - action: check_account_validity_bookability
+        path: $.bookable
+        json_equals: true
   "Derive shorter quote validity from high-volatility market pricing":
-    binding: planned.derive_market_validity
-    status: planned
+    binding: validity.derive_market_validity
+    status: executable
     group: validity
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    fixtures:
+      - market_pricing_quote_request
+    actions:
+      - name: create_market_validity_quote
+        method: POST
+        path: /quotes
+        body_fixture: market_pricing_quote_request
+        save:
+          quote_id: $.id
+      - name: explain_market_validity_quote
+        method: GET
+        path: /quotes/{quote_id}/explain
+      - name: check_market_validity_bookability
+        method: GET
+        path: /quotes/{quote_id}/bookability
+    assertions:
+      - action: create_market_validity_quote
+        status: 201
+      - action: explain_market_validity_quote
+        status: 200
+      - action: explain_market_validity_quote
+        path: $.pricingProvenance.validityPolicy.policyId
+        json_equals: validity-volatile-market-12h
+      - action: explain_market_validity_quote
+        path: $.pricingProvenance.validityPolicy.validityHours
+        json_equals: 12
+      - action: explain_market_validity_quote
+        path: $.pricingProvenance.validityPolicy.matchedOn.pricingBasis
+        json_equals: MARKET
+      - action: explain_market_validity_quote
+        path: $.pricingProvenance.validityPolicy.matchedOn.marketSignals.utilizationIndex
+        json_equals: 0.81
+      - action: check_market_validity_bookability
+        status: 200
+      - action: check_market_validity_bookability
+        path: $.bookable
+        json_equals: true
   "Explain why similar quotes received different validity windows":
-    binding: planned.explain_validity_differences
-    status: planned
+    binding: validity.explain_validity_differences
+    status: executable
     group: validity
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    fixtures:
+      - account_contract_quote_request
+      - market_pricing_quote_request
+    actions:
+      - name: create_account_validity_quote
+        method: POST
+        path: /quotes
+        body_fixture: account_contract_quote_request
+        save:
+          account_quote_id: $.id
+      - name: create_market_validity_quote
+        method: POST
+        path: /quotes
+        body_fixture: market_pricing_quote_request
+        save:
+          market_quote_id: $.id
+      - name: explain_account_validity_quote
+        method: GET
+        path: /quotes/{account_quote_id}/explain
+      - name: explain_market_validity_quote
+        method: GET
+        path: /quotes/{market_quote_id}/explain
+    assertions:
+      - action: create_account_validity_quote
+        status: 201
+      - action: create_market_validity_quote
+        status: 201
+      - action: explain_account_validity_quote
+        status: 200
+      - action: explain_account_validity_quote
+        path: $.pricingProvenance.validityPolicy.policyId
+        json_equals: validity-account-acme-premium-14d
+      - action: explain_account_validity_quote
+        path: $.pricingProvenance.validityPolicy.validityHours
+        json_equals: 336
+      - action: explain_market_validity_quote
+        status: 200
+      - action: explain_market_validity_quote
+        path: $.pricingProvenance.validityPolicy.policyId
+        json_equals: validity-volatile-market-12h
+      - action: explain_market_validity_quote
+        path: $.pricingProvenance.validityPolicy.validityHours
+        json_equals: 12
   "Accept Users-issued Quotes-audience platform tokens for protected operations":
     binding: auth.accept_users_issued_tokens
     status: executable

@@ -45,6 +45,21 @@ COMMERCIAL_ADMIN_SCENARIOS = [
     "Analyze quote impact for schedule or contract changes",
     "Preview quote pricing with draft managed commercial data",
 ]
+PRICING_APPROVAL_VALIDITY_SCENARIOS = [
+    "Apply customer contract pricing with surcharge waivers",
+    "Prefer account contract pricing over customer pricing",
+    "Return a quote in a requested display currency",
+    "Use approved market pricing when the client hints MARKET",
+    "Fall back from MARKET to contract or tariff pricing when market coverage is missing",
+    "Explain why a quote used market or fallback pricing",
+    "Hold a quote for manual approval when commercial guardrails are exceeded",
+    "Require platform bearer authorization for quote approval decisions",
+    "Approve a previously held quote without changing the reviewed commercial snapshot",
+    "Reject a previously held quote and preserve the review trail",
+    "Derive quote validity from a customer-specific policy",
+    "Derive shorter quote validity from high-volatility market pricing",
+    "Explain why similar quotes received different validity windows",
+]
 AUTH_DEPLOYMENT_BOUNDARY_SCENARIOS = [
     "Accept Users-issued Quotes-audience platform tokens for protected operations",
     "Accept gateway-issued Quotes-audience platform tokens for protected operations",
@@ -59,6 +74,7 @@ EXECUTABLE_SCENARIOS = [
     *SMOKE_SCENARIOS,
     *PUBLIC_LIFECYCLE_SCENARIOS,
     *COMMERCIAL_ADMIN_SCENARIOS,
+    *PRICING_APPROVAL_VALIDITY_SCENARIOS,
     *AUTH_DEPLOYMENT_BOUNDARY_SCENARIOS,
 ]
 
@@ -149,7 +165,7 @@ def test_contract_cli_validates_binding_coverage() -> None:
 
     assert result.returncode == 0, result.stderr
     assert "gherkin-contract: verified 41 scenarios" in result.stdout
-    assert "28 executable bindings" in result.stdout
+    assert "41 executable bindings" in result.stdout
     for scenario in EXECUTABLE_SCENARIOS:
         assert scenario in result.stdout
 
@@ -315,6 +331,78 @@ def test_commercial_admin_groups_dry_run_without_service() -> None:
 
         assert result.returncode == 0, result.stderr
         assert f"dry-run: local {group}" in result.stdout
+
+
+def test_pricing_approval_validity_bindings_define_executable_business_steps() -> None:
+    document = yaml.safe_load(BINDINGS.read_text())
+    scenarios = document["scenarios"]
+    expected_env_gates = {
+        "Fall back from MARKET to contract or tariff pricing when market coverage is missing": {
+            "QUOTES_CONTRACT_MARKET_FALLBACK_DATA_READY",
+        },
+        "Require platform bearer authorization for quote approval decisions": {
+            "QUOTES_CONTRACT_APPROVAL_QUOTE_ID",
+            "admin",
+            "approve",
+        },
+        "Hold a quote for manual approval when commercial guardrails are exceeded": {
+            "QUOTES_CONTRACT_HIGH_RISK_MARKET_DATA_READY",
+            "admin",
+        },
+        "Approve a previously held quote without changing the reviewed commercial snapshot": {
+            "QUOTES_CONTRACT_HIGH_RISK_MARKET_DATA_READY",
+            "admin",
+            "approve",
+        },
+        "Reject a previously held quote and preserve the review trail": {
+            "QUOTES_CONTRACT_HIGH_RISK_MARKET_DATA_READY",
+            "approve",
+        },
+    }
+
+    for scenario in PRICING_APPROVAL_VALIDITY_SCENARIOS:
+        binding = scenarios[scenario]
+        assert binding["status"] == "executable"
+        assert not binding["binding"].startswith("planned.")
+        assert "local" in binding["profiles"]
+        assert binding["fixtures"] or binding.get("requires_env")
+        assert binding["actions"]
+        assert binding["assertions"]
+        assert expected_env_gates.get(scenario, set()).issubset(set(binding.get("requires_env", {}).values()))
+
+
+def test_pricing_approval_validity_bindings_dry_run_without_service() -> None:
+    for scenario in PRICING_APPROVAL_VALIDITY_SCENARIOS:
+        result = _run_contract_command(
+            "run",
+            "--features",
+            str(FEATURES),
+            "--bindings",
+            str(BINDINGS),
+            "--profile",
+            "local",
+            "--scenario",
+            scenario,
+            "--dry-run",
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert f"DRY-RUN {scenario}" in result.stdout
+
+    gated_result = _run_contract_command(
+        "run",
+        "--features",
+        str(FEATURES),
+        "--bindings",
+        str(BINDINGS),
+        "--profile",
+        "local",
+        "--scenario",
+        "Hold a quote for manual approval when commercial guardrails are exceeded",
+        "--dry-run",
+    )
+
+    assert "QUOTES_CONTRACT_HIGH_RISK_MARKET_DATA_READY" in gated_result.stdout
 
 
 def test_azure_profile_resolves_auth_gates_to_azure_token_env_names() -> None:

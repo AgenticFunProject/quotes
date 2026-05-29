@@ -4,9 +4,9 @@ Feature: Quote service contract scenarios
 
   Scenario: Require platform bearer authorization for quote approval decisions
     Given a quote is waiting in a pending approval state
-    When a client attempts to approve or reject it without a bearer token
-    Then the API rejects the request as unauthenticated
-    And when the bearer token is valid but lacks `quotes:approve`
-    Then the API rejects the request as unauthorized
-    And when the bearer token has `quotes:approve`
-    Then the API records the approval decision using `X-Actor` or the token subject as the approver identity
+    When an approval decision arrives without platform bearer authorization
+    Then the service rejects the decision as unauthenticated
+    And when the bearer token lacks the quotes:approve permission
+    Then the service rejects the decision as unauthorized
+    And when the bearer token includes the quotes:approve permission
+    Then the service records the approval decision with the approver identity
