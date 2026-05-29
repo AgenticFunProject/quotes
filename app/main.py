@@ -2134,6 +2134,51 @@ def _serialize_quote_options(
     }
 
 
+def _build_created_quote_options(
+    *,
+    payload: CreateQuoteRequest,
+    quote: Quote,
+    db: Session,
+    schedule_provider: ScheduleProvider,
+) -> dict[str, object]:
+    schedule = _get_schedule(payload.schedule_id, schedule_provider)
+    rates_by_type = _load_rate_table(
+        db=db,
+        schedule=schedule,
+        equipment_types={item.type for item in payload.equipment},
+    )
+    surcharge_rules = _load_active_surcharge_rules(db)
+    pricing_candidates = _build_pricing_candidates(
+        db=db,
+        payload=payload,
+        schedule=schedule,
+        public_rates_by_type=rates_by_type,
+        surcharge_rules=surcharge_rules,
+    )
+    primary_pricing = pricing_candidates[quote.pricing_basis]
+    quote_validities = {
+        pricing_basis: _resolve_quote_validity(
+            db=db,
+            payload=payload,
+            pricing=pricing,
+            created_at=quote.created_at,
+        )
+        for pricing_basis, pricing in pricing_candidates.items()
+    }
+    quote_validities[quote.pricing_basis] = ResolvedQuoteValidity(
+        valid_until=quote.valid_until,
+        snapshot=quote.pricing_provenance["validityPolicy"],
+    )
+    return _serialize_quote_options(
+        payload=payload,
+        pricing_candidates=pricing_candidates,
+        primary_pricing=primary_pricing,
+        fx_rate=_resolve_fx_rate(db=db, currency=payload.currency),
+        quote_validities=quote_validities,
+        max_alternative_options=payload.max_alternative_options,
+    )
+
+
 def _create_quote_record(
     *,
     payload: CreateQuoteRequest,
@@ -2240,10 +2285,16 @@ def create_quote(
         existing_quote = db.scalar(select(Quote).where(Quote.idempotency_key == normalized_idempotency_key))
         if existing_quote is not None:
             response.status_code = 200
-            return _serialize_created_quote_response(
-                _sync_quote_lifecycle(existing_quote, db),
-                idempotent_replay=True,
-            )
+            quote = _sync_quote_lifecycle(existing_quote, db)
+            serialized_response = _serialize_created_quote_response(quote, idempotent_replay=True)
+            if payload.include_alternative_options:
+                serialized_response["options"] = _build_created_quote_options(
+                    payload=payload,
+                    quote=quote,
+                    db=db,
+                    schedule_provider=schedule_provider,
+                )
+            return serialized_response
 
     quote = _create_quote_record(
         payload=payload,
@@ -2253,41 +2304,11 @@ def create_quote(
     )
     serialized_response = _serialize_created_quote_response(quote)
     if payload.include_alternative_options:
-        schedule = _get_schedule(payload.schedule_id, schedule_provider)
-        rates_by_type = _load_rate_table(
-            db=db,
-            schedule=schedule,
-            equipment_types={item.type for item in payload.equipment},
-        )
-        surcharge_rules = _load_active_surcharge_rules(db)
-        pricing_candidates = _build_pricing_candidates(
-            db=db,
+        serialized_response["options"] = _build_created_quote_options(
             payload=payload,
-            schedule=schedule,
-            public_rates_by_type=rates_by_type,
-            surcharge_rules=surcharge_rules,
-        )
-        primary_pricing = pricing_candidates[quote.pricing_basis]
-        quote_validities = {
-            pricing_basis: _resolve_quote_validity(
-                db=db,
-                payload=payload,
-                pricing=pricing,
-                created_at=quote.created_at,
-            )
-            for pricing_basis, pricing in pricing_candidates.items()
-        }
-        quote_validities[quote.pricing_basis] = ResolvedQuoteValidity(
-            valid_until=quote.valid_until,
-            snapshot=quote.pricing_provenance["validityPolicy"],
-        )
-        serialized_response["options"] = _serialize_quote_options(
-            payload=payload,
-            pricing_candidates=pricing_candidates,
-            primary_pricing=primary_pricing,
-            fx_rate=_resolve_fx_rate(db=db, currency=payload.currency),
-            quote_validities=quote_validities,
-            max_alternative_options=payload.max_alternative_options,
+            quote=quote,
+            db=db,
+            schedule_provider=schedule_provider,
         )
 
     return serialized_response
@@ -2862,16 +2883,20 @@ def list_quotes(
         query = query.where(Quote.account_id == account_id)
     if schedule_id is not None:
         query = query.where(Quote.schedule_id == schedule_id)
-    if lifecycle_state is not None:
-        query = query.where(Quote.lifecycle_state == lifecycle_state)
     if pricing_basis is not None:
         query = query.where(Quote.pricing_basis == pricing_basis)
 
-    total_count = db.scalar(select(func.count()).select_from(query.subquery())) or 0
-    quotes = db.scalars(query.order_by(Quote.created_at.desc(), Quote.id.desc()).offset(offset).limit(limit)).all()
+    synced_quotes = [
+        _sync_quote_lifecycle(quote, db)
+        for quote in db.scalars(query.order_by(Quote.created_at.desc(), Quote.id.desc())).all()
+    ]
+    if lifecycle_state is not None:
+        synced_quotes = [quote for quote in synced_quotes if quote.lifecycle_state == lifecycle_state]
+    total_count = len(synced_quotes)
+    quotes = synced_quotes[offset : offset + limit]
 
     return {
-        "quotes": [_serialize_quote(_sync_quote_lifecycle(quote, db)) for quote in quotes],
+        "quotes": [_serialize_quote(quote) for quote in quotes],
         "count": total_count,
         "limit": limit,
         "offset": offset,

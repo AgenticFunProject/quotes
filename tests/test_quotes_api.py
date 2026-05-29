@@ -607,6 +607,28 @@ def test_create_quote_replays_idempotency_key_without_duplicate_quote_or_event(c
     assert created_event_count == 1
 
 
+def test_create_quote_replay_preserves_requested_alternative_options(client) -> None:
+    test_client, _ = client
+    request_body = {
+        "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+        "customerId": "cust-acme",
+        "equipment": [{"type": "20FT", "quantity": 1}],
+        "cargoWeightKg": 18000,
+        "includeAlternativeOptions": True,
+    }
+    headers = {"Idempotency-Key": "quote-replay-options-cust-acme-001"}
+
+    first_response = test_client.post("/quotes", json=request_body, headers=headers)
+    replay_response = test_client.post("/quotes", json=request_body, headers=headers)
+
+    assert first_response.status_code == 201
+    assert replay_response.status_code == 200
+    first_payload = first_response.json()
+    replay_payload = replay_response.json()
+    assert first_payload["options"] == replay_payload["options"]
+    assert replay_payload == {**first_payload, "idempotentReplay": True}
+
+
 def test_create_quote_rejects_blank_idempotency_key(client) -> None:
     test_client, _ = client
 
@@ -707,6 +729,37 @@ def test_list_quotes_filters_by_lifecycle_and_pricing_basis(client) -> None:
     assert response.json()["count"] == 1
     assert response.json()["quotes"][0]["id"] == contract_response.json()["id"]
     assert response.json()["quotes"][0]["pricingBasis"] == "CONTRACT"
+
+
+def test_list_quotes_filters_by_current_lifecycle_after_sync(client) -> None:
+    test_client, session_factory = client
+    create_response = test_client.post(
+        "/quotes",
+        json={
+            "scheduleId": "df62a7d2-a45e-4d4d-b3cb-b4af65435274",
+            "equipment": [{"type": "20FT", "quantity": 1}],
+            "cargoWeightKg": 18000,
+        },
+    )
+    quote_id = create_response.json()["id"]
+
+    with session_factory() as session:
+        stored_quote = session.scalar(select(Quote).where(Quote.id == quote_id))
+        assert stored_quote is not None
+        stored_quote.valid_until = datetime.now(timezone.utc) - timedelta(minutes=5)
+        session.commit()
+
+    expired_response = test_client.get("/quotes", params={"lifecycleState": "EXPIRED"})
+    issued_response = test_client.get("/quotes", params={"lifecycleState": "ISSUED"})
+
+    assert create_response.status_code == 201
+    assert expired_response.status_code == 200
+    assert expired_response.json()["count"] == 1
+    assert expired_response.json()["quotes"][0]["id"] == quote_id
+    assert expired_response.json()["quotes"][0]["lifecycleState"] == "EXPIRED"
+    assert issued_response.status_code == 200
+    assert issued_response.json()["count"] == 0
+    assert issued_response.json()["quotes"] == []
 
 
 def test_quote_timeline_returns_ordered_lifecycle_events(client) -> None:
