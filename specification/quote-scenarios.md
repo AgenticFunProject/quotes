@@ -76,11 +76,11 @@ dry-run, and run against configured service profiles.
 | Derive quote validity from a customer-specific policy | `planned.derive_customer_specific_validity` |
 | Derive shorter quote validity from high-volatility market pricing | `planned.derive_market_validity` |
 | Explain why similar quotes received different validity windows | `planned.explain_validity_differences` |
-| Accept Users-issued Quotes-audience platform tokens for protected operations | `planned.accept_users_issued_tokens` |
-| Accept gateway-issued Quotes-audience platform tokens for protected operations | `planned.accept_gateway_issued_tokens` |
-| Reject missing or invalid protected-route bearer tokens | `planned.reject_missing_or_invalid_tokens` |
-| Reject valid tokens without the required Quotes scope | `planned.reject_tokens_without_required_scope` |
-| Resolve role=admin compatibility before implementation | `planned.resolve_role_admin_compatibility` |
-| Keep web-page bearer propagation inside the gateway boundary | `planned.keep_gateway_bearer_boundary` |
-| Verify Azure platform auth settings before deployment sign-off | `planned.verify_azure_auth_settings` |
-| Keep Booking on public quote validation and Equipments on diagnostics | `planned.keep_booking_and_equipments_boundaries` |
+| Accept Users-issued Quotes-audience platform tokens for protected operations | `auth.accept_users_issued_tokens` |
+| Accept gateway-issued Quotes-audience platform tokens for protected operations | `auth.accept_gateway_issued_tokens` |
+| Reject missing or invalid protected-route bearer tokens | `auth.reject_missing_or_invalid_tokens` |
+| Reject valid tokens without the required Quotes scope | `auth.reject_tokens_without_required_scope` |
+| Resolve role=admin compatibility before implementation | `auth.resolve_role_admin_compatibility` |
+| Keep web-page bearer propagation inside the gateway boundary | `docs.keep_gateway_bearer_boundary` |
+| Verify Azure platform auth settings before deployment sign-off | `deployment.verify_azure_auth_settings` |
+| Keep Booking on public quote validation and Equipments on diagnostics | `docs.keep_booking_and_equipments_boundaries` |

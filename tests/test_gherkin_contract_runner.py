@@ -45,7 +45,22 @@ COMMERCIAL_ADMIN_SCENARIOS = [
     "Analyze quote impact for schedule or contract changes",
     "Preview quote pricing with draft managed commercial data",
 ]
-EXECUTABLE_SCENARIOS = [*SMOKE_SCENARIOS, *PUBLIC_LIFECYCLE_SCENARIOS, *COMMERCIAL_ADMIN_SCENARIOS]
+AUTH_DEPLOYMENT_BOUNDARY_SCENARIOS = [
+    "Accept Users-issued Quotes-audience platform tokens for protected operations",
+    "Accept gateway-issued Quotes-audience platform tokens for protected operations",
+    "Reject missing or invalid protected-route bearer tokens",
+    "Reject valid tokens without the required Quotes scope",
+    "Resolve role=admin compatibility before implementation",
+    "Keep web-page bearer propagation inside the gateway boundary",
+    "Verify Azure platform auth settings before deployment sign-off",
+    "Keep Booking on public quote validation and Equipments on diagnostics",
+]
+EXECUTABLE_SCENARIOS = [
+    *SMOKE_SCENARIOS,
+    *PUBLIC_LIFECYCLE_SCENARIOS,
+    *COMMERCIAL_ADMIN_SCENARIOS,
+    *AUTH_DEPLOYMENT_BOUNDARY_SCENARIOS,
+]
 
 
 def _scenario_file_name(index: int, scenario_name: str) -> str:
@@ -134,7 +149,7 @@ def test_contract_cli_validates_binding_coverage() -> None:
 
     assert result.returncode == 0, result.stderr
     assert "gherkin-contract: verified 41 scenarios" in result.stdout
-    assert "20 executable bindings" in result.stdout
+    assert "28 executable bindings" in result.stdout
     for scenario in EXECUTABLE_SCENARIOS:
         assert scenario in result.stdout
 
@@ -370,6 +385,94 @@ def test_diagnostics_binding_reports_external_profile_gate() -> None:
     assert result.returncode == 0, result.stderr
     assert "requires-env:" in result.stdout
     assert "QUOTES_CONTRACT_EQUIPMENTS_SERVICE_CONFIGURED" in result.stdout
+
+
+def test_auth_deployment_boundary_bindings_define_runnable_results() -> None:
+    document = yaml.safe_load(BINDINGS.read_text())
+    scenarios = document["scenarios"]
+
+    for scenario in AUTH_DEPLOYMENT_BOUNDARY_SCENARIOS:
+        binding = scenarios[scenario]
+        assert binding["status"] == "executable"
+        assert not binding["binding"].startswith("planned.")
+        assert binding["actions"]
+        assert binding["assertions"]
+
+    assert scenarios["Verify Azure platform auth settings before deployment sign-off"]["profiles"] == ["azure"]
+    assert "QUOTES_CONTRACT_AZURE_AUTH_SETTINGS_VERIFIED" in set(
+        scenarios["Verify Azure platform auth settings before deployment sign-off"]["requires_env"].values()
+    )
+
+
+def test_auth_deployment_boundary_dry_runs_show_profile_gates() -> None:
+    for scenario in AUTH_DEPLOYMENT_BOUNDARY_SCENARIOS:
+        result = _run_contract_command(
+            "run",
+            "--features",
+            str(FEATURES),
+            "--bindings",
+            str(BINDINGS),
+            "--profile",
+            "azure" if scenario == "Verify Azure platform auth settings before deployment sign-off" else "local",
+            "--scenario",
+            scenario,
+            "--dry-run",
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert f"DRY-RUN {scenario}" in result.stdout
+
+    azure_result = _run_contract_command(
+        "run",
+        "--features",
+        str(FEATURES),
+        "--bindings",
+        str(BINDINGS),
+        "--profile",
+        "azure",
+        "--scenario",
+        "Verify Azure platform auth settings before deployment sign-off",
+        "--dry-run",
+    )
+
+    assert "QUOTES_CONTRACT_AZURE_AUTH_SETTINGS_VERIFIED" in azure_result.stdout
+
+
+def test_azure_auth_settings_live_run_gates_when_signoff_env_is_absent(monkeypatch, capsys) -> None:
+    monkeypatch.delenv("QUOTES_CONTRACT_AZURE_AUTH_SETTINGS_VERIFIED", raising=False)
+
+    contract = load_contract(FEATURES, BINDINGS)
+    run_live(
+        contract,
+        ["Verify Azure platform auth settings before deployment sign-off"],
+        "azure",
+    )
+
+    output = capsys.readouterr().out
+    assert "GATED Verify Azure platform auth settings before deployment sign-off" in output
+    assert "QUOTES_CONTRACT_AZURE_AUTH_SETTINGS_VERIFIED" in output
+
+
+def test_azure_auth_settings_live_run_passes_when_signoff_envs_are_supplied(monkeypatch, capsys) -> None:
+    for env_name in [
+        "QUOTES_CONTRACT_AZURE_AUTH_SETTINGS_VERIFIED",
+        "QUOTES_CONTRACT_AZURE_PUBLIC_QUOTE_CHECKED",
+        "QUOTES_CONTRACT_AZURE_ADMIN_ROUTE_CHECKED",
+        "QUOTES_CONTRACT_AZURE_APPROVAL_ROUTE_CHECKED",
+        "QUOTES_CONTRACT_AZURE_EQUIPMENTS_AUDIENCE_REJECTION_CHECKED",
+    ]:
+        monkeypatch.setenv(env_name, "true")
+
+    contract = load_contract(FEATURES, BINDINGS)
+    run_live(
+        contract,
+        ["Verify Azure platform auth settings before deployment sign-off"],
+        "azure",
+    )
+
+    output = capsys.readouterr().out
+    assert "RUN Verify Azure platform auth settings before deployment sign-off" in output
+    assert "GATED" not in output
 
 
 def test_smoke_create_quote_assertions_match_created_response() -> None:

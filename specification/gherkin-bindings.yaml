@@ -6,12 +6,20 @@ profiles:
     tokens:
       admin: QUOTES_CONTRACT_ADMIN_TOKEN
       approve: QUOTES_CONTRACT_APPROVER_TOKEN
+      users_admin: QUOTES_CONTRACT_USERS_ADMIN_TOKEN
+      gateway_admin: QUOTES_CONTRACT_GATEWAY_ADMIN_TOKEN
+      invalid_admin: QUOTES_CONTRACT_INVALID_ADMIN_TOKEN
+      equipments_audience: QUOTES_CONTRACT_EQUIPMENTS_AUDIENCE_TOKEN
   azure:
     base_url_env: QUOTES_CONTRACT_AZURE_BASE_URL
     timeout_seconds: 20
     tokens:
       admin: QUOTES_CONTRACT_AZURE_ADMIN_TOKEN
       approve: QUOTES_CONTRACT_AZURE_APPROVER_TOKEN
+      users_admin: QUOTES_CONTRACT_AZURE_USERS_ADMIN_TOKEN
+      gateway_admin: QUOTES_CONTRACT_AZURE_GATEWAY_ADMIN_TOKEN
+      invalid_admin: QUOTES_CONTRACT_AZURE_INVALID_ADMIN_TOKEN
+      equipments_audience: QUOTES_CONTRACT_AZURE_EQUIPMENTS_AUDIENCE_TOKEN
 fixtures:
   peak_season_quote_request:
     scheduleId: df62a7d2-a45e-4d4d-b3cb-b4af65435274
@@ -229,6 +237,8 @@ fixtures:
     cargoWeightKg: 18000
     includeAlternativeOptions: true
     maxAlternativeOptions: 11
+  approval_decision_request:
+    decision: APPROVE
 scenarios:
   "Create a quote on a seeded peak-season lane":
     binding: smoke.create_peak_season_quote
@@ -1246,66 +1256,216 @@ scenarios:
     actions: []
     assertions: []
   "Accept Users-issued Quotes-audience platform tokens for protected operations":
-    binding: planned.accept_users_issued_tokens
-    status: planned
+    binding: auth.accept_users_issued_tokens
+    status: executable
     group: auth
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    requires_env:
+      users_admin_token: users_admin
+      users_token_subject: QUOTES_CONTRACT_USERS_TOKEN_SUBJECT
+    state_from_env:
+      users_token_subject: QUOTES_CONTRACT_USERS_TOKEN_SUBJECT
+    fixtures:
+      - admin_auth_rate_table_request
+    actions:
+      - name: accept_users_token_without_actor
+        method: POST
+        path: /admin/rate-tables
+        auth: users_admin
+        body_fixture: admin_auth_rate_table_request
+    assertions:
+      - action: accept_users_token_without_actor
+        status: 201
+      - action: accept_users_token_without_actor
+        path: $.createdBy
+        json_equals_state: users_token_subject
   "Accept gateway-issued Quotes-audience platform tokens for protected operations":
-    binding: planned.accept_gateway_issued_tokens
-    status: planned
+    binding: auth.accept_gateway_issued_tokens
+    status: executable
     group: auth
-    profiles: []
+    profiles:
+      - local
+      - azure
+    requires_env:
+      gateway_admin_token: gateway_admin
     fixtures: []
-    actions: []
-    assertions: []
+    actions:
+      - name: accept_gateway_token
+        method: GET
+        path: /admin/service-connections/equipments
+        auth: gateway_admin
+        actor: gateway@web-page
+      - name: read_auth_plan
+        document_path: specification/quotes.md
+    assertions:
+      - action: accept_gateway_token
+        status: 200
+      - action: read_auth_plan
+        text_contains: "The web-page `/api/auth/quotes-token` helper is a local developer source, not production identity-provider behavior."
   "Reject missing or invalid protected-route bearer tokens":
-    binding: planned.reject_missing_or_invalid_tokens
-    status: planned
+    binding: auth.reject_missing_or_invalid_tokens
+    status: executable
     group: auth
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    requires_env:
+      invalid_admin_token: invalid_admin
+      equipments_audience_token: equipments_audience
+    fixtures:
+      - admin_auth_rate_table_request
+    actions:
+      - name: reject_missing_token
+        method: POST
+        path: /admin/rate-tables
+        body_fixture: admin_auth_rate_table_request
+      - name: reject_malformed_token
+        method: POST
+        path: /admin/rate-tables
+        authorization: Bearer not-a-jwt
+        body_fixture: admin_auth_rate_table_request
+      - name: reject_invalid_token
+        method: POST
+        path: /admin/rate-tables
+        auth: invalid_admin
+        body_fixture: admin_auth_rate_table_request
+      - name: reject_equipments_audience_token
+        method: GET
+        path: /admin/service-connections/equipments
+        auth: equipments_audience
+    assertions:
+      - action: reject_missing_token
+        status: 401
+      - action: reject_malformed_token
+        status: 401
+      - action: reject_invalid_token
+        status: 401
+      - action: reject_equipments_audience_token
+        status: 401
   "Reject valid tokens without the required Quotes scope":
-    binding: planned.reject_tokens_without_required_scope
-    status: planned
+    binding: auth.reject_tokens_without_required_scope
+    status: executable
     group: auth
-    profiles: []
-    fixtures: []
-    actions: []
-    assertions: []
+    profiles:
+      - local
+      - azure
+    requires_env:
+      admin_token: admin
+      approve_token: approve
+      approval_quote_id: QUOTES_CONTRACT_APPROVAL_QUOTE_ID
+    state_from_env:
+      approval_quote_id: QUOTES_CONTRACT_APPROVAL_QUOTE_ID
+    fixtures:
+      - admin_auth_rate_table_request
+      - approval_decision_request
+    actions:
+      - name: reject_admin_operation_without_admin_scope
+        method: POST
+        path: /admin/rate-tables
+        auth: approve
+        actor: pricing.ops@quotes
+        body_fixture: admin_auth_rate_table_request
+      - name: reject_approval_operation_without_approval_scope
+        method: POST
+        path: /quotes/{approval_quote_id}/approval-decisions
+        auth: admin
+        actor: pricing.manager@quotes
+        body_fixture: approval_decision_request
+    assertions:
+      - action: reject_admin_operation_without_admin_scope
+        status: 403
+      - action: reject_approval_operation_without_approval_scope
+        status: 403
   "Resolve role=admin compatibility before implementation":
-    binding: planned.resolve_role_admin_compatibility
-    status: planned
+    binding: auth.resolve_role_admin_compatibility
+    status: executable
     group: auth
-    profiles: []
+    profiles:
+      - local
+      - azure
     fixtures: []
-    actions: []
-    assertions: []
+    actions:
+      - name: read_auth_plan
+        document_path: specification/quotes.md
+      - name: read_architecture_snapshot
+        document_path: specification/system-architecture.md
+    assertions:
+      - action: read_auth_plan
+        text_contains: "`role=admin` compatibility remains an open decision."
+      - action: read_auth_plan
+        text_contains: "role never bypasses issuer, audience, expiry, or signature validation"
+      - action: read_architecture_snapshot
+        text_contains: "does not yet document or implement `role=admin` as a scope substitute"
   "Keep web-page bearer propagation inside the gateway boundary":
-    binding: planned.keep_gateway_bearer_boundary
-    status: planned
+    binding: docs.keep_gateway_bearer_boundary
+    status: executable
     group: auth
-    profiles: []
+    profiles:
+      - local
+      - azure
     fixtures: []
-    actions: []
-    assertions: []
+    actions:
+      - name: read_auth_plan
+        document_path: specification/quotes.md
+      - name: read_architecture_snapshot
+        document_path: specification/system-architecture.md
+    assertions:
+      - action: read_auth_plan
+        text_contains: "The gateway must not attach bearer tokens to public quote request or read calls."
+      - action: read_auth_plan
+        text_contains: "token attachment should be limited to those explicit protected paths"
+      - action: read_architecture_snapshot
+        text_contains: "browser API helper currently attaches bearer tokens only to `/api/equipment`"
   "Verify Azure platform auth settings before deployment sign-off":
-    binding: planned.verify_azure_auth_settings
-    status: planned
+    binding: deployment.verify_azure_auth_settings
+    status: executable
     group: deployment
-    profiles: []
+    profiles:
+      - azure
+    requires_env:
+      azure_auth_settings_verified: QUOTES_CONTRACT_AZURE_AUTH_SETTINGS_VERIFIED
+      azure_public_quote_checked: QUOTES_CONTRACT_AZURE_PUBLIC_QUOTE_CHECKED
+      azure_admin_route_checked: QUOTES_CONTRACT_AZURE_ADMIN_ROUTE_CHECKED
+      azure_approval_route_checked: QUOTES_CONTRACT_AZURE_APPROVAL_ROUTE_CHECKED
+      azure_equipments_audience_rejection_checked: QUOTES_CONTRACT_AZURE_EQUIPMENTS_AUDIENCE_REJECTION_CHECKED
     fixtures: []
-    actions: []
-    assertions: []
+    actions:
+      - name: read_readme
+        document_path: README.md
+      - name: read_auth_plan
+        document_path: specification/quotes.md
+    assertions:
+      - action: read_readme
+        text_contains: "`AUTH_JWT_AUDIENCE=quotes-service`"
+      - action: read_readme
+        text_contains: "never commit the secret value"
+      - action: read_auth_plan
+        text_contains: "Deployment sign-off should verify `/health`"
+      - action: read_auth_plan
+        text_contains: "one protected `quotes:admin` route"
+      - action: read_auth_plan
+        text_contains: "`quotes:approve` route with a valid Quotes-audience token"
+      - action: read_auth_plan
+        text_contains: "verify that an Equipments-audience token is rejected by Quotes with `401`"
   "Keep Booking on public quote validation and Equipments on diagnostics":
-    binding: planned.keep_booking_and_equipments_boundaries
-    status: planned
+    binding: docs.keep_booking_and_equipments_boundaries
+    status: executable
     group: integration-boundary
-    profiles: []
+    profiles:
+      - local
+      - azure
     fixtures: []
-    actions: []
-    assertions: []
+    actions:
+      - name: read_auth_plan
+        document_path: specification/quotes.md
+      - name: read_architecture_snapshot
+        document_path: specification/system-architecture.md
+    assertions:
+      - action: read_auth_plan
+        text_contains: "Booking should continue using public Quotes validation and lookup behavior"
+      - action: read_auth_plan
+        text_contains: "Quotes only calls Equipments through the configured `/admin/service-connections/equipments` diagnostic today"
+      - action: read_architecture_snapshot
+        text_contains: "QuoteClientRestClient must not forward the caller `Authorization` header"

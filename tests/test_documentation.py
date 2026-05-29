@@ -363,6 +363,14 @@ def test_quote_scenario_catalog_has_synced_contract_coverage_matrix() -> None:
         "Reprice an existing quote and explain the commercial variance",
         "Return multiple commercial options for one quote request",
         "Bound alternative options on quote creation",
+        "Accept Users-issued Quotes-audience platform tokens for protected operations",
+        "Accept gateway-issued Quotes-audience platform tokens for protected operations",
+        "Reject missing or invalid protected-route bearer tokens",
+        "Reject valid tokens without the required Quotes scope",
+        "Resolve role=admin compatibility before implementation",
+        "Keep web-page bearer propagation inside the gateway boundary",
+        "Verify Azure platform auth settings before deployment sign-off",
+        "Keep Booking on public quote validation and Equipments on diagnostics",
     ]
 
 

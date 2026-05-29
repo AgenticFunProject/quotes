@@ -15,4 +15,6 @@ fi
 "${ROOT_DIR}/.venv/bin/python" "${ROOT_DIR}/scripts/gherkin_contract.py" run --profile local --group admin-commercial --dry-run
 "${ROOT_DIR}/.venv/bin/python" "${ROOT_DIR}/scripts/gherkin_contract.py" run --profile local --group auth --dry-run
 "${ROOT_DIR}/.venv/bin/python" "${ROOT_DIR}/scripts/gherkin_contract.py" run --profile local --group diagnostics --dry-run
+"${ROOT_DIR}/.venv/bin/python" "${ROOT_DIR}/scripts/gherkin_contract.py" run --profile azure --group deployment --dry-run
+"${ROOT_DIR}/.venv/bin/python" "${ROOT_DIR}/scripts/gherkin_contract.py" run --profile local --group integration-boundary --dry-run
 exec "${ROOT_DIR}/.venv/bin/python" -m pytest tests -q "$@"

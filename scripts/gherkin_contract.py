@@ -24,6 +24,7 @@ REQUIRED_STEP_PREFIXES = ("Given ", "When ", "Then ")
 EXECUTABLE_STATUS = "executable"
 PLANNED_STATUS = "planned"
 VALID_STATUSES = {EXECUTABLE_STATUS, PLANNED_STATUS}
+DOCUMENT_ACTION_SUFFIXES = {".feature", ".md"}
 FORBIDDEN_EXECUTABLE_STEP_PATTERNS = [
     re.compile(r"`?(GET|POST|PATCH|PUT|DELETE)\s+/", re.IGNORECASE),
     re.compile(r"`/[A-Za-z0-9_{]"),
@@ -223,24 +224,29 @@ def print_validation_summary(contract: Contract) -> None:
 def run_dry_run(contract: Contract, scenario_names: list[str], profile: str, selection_label: str) -> None:
     profile_config = _mapping(contract.profiles[profile], f"profile {profile}")
     token_envs = _profile_token_envs(profile_config, profile)
+    base_url_env = _required_string(profile_config.get("base_url_env"), f"profile {profile}.base_url_env")
     print(f"dry-run: {profile} {selection_label}")
     for scenario_name in scenario_names:
         binding = contract.bindings[scenario_name]
         print(f"DRY-RUN {scenario_name}")
-        if required_env := _required_env(binding, token_envs):
+        required_env = _required_env(binding, token_envs)
+        if _binding_requires_base_url(binding):
+            required_env.append(base_url_env)
+        if required_env := list(dict.fromkeys(required_env)):
             print(f"  requires-env: {', '.join(required_env)}")
         for action in binding.get("actions", []):
-            method = action.get("method", "GET")
-            path = action.get("path", "")
-            print(f"  - {method} {path}")
+            if document_path := action.get("document_path"):
+                print(f"  - DOC {document_path}")
+            else:
+                method = action.get("method", "GET")
+                path = action.get("path", "")
+                print(f"  - {method} {path}")
 
 
 def run_live(contract: Contract, scenario_names: list[str], profile: str) -> None:
     profile_config = _mapping(contract.profiles[profile], f"profile {profile}")
     base_url_env = _required_string(profile_config.get("base_url_env"), f"profile {profile}.base_url_env")
     base_url = os.environ.get(base_url_env, "").rstrip("/")
-    if not base_url:
-        raise ContractError(f"profile {profile!r} requires environment variable {base_url_env}")
 
     timeout = float(profile_config.get("timeout_seconds", 10))
     token_envs = _profile_token_envs(profile_config, profile)
@@ -253,6 +259,8 @@ def run_live(contract: Contract, scenario_names: list[str], profile: str) -> Non
             for env_name in _required_env(binding, token_envs)
             if not os.environ.get(env_name) and env_name not in missing_env
         )
+        if _binding_requires_base_url(binding) and not base_url and base_url_env not in missing_env:
+            missing_env.append(base_url_env)
         if missing_env:
             print(f"GATED {scenario_name}: missing required environment {', '.join(missing_env)}")
             continue
@@ -395,9 +403,26 @@ def _validate_action_references(
             errors.append(f"{scenario_name}: action name is required")
         else:
             action_names.add(action_name)
+        if action.get("auth") and action.get("authorization"):
+            errors.append(f"{scenario_name}: action cannot define both auth and authorization")
         body_fixture = action.get("body_fixture")
         if body_fixture is not None and body_fixture not in contract.fixtures:
             errors.append(f"{scenario_name}: unknown action body fixture {body_fixture!r}")
+        document_path = action.get("document_path")
+        if document_path is not None:
+            try:
+                _document_path(document_path)
+            except ContractError as exception:
+                errors.append(f"{scenario_name}: {exception}")
+            continue
+        method = action.get("method")
+        path = action.get("path")
+        if not isinstance(method, str) or not method:
+            errors.append(f"{scenario_name}: HTTP action method is required")
+        if not isinstance(path, str) or not path:
+            errors.append(f"{scenario_name}: HTTP action path is required")
+        if "authorization" in action and not isinstance(action["authorization"], str):
+            errors.append(f"{scenario_name}: action authorization must be a string")
 
     for assertion in assertions:
         if not isinstance(assertion, dict):
@@ -438,6 +463,9 @@ def _execute_action(
     timeout: float,
     state: dict[str, Any],
 ) -> tuple[int, Any]:
+    if document_path := action.get("document_path"):
+        return 200, _document_path(document_path).read_text()
+
     method = _required_string(action.get("method"), "action.method")
     path = _required_string(action.get("path"), "action.path").format(**state)
     url = f"{base_url}{path}"
@@ -449,8 +477,9 @@ def _execute_action(
         body = json.dumps(_render_templates(fixtures[body_fixture], state)).encode()
         headers["Content-Type"] = "application/json"
 
-    auth_name = action.get("auth")
-    if auth_name:
+    if authorization := action.get("authorization"):
+        headers["Authorization"] = str(authorization)
+    elif auth_name := action.get("auth"):
         token_env = _required_string(token_envs.get(auth_name), f"token env for {auth_name}")
         token = os.environ.get(token_env)
         if not token:
@@ -513,6 +542,17 @@ def _assert_responses(
                     f"{scenario_name}: {action_name} {path} was {actual!r}, "
                     f"expected saved state {state_key}={expected!r}"
                 )
+        if "text_contains" in assertion:
+            expected = _required_string(assertion.get("text_contains"), f"{scenario_name}.assertions[].text_contains")
+            if expected not in _payload_text(payload):
+                raise ContractError(f"{scenario_name}: {action_name} did not contain {expected!r}")
+        if "text_not_contains" in assertion:
+            forbidden = _required_string(
+                assertion.get("text_not_contains"),
+                f"{scenario_name}.assertions[].text_not_contains",
+            )
+            if forbidden in _payload_text(payload):
+                raise ContractError(f"{scenario_name}: {action_name} unexpectedly contained {forbidden!r}")
 
 
 def _decode_json(body: bytes) -> Any:
@@ -568,6 +608,14 @@ def _required_env(binding: dict[str, Any], token_envs: dict[str, Any]) -> list[s
     return list(dict.fromkeys(required_env))
 
 
+def _binding_requires_base_url(binding: dict[str, Any]) -> bool:
+    return any(_action_requires_base_url(action) for action in binding.get("actions", []))
+
+
+def _action_requires_base_url(action: Any) -> bool:
+    return isinstance(action, dict) and "document_path" not in action
+
+
 def _resolve_env_reference(env_reference: Any, token_envs: dict[str, Any]) -> str:
     reference = _required_string(env_reference, "requires_env")
     if reference in token_envs:
@@ -586,6 +634,26 @@ def _is_env_reference(value: Any, token_envs: dict[str, Any]) -> bool:
 def _token_env_name(auth_name: Any, token_envs: dict[str, Any]) -> str:
     auth_key = _required_string(auth_name, "action.auth")
     return _required_string(token_envs.get(auth_key), f"token env for {auth_key}")
+
+
+def _document_path(path: Any) -> Path:
+    relative_path = Path(_required_string(path, "action.document_path"))
+    if relative_path.is_absolute():
+        raise ContractError(f"document path must be relative: {relative_path}")
+    resolved_path = (REPO_ROOT / relative_path).resolve()
+    if not resolved_path.is_relative_to(REPO_ROOT.resolve()):
+        raise ContractError(f"document path must stay inside the repository: {relative_path}")
+    if resolved_path.suffix not in DOCUMENT_ACTION_SUFFIXES:
+        raise ContractError(f"document action may only read Markdown or feature files: {relative_path}")
+    if not resolved_path.is_file():
+        raise ContractError(f"document path does not exist: {relative_path}")
+    return resolved_path
+
+
+def _payload_text(payload: Any) -> str:
+    if isinstance(payload, str):
+        return payload
+    return json.dumps(payload, sort_keys=True)
 
 
 def _state_from_env(binding: dict[str, Any]) -> tuple[dict[str, str], list[str]]:
