@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import os
+import urllib.request
+import urllib.error
+import json
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Protocol
+
+
+SCHEDULES_API_URL = os.environ.get("SCHEDULES_API_URL", "")
+SCHEDULES_API_TOKEN = os.environ.get("SCHEDULES_API_TOKEN", "")
 
 
 @dataclass(frozen=True)
@@ -24,6 +32,35 @@ class InMemoryScheduleProvider:
 
     def get_schedule(self, schedule_id: str) -> Schedule | None:
         return self.schedules.get(schedule_id)
+
+
+class ApiScheduleProvider:
+    def __init__(self, base_url: str, token: str) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._token = token
+
+    def get_schedule(self, schedule_id: str) -> Schedule | None:
+        url = f"{self._base_url}/schedules/{schedule_id}"
+        req = urllib.request.Request(
+            url,
+            headers={"Authorization": f"Bearer {self._token}"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return None
+            raise
+        except Exception:
+            return None
+
+        return Schedule(
+            schedule_id=data["id"],
+            origin_port=data["originPort"],
+            destination_port=data["destinationPort"],
+            departure_date=datetime.fromisoformat(data["etd"].replace("Z", "+00:00")).date(),
+        )
 
 
 SCHEDULES_API_STUB: dict[str, Schedule] = {
@@ -48,8 +85,7 @@ SCHEDULES_API_STUB: dict[str, Schedule] = {
 }
 
 
-_schedule_provider = InMemoryScheduleProvider(SCHEDULES_API_STUB)
-
-
 def get_schedule_provider() -> ScheduleProvider:
-    return _schedule_provider
+    if SCHEDULES_API_URL and SCHEDULES_API_TOKEN:
+        return ApiScheduleProvider(SCHEDULES_API_URL, SCHEDULES_API_TOKEN)
+    return InMemoryScheduleProvider(SCHEDULES_API_STUB)
