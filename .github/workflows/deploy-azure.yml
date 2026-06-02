@@ -19,6 +19,7 @@ env:
   EQUIPMENTS_SERVICE_URL: ${{ vars.EQUIPMENTS_SERVICE_URL || '' }}
   EQUIPMENTS_HEALTH_PATH: ${{ vars.EQUIPMENTS_HEALTH_PATH || '/health' }}
   EQUIPMENTS_CONNECTIVITY_TIMEOUT_SECONDS: ${{ vars.EQUIPMENTS_CONNECTIVITY_TIMEOUT_SECONDS || '3' }}
+  SCHEDULES_API_URL: ${{ vars.SCHEDULES_API_URL || 'https://app-schedules-prod-9e31c1.azurewebsites.net' }}
 
 jobs:
   deploy:
@@ -117,11 +118,31 @@ jobs:
             --name "$AZURE_WEBAPP_NAME" \
             --generic-configurations '{"acrUseManagedIdentityCreds": true}'
 
+      - name: Generate schedules API token
+        if: steps.preflight.outputs.ready == 'true'
+        env:
+          SCHEDULES_JWT_SECRET: ${{ secrets.SCHEDULES_JWT_SECRET }}
+        run: |
+          if [ -z "$SCHEDULES_JWT_SECRET" ]; then
+            SCHEDULES_API_TOKEN=""
+          else
+            header=$(echo -n '{"alg":"HS256","typ":"JWT"}' | base64 -w0 | tr '+/' '-_' | tr -d '=')
+            now=$(date +%s)
+            exp=$((now + 3600))
+            payload=$(echo -n "{\"sub\":\"deploy\",\"iss\":\"schedules-service\",\"aud\":\"schedules-api\",\"exp\":$exp,\"scope\":\"schedules:read\"}" | base64 -w0 | tr '+/' '-_' | tr -d '=')
+            sig=$(echo -n "${header}.${payload}" | openssl dgst -sha256 -hmac "$SCHEDULES_JWT_SECRET" -binary | base64 -w0 | tr '+/' '-_' | tr -d '=')
+            echo "SCHEDULES_API_TOKEN=${header}.${payload}.${sig}" >> "$GITHUB_ENV"
+          fi
+
       - name: Apply platform auth app settings
         if: steps.preflight.outputs.ready == 'true'
         env:
           AUTH_JWT_SECRET: ${{ secrets.AUTH_JWT_SECRET }}
         run: |
+          extra_settings=""
+          if [ -n "$SCHEDULES_API_TOKEN" ]; then
+            extra_settings="$extra_settings SCHEDULES_API_URL=\"$SCHEDULES_API_URL\" SCHEDULES_API_TOKEN=\"$SCHEDULES_API_TOKEN\""
+          fi
           az webapp config appsettings set \
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --name "$AZURE_WEBAPP_NAME" \
@@ -132,6 +153,7 @@ jobs:
               EQUIPMENTS_SERVICE_URL="$EQUIPMENTS_SERVICE_URL" \
               EQUIPMENTS_HEALTH_PATH="$EQUIPMENTS_HEALTH_PATH" \
               EQUIPMENTS_CONNECTIVITY_TIMEOUT_SECONDS="$EQUIPMENTS_CONNECTIVITY_TIMEOUT_SECONDS" \
+              $extra_settings \
             --output none
 
       - name: Restart web app
