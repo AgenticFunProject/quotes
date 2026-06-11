@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import math
 import os
 import time
@@ -14,14 +15,14 @@ from datetime import date, datetime
 from typing import Protocol
 
 
-SCHEDULES_API_URL = os.environ.get("SCHEDULES_API_URL", "")
-SCHEDULES_JWT_SECRET = os.environ.get("SCHEDULES_JWT_SECRET", "")
-# Legacy: a pre-signed static token may be provided; used as fallback only.
-_SCHEDULES_API_TOKEN_STATIC = os.environ.get("SCHEDULES_API_TOKEN", "")
+_logger = logging.getLogger(__name__)
+
+
 
 
 def _generate_schedules_token() -> str:
     """Generate a fresh short-lived HS256 JWT for the schedules service."""
+    secret = os.environ.get("SCHEDULES_JWT_SECRET", "")
     header = base64.urlsafe_b64encode(
         json.dumps({"alg": "HS256", "typ": "JWT"}).encode()
     ).rstrip(b"=").decode()
@@ -37,15 +38,15 @@ def _generate_schedules_token() -> str:
     ).rstrip(b"=").decode()
     signing_input = f"{header}.{payload}"
     sig = base64.urlsafe_b64encode(
-        hmac.new(SCHEDULES_JWT_SECRET.encode(), signing_input.encode(), hashlib.sha256).digest()
+        hmac.new(secret.encode(), signing_input.encode(), hashlib.sha256).digest()
     ).rstrip(b"=").decode()
     return f"{signing_input}.{sig}"
 
 
 def _get_schedules_token() -> str:
-    if SCHEDULES_JWT_SECRET:
+    if os.environ.get("SCHEDULES_JWT_SECRET", ""):
         return _generate_schedules_token()
-    return _SCHEDULES_API_TOKEN_STATIC
+    return os.environ.get("SCHEDULES_API_TOKEN", "")
 
 
 @dataclass(frozen=True)
@@ -85,8 +86,10 @@ class ApiScheduleProvider:
         except urllib.error.HTTPError as e:
             if e.code == 404:
                 return None
+            _logger.error("Schedules API HTTP error %s for schedule %s: %s", e.code, schedule_id, e.read())
             raise
-        except Exception:
+        except Exception as e:
+            _logger.error("Schedules API call failed for schedule %s: %s: %s", schedule_id, type(e).__name__, e)
             return None
 
         return Schedule(
@@ -120,6 +123,8 @@ SCHEDULES_API_STUB: dict[str, Schedule] = {
 
 
 def get_schedule_provider() -> ScheduleProvider:
-    if SCHEDULES_API_URL and (SCHEDULES_JWT_SECRET or _SCHEDULES_API_TOKEN_STATIC):
-        return ApiScheduleProvider(SCHEDULES_API_URL)
+    api_url = os.environ.get("SCHEDULES_API_URL", "")
+    has_auth = bool(os.environ.get("SCHEDULES_JWT_SECRET", "") or os.environ.get("SCHEDULES_API_TOKEN", ""))
+    if api_url and has_auth:
+        return ApiScheduleProvider(api_url)
     return InMemoryScheduleProvider(SCHEDULES_API_STUB)
