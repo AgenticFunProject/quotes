@@ -332,8 +332,20 @@ app = FastAPI(title="Quotes Service", lifespan=lifespan)
 
 
 @app.get("/health")
-def healthcheck() -> dict[str, str]:
-    return {"status": "ok"}
+def healthcheck() -> dict[str, object]:
+    import os
+    from app.schedules import get_schedule_provider, ApiScheduleProvider
+    provider = get_schedule_provider()
+    schedules_api_url = os.environ.get("SCHEDULES_API_URL", "")
+    schedules_jwt_secret_set = bool(os.environ.get("SCHEDULES_JWT_SECRET", ""))
+    schedules_api_token_set = bool(os.environ.get("SCHEDULES_API_TOKEN", ""))
+    return {
+        "status": "ok",
+        "schedules_provider": type(provider).__name__,
+        "schedules_api_url": schedules_api_url,
+        "schedules_jwt_secret_set": schedules_jwt_secret_set,
+        "schedules_api_token_set": schedules_api_token_set,
+    }
 
 
 def _serialize_decimal(value: Decimal) -> float:
