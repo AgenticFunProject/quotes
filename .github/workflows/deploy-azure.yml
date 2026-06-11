@@ -138,9 +138,12 @@ jobs:
         if: steps.preflight.outputs.ready == 'true'
         env:
           AUTH_JWT_SECRET: ${{ secrets.AUTH_JWT_SECRET }}
+          SCHEDULES_JWT_SECRET: ${{ secrets.SCHEDULES_JWT_SECRET }}
         run: |
           extra_settings=""
-          if [ -n "$SCHEDULES_API_TOKEN" ]; then
+          if [ -n "$SCHEDULES_JWT_SECRET" ]; then
+            extra_settings="$extra_settings SCHEDULES_API_URL=\"$SCHEDULES_API_URL\" SCHEDULES_JWT_SECRET=\"$SCHEDULES_JWT_SECRET\""
+          elif [ -n "$SCHEDULES_API_TOKEN" ]; then
             extra_settings="$extra_settings SCHEDULES_API_URL=\"$SCHEDULES_API_URL\" SCHEDULES_API_TOKEN=\"$SCHEDULES_API_TOKEN\""
           fi
           az webapp config appsettings set \
