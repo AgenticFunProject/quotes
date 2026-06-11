@@ -1,16 +1,51 @@
 from __future__ import annotations
 
-import os
-import urllib.request
-import urllib.error
+import base64
+import hashlib
+import hmac
 import json
+import math
+import os
+import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Protocol
 
 
 SCHEDULES_API_URL = os.environ.get("SCHEDULES_API_URL", "")
-SCHEDULES_API_TOKEN = os.environ.get("SCHEDULES_API_TOKEN", "")
+SCHEDULES_JWT_SECRET = os.environ.get("SCHEDULES_JWT_SECRET", "")
+# Legacy: a pre-signed static token may be provided; used as fallback only.
+_SCHEDULES_API_TOKEN_STATIC = os.environ.get("SCHEDULES_API_TOKEN", "")
+
+
+def _generate_schedules_token() -> str:
+    """Generate a fresh short-lived HS256 JWT for the schedules service."""
+    header = base64.urlsafe_b64encode(
+        json.dumps({"alg": "HS256", "typ": "JWT"}).encode()
+    ).rstrip(b"=").decode()
+    now = math.floor(time.time())
+    payload = base64.urlsafe_b64encode(
+        json.dumps({
+            "sub": "quotes-service",
+            "iss": "schedules-service",
+            "aud": "schedules-api",
+            "exp": now + 300,
+            "scope": "schedules:read",
+        }).encode()
+    ).rstrip(b"=").decode()
+    signing_input = f"{header}.{payload}"
+    sig = base64.urlsafe_b64encode(
+        hmac.new(SCHEDULES_JWT_SECRET.encode(), signing_input.encode(), hashlib.sha256).digest()
+    ).rstrip(b"=").decode()
+    return f"{signing_input}.{sig}"
+
+
+def _get_schedules_token() -> str:
+    if SCHEDULES_JWT_SECRET:
+        return _generate_schedules_token()
+    return _SCHEDULES_API_TOKEN_STATIC
 
 
 @dataclass(frozen=True)
@@ -35,15 +70,14 @@ class InMemoryScheduleProvider:
 
 
 class ApiScheduleProvider:
-    def __init__(self, base_url: str, token: str) -> None:
+    def __init__(self, base_url: str) -> None:
         self._base_url = base_url.rstrip("/")
-        self._token = token
 
     def get_schedule(self, schedule_id: str) -> Schedule | None:
         url = f"{self._base_url}/schedules/{schedule_id}"
         req = urllib.request.Request(
             url,
-            headers={"Authorization": f"Bearer {self._token}"},
+            headers={"Authorization": f"Bearer {_get_schedules_token()}"},
         )
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:
@@ -86,6 +120,6 @@ SCHEDULES_API_STUB: dict[str, Schedule] = {
 
 
 def get_schedule_provider() -> ScheduleProvider:
-    if SCHEDULES_API_URL and SCHEDULES_API_TOKEN:
-        return ApiScheduleProvider(SCHEDULES_API_URL, SCHEDULES_API_TOKEN)
+    if SCHEDULES_API_URL and (SCHEDULES_JWT_SECRET or _SCHEDULES_API_TOKEN_STATIC):
+        return ApiScheduleProvider(SCHEDULES_API_URL)
     return InMemoryScheduleProvider(SCHEDULES_API_STUB)
